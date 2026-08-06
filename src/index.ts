@@ -2,15 +2,17 @@
 export { App } from './App';
 export { ChatAssistantApp } from './components';
 export {
-    createChat,
-    fetchChat,
-    fetchChatList,
+    addToConversation,
+    createConversation,
+    deleteConversation,
+    fetchConversation,
     DEFAULT_CHAT_ASSISTANT_URL
 } from './api';
 export type {
-    ChatAssistantPostRequest,
-    ChatAssistantPostResponse,
     ChatMessage,
-    ChatRecord,
-    ChatSummary
+    ConversationDeleteResponse,
+    ConversationGetResponse,
+    ConversationPostRequest,
+    ConversationPostResponse,
+    ConversationRecord
 } from './api';

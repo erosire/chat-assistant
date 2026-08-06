@@ -1,55 +1,70 @@
 openapi: 3.0.3
 info:
   title: Chat Assistant API
-  description: AI chat assistant collection API with list/read and send operations.
+  description: AI chat assistant conversation API with create, read, append, and delete operations.
   version: 1.0.0
 servers:
   - url: http://127.0.0.1:5000
     description: Local development server
 paths:
-  /v1/chat-assistant/:
-    get:
-      operationId: getChats
-      summary: List chats or read one chat
-      parameters:
-        - name: chatId
-          in: query
-          required: false
-          description: When supplied, returns the complete conversation for this identifier.
-          schema:
-            type: string
+  /v1/chat-assistant/conversation:
+    post:
+      operationId: createConversation
+      summary: Create a conversation
+      description: Creates an empty conversation and returns its identifier for the identified conversation resource.
       responses:
-        '200':
-          description: Chat list or complete chat record.
+        '201':
+          description: Conversation identifier.
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/ChatListResponse'
-                  - $ref: '#/components/schemas/ChatResponse'
+                $ref: '#/components/schemas/ConversationIdResponse'
+        '400':
+          description: Invalid optional conversation settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/chat-assistant/conversation/{conversation_id}:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        description: The conversation identifier returned by collection POST.
+        schema:
+          type: string
+    get:
+      operationId: getConversation
+      summary: Get a conversation
+      responses:
+        '200':
+          description: Complete conversation record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
         '404':
-          description: Chat identifier was not found.
+          description: Conversation identifier was not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
-      operationId: createChat
-      summary: Create a chat or send a follow-up message
-      description: Creates or updates a conversation and waits for one assistant response.
+      operationId: addToConversation
+      summary: Add a message to a conversation
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ChatRequest'
+              $ref: '#/components/schemas/ConversationPostRequest'
       responses:
         '200':
-          description: Completed assistant response.
+          description: Updated conversation identifier.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ChatResponse'
+                $ref: '#/components/schemas/ConversationIdResponse'
         '400':
           description: Invalid request body.
           content:
@@ -57,16 +72,26 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Existing chat identifier was not found.
+          description: Conversation identifier was not found.
         '502':
-          description: Assistant provider failed; the returned chat record contains the error.
+          description: Assistant provider failed; the conversation retains the submitted messages and error.
+    delete:
+      operationId: deleteConversation
+      summary: Delete a conversation
+      responses:
+        '200':
+          description: Deleted conversation identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationIdResponse'
+        '404':
+          description: Conversation identifier was not found.
 components:
   schemas:
-    ChatRequest:
+    ConversationPostRequest:
       type: object
       properties:
-        chatId:
-          type: string
         message:
           type: string
         messages:
@@ -87,43 +112,34 @@ components:
           enum: [system, user, assistant]
         content:
           type: string
-    ChatSummary:
+    ConversationRecord:
       type: object
-      required: [chatId, title, model, status, messageCount, createdAt, updatedAt]
+      required: [conversationId, title, model, status, messageCount, messages, createdAt, updatedAt]
       properties:
-        chatId: { type: string }
+        conversationId: { type: string }
         title: { type: string }
         model: { type: string }
         status: { type: string, enum: [complete, error] }
         messageCount: { type: integer }
         createdAt: { type: string }
         updatedAt: { type: string }
-    ChatRecord:
-      allOf:
-        - $ref: '#/components/schemas/ChatSummary'
-        - type: object
-          required: [messages]
-          properties:
-            messages:
-              type: array
-              items:
-                $ref: '#/components/schemas/ChatMessage'
-            error: { type: string }
-    ChatListResponse:
-      type: object
-      required: [chats]
-      properties:
-        chats:
+        messages:
           type: array
           items:
-            $ref: '#/components/schemas/ChatSummary'
-    ChatResponse:
+            $ref: '#/components/schemas/ChatMessage'
+        error: { type: string }
+    ConversationIdResponse:
       type: object
-      required: [chatId, chat]
+      required: [conversationId]
       properties:
-        chatId: { type: string }
-        chat:
-          $ref: '#/components/schemas/ChatRecord'
+        conversationId: { type: string }
+    ConversationResponse:
+      type: object
+      required: [conversationId, conversation]
+      properties:
+        conversationId: { type: string }
+        conversation:
+          $ref: '#/components/schemas/ConversationRecord'
     ErrorResponse:
       type: object
       required: [error]

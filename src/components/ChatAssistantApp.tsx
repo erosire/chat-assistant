@@ -1,21 +1,17 @@
 // Chat Assistant dashboard.
 //
-// This first UI version deliberately keeps the interaction model small:
-// conversations are listed on the left, one conversation is rendered on the
-// right, and POST returns the completed assistant turn synchronously. The
-// server-side GET contract remains available for refresh and future polling.
+// This UI uses only the conversation collection POST and identified resource
+// GET/POST/DELETE contract; the server no longer exposes a collection listing.
 import React, { useCallback, useEffect } from 'react';
 import { arrayEach, isString } from '@presource/core';
 import { styledComponent, useStateHook } from '@presource/react';
 import {
-    createChat,
-    fetchChat,
-    fetchChatList,
+    addToConversation,
+    createConversation,
+    fetchConversation,
     DEFAULT_CHAT_ASSISTANT_URL,
-    type ChatAssistantPostRequest,
     type ChatMessage,
-    type ChatRecord,
-    type ChatSummary
+    type ConversationRecord
 } from '../api';
 
 // Palette is local to this distribution so the component has no dependency on a larger theme package.
@@ -269,6 +265,10 @@ export type ChatAssistantAppProps = {
     baseUrl?: string;
 };
 
+// Sidebar entries are derived locally from records because the focused API has no
+// collection GET endpoint from which a server-side conversation list can be read.
+type ConversationSummary = Pick<ConversationRecord, 'conversationId' | 'title' | 'model' | 'status' | 'messageCount' | 'createdAt' | 'updatedAt'>;
+
 // Convert an API record into message nodes while keeping rendering logic role-specific and explicit.
 const renderMessages = (messages: ChatMessage[]): React.ReactNode[] => {
     const nodes: React.ReactNode[] = [];
@@ -302,8 +302,8 @@ const resizeMessageInput = (element: HTMLTextAreaElement): void => {
 // Main dashboard state and event handlers.
 export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ baseUrl = DEFAULT_CHAT_ASSISTANT_URL }) => {
     // Accessor state follows @presource/react's state-hook contract: read with (), write with (value).
-    const chats = useStateHook<ChatSummary[]>([]);
-    const selected = useStateHook<ChatRecord | null>(null);
+    const chats = useStateHook<ConversationSummary[]>([]);
+    const selected = useStateHook<ConversationRecord | null>(null);
     const message = useStateHook('');
     const loading = useStateHook(false);
     const refreshing = useStateHook(false);
@@ -316,51 +316,26 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
         if (input) resizeMessageInput(input);
     }, [message()]);
 
-    // Initial GET populates the sidebar; a failed bootstrap remains visible without blocking new chat creation.
-    useEffect(() => {
-        let active = true;
-        refreshing(true);
-        fetchChatList(baseUrl)
-            .then((result) => {
-                if (!active) return;
-                chats(result.chats);
-                if (result.chats.length > 0) {
-                    return fetchChat(baseUrl, result.chats[0].chatId);
-                }
-                return null;
-            })
-            .then((record) => {
-                if (active && record) selected(record);
-            })
-            .catch((reason: unknown) => {
-                if (active) error(reason instanceof Error ? reason.message : String(reason));
-            })
-            .finally(() => {
-                if (active) refreshing(false);
-            });
-        return () => {
-            active = false;
-        };
-    }, [baseUrl]);
-
-    // Refresh only the list and preserve the currently selected full record.
+    // Refresh reads the selected conversation directly because no collection GET exists.
     const refresh = useCallback(async () => {
+        const conversationId = selected()?.conversationId;
+        if (!conversationId) return;
         refreshing(true);
         try {
-            chats((await fetchChatList(baseUrl)).chats);
+            selected((await fetchConversation(baseUrl, conversationId)).conversation);
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
         } finally {
             refreshing(false);
         }
-    }, [baseUrl, chats, error, refreshing]);
+    }, [baseUrl, error, refreshing, selected]);
 
     // Select a conversation and fetch its full message history.
-    const selectChat = useCallback(async (chatId: string) => {
+    const selectChat = useCallback(async (conversationId: string) => {
         loading(true);
         try {
-            selected(await fetchChat(baseUrl, chatId));
+            selected((await fetchConversation(baseUrl, conversationId)).conversation);
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
@@ -376,7 +351,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
         error('');
     }, [error, message, selected]);
 
-    // POST one user turn and use the complete returned record as the new selected conversation.
+    // Create an identifier for a new conversation, append the user turn through the
+    // identified POST, then GET the canonical completed record for rendering.
     const submit = useCallback(async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         const text = message().trim();
@@ -384,25 +360,25 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
 
         loading(true);
         error('');
-        const request: ChatAssistantPostRequest = selected()
-            ? { chatId: selected()!.chatId, message: text }
-            : { message: text };
         try {
-            const result = await createChat(baseUrl, request);
-            selected(result.chat);
+            const conversationId = selected()?.conversationId ??
+                (await createConversation(baseUrl, {})).conversationId;
+            await addToConversation(baseUrl, conversationId, { message: text });
+            const result = (await fetchConversation(baseUrl, conversationId)).conversation;
+            selected(result);
             message('');
-            const summary: ChatSummary = {
-                chatId: result.chat.chatId,
-                title: result.chat.title,
-                model: result.chat.model,
-                status: result.chat.status,
-                messageCount: result.chat.messages.length,
-                createdAt: result.chat.createdAt,
-                updatedAt: result.chat.updatedAt
+            const summary: ConversationSummary = {
+                conversationId: result.conversationId,
+                title: result.title,
+                model: result.model,
+                status: result.status,
+                messageCount: result.messages.length,
+                createdAt: result.createdAt,
+                updatedAt: result.updatedAt
             };
             const current = chats();
-            const next = current.some((chat) => chat.chatId === summary.chatId)
-                ? current.map((chat) => (chat.chatId === summary.chatId ? summary : chat))
+            const next = current.some((chat) => chat.conversationId === summary.conversationId)
+                ? current.map((chat) => (chat.conversationId === summary.conversationId ? summary : chat))
                 : [summary, ...current];
             chats(next);
         } catch (reason) {
@@ -417,11 +393,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
     arrayEach(chats(), ({ value: chat }) => {
         chatNodes.push(
             <ChatButton
-                key={chat.chatId}
+                key={chat.conversationId}
                 type="button"
-                onClick={() => void selectChat(chat.chatId)}
-                aria-pressed={selected()?.chatId === chat.chatId}
-                data-testid={`chat-tab-${chat.chatId}`}
+                onClick={() => void selectChat(chat.conversationId)}
+                aria-pressed={selected()?.conversationId === chat.conversationId}
+                data-testid={`chat-tab-${chat.conversationId}`}
             >
                 <strong>{chat.title}</strong>
                 <Metadata>{chat.messageCount} messages · {chat.status}</Metadata>

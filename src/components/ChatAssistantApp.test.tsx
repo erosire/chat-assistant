@@ -1,9 +1,9 @@
-// Deterministic integration tests for the chat dashboard.
+// Deterministic integration tests for the conversation-resource dashboard.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatAssistantApp } from './ChatAssistantApp';
 
-// Response helper models the exact list and POST shapes consumed by the API client.
+// Response helper models the exact collection POST, identified POST, and identified GET shapes.
 const response = (status: number, body: unknown) =>
     ({
         ok: status >= 200 && status < 300,
@@ -11,9 +11,9 @@ const response = (status: number, body: unknown) =>
         json: async () => body
     }) as Response;
 
-// The completed record returned from POST is reused by the GET read branch.
-const chat = {
-    chatId: 'chat-1',
+// The completed record returned by identified GET is reused after both POST operations.
+const conversation = {
+    conversationId: 'conversation-1',
     title: 'Hello assistant',
     model: 'test-model',
     status: 'complete' as const,
@@ -27,18 +27,28 @@ const chat = {
 };
 
 describe('ChatAssistantApp', () => {
-    // The initial list request is always deterministic; individual tests add POST behavior.
+    // The focused API has no collection GET; initial render therefore starts empty.
     beforeEach(() => {
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
-            if (init?.method === 'POST') return Promise.resolve(response(200, { chatId: chat.chatId, chat }));
-            if (url.includes('chatId=')) return Promise.resolve(response(200, { chat }));
-            return Promise.resolve(response(200, { chats: [] }));
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'POST') {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'GET') {
+                return Promise.resolve(response(200, {
+                    conversationId: conversation.conversationId,
+                    conversation
+                }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
         }));
     });
     afterEach(() => vi.unstubAllGlobals());
 
-    it('renders the empty conversation and composer', async () => {
-        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/" />);
+    it('renders the empty conversation and composer without a collection GET', async () => {
+        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/conversation" />);
 
         expect(screen.getByTestId('chat-assistant')).toBeDefined();
         expect(screen.getByTestId('empty-chat-state').textContent).toContain('Start a conversation');
@@ -47,11 +57,11 @@ describe('ChatAssistantApp', () => {
         expect(input.getAttribute('rows')).toBeNull();
         expect(window.getComputedStyle(input).resize).toBe('none');
         expect(screen.getByTestId('send-chat-button')).toBeDefined();
-        await waitFor(() => expect(screen.getByTestId('empty-chat-list').textContent).toBe('No chats yet.'));
+        expect(fetch).not.toHaveBeenCalled();
     });
 
     it('grows the message input from its content and keeps mouse resizing disabled', async () => {
-        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/" />);
+        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/conversation" />);
 
         const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
         Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 72 });
@@ -62,62 +72,74 @@ describe('ChatAssistantApp', () => {
     });
 
     it('caps the auto-growing message input at eight line heights', async () => {
-        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/" />);
+        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/conversation" />);
 
         const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
         Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 1000 });
         fireEvent.change(input, { target: { value: 'A long message' } });
 
-        // jsdom reports the component's 22.4px fallback line height and 24px vertical padding.
         await waitFor(() => expect(input.style.height).toBe('203.2px'));
         expect(window.getComputedStyle(input).overflowY).toBe('auto');
     });
 
     it('keeps an empty message input at one row instead of collapsing it', async () => {
-        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/" />);
+        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/conversation" />);
 
         const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
         Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 0 });
-
         fireEvent.change(input, { target: { value: '' } });
 
         await waitFor(() => expect(input.style.height).toBe('46.4px'));
     });
 
-    it('POSTs the message and renders the returned user and assistant turns', async () => {
-        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/" />);
+    it('creates an identifier, appends the message, and GETs the returned conversation', async () => {
+        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/conversation" />);
 
         fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
         fireEvent.click(screen.getByTestId('send-chat-button'));
 
         await waitFor(() => expect(screen.getByText('Hello from the assistant')).toBeDefined());
         expect(screen.getAllByText('Hello assistant')).toHaveLength(2);
-        expect(screen.getByTestId('chat-tab-chat-1')).toBeDefined();
+        expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined();
 
-        const post = (fetch as any).mock.calls.find((call: [string, RequestInit]) => call[1]?.method === 'POST');
-        expect(post).toBeDefined();
-        expect(JSON.parse(post[1].body as string)).toEqual({ message: 'Hello assistant' });
+        const calls = (fetch as any).mock.calls as Array<[string, RequestInit]>;
+        expect(calls).toEqual([
+            [
+                'http://test.local/v1/chat-assistant/conversation',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}'
+                }
+            ],
+            [
+                'http://test.local/v1/chat-assistant/conversation/conversation-1',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: 'Hello assistant' })
+                }
+            ],
+            [
+                'http://test.local/v1/chat-assistant/conversation/conversation-1',
+                { method: 'GET' }
+            ]
+        ]);
     });
 
-    it('loads a server-provided chat list and selects its first conversation', async () => {
-        (fetch as any).mockImplementation((url: string, init?: RequestInit) => {
-            if (url.includes('chatId=')) return Promise.resolve(response(200, { chat }));
-            return Promise.resolve(response(200, {
-                chats: [{
-                    chatId: chat.chatId,
-                    title: chat.title,
-                    model: chat.model,
-                    status: chat.status,
-                    messageCount: chat.messageCount,
-                    createdAt: chat.createdAt,
-                    updatedAt: chat.updatedAt
-                }]
-            }));
-        });
+    it('refreshes the selected conversation through identified GET', async () => {
+        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/conversation" />);
 
-        render(<ChatAssistantApp baseUrl="http://test.local/v1/chat-assistant/" />);
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
 
-        await waitFor(() => expect(screen.getByText('Hello from the assistant')).toBeDefined());
-        expect(screen.getByTestId('chat-tab-chat-1').getAttribute('aria-pressed')).toBe('true');
+        fireEvent.click(screen.getByTestId('refresh-chats-button'));
+
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(4));
+        expect((fetch as any).mock.calls[3]).toEqual([
+            'http://test.local/v1/chat-assistant/conversation/conversation-1',
+            { method: 'GET' }
+        ]);
     });
 });

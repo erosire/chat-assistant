@@ -1,12 +1,7 @@
-// Client for GET and POST /v1/chat-assistant/.
-//
-// GET without a chatId returns a compact list for the conversation sidebar.
-// GET with ?chatId=... returns the complete persisted conversation.
-// POST creates a conversation when chatId is omitted, or appends a user message
-// to an existing conversation when chatId is supplied.
-
-// The trailing slash matches the public route registered by the service module.
-export const DEFAULT_CHAT_ASSISTANT_URL = '/v1/chat-assistant/';
+// Client for the two conversation resources exposed by the service.
+// The collection accepts POST for creation, while the identified resource accepts
+// GET, POST, and DELETE; no collection GET or query-string identifier is used.
+export const DEFAULT_CHAT_ASSISTANT_URL = '/v1/chat-assistant/conversation';
 
 // The only message roles accepted by the server and rendered by the UI.
 export type ChatMessage = {
@@ -14,20 +9,16 @@ export type ChatMessage = {
     content: string;
 };
 
-// Compact list item returned by GET without a chatId.
-export type ChatSummary = {
-    chatId: string;
+// Complete conversation returned by GET and persisted by both POST operations.
+export type ConversationRecord = {
+    conversationId: string;
     title: string;
     model: string;
     status: 'complete' | 'error';
     messageCount: number;
+    messages: ChatMessage[];
     createdAt: string;
     updatedAt: string;
-};
-
-// Complete conversation returned by GET with a chatId and by a successful POST.
-export type ChatRecord = ChatSummary & {
-    messages: ChatMessage[];
     usage?: {
         prompt_tokens?: number;
         completion_tokens?: number;
@@ -36,19 +27,30 @@ export type ChatRecord = ChatSummary & {
     error?: string;
 };
 
-// POST accepts either one user message or an explicit conversation history.
-export type ChatAssistantPostRequest = {
-    chatId?: string;
+// Both POST operations accept one user message or an explicit initial/message history.
+export type ConversationPostRequest = {
     message?: string;
     messages?: ChatMessage[];
     model?: string;
     systemPrompt?: string;
 };
 
-// POST returns the identifier and the synchronously completed record.
-export type ChatAssistantPostResponse = {
-    chatId: string;
-    chat: ChatRecord;
+// Creation and append requests return only the identifier; callers then use GET
+// to read the canonical persisted conversation representation.
+export type ConversationPostResponse = {
+    conversationId: string;
+};
+
+// GET wraps the persisted record so the response remains extensible without
+// changing the identifier returned by POST.
+export type ConversationGetResponse = {
+    conversationId: string;
+    conversation: ConversationRecord;
+};
+
+// DELETE reports the removed identifier after the record has been deleted.
+export type ConversationDeleteResponse = {
+    conversationId: string;
 };
 
 // Convert a base URL into one stable form without changing an absolute or relative origin.
@@ -65,46 +67,77 @@ const errorMessage = async (response: Response, fallback: string): Promise<strin
     return `${fallback} (HTTP ${response.status})`;
 };
 
-// Fetch the compact sidebar list.
-export async function fetchChatList(baseUrl = DEFAULT_CHAT_ASSISTANT_URL): Promise<{ chats: ChatSummary[] }> {
-    const response = await fetch(`${normalizeBaseUrl(baseUrl)}/`, { method: 'GET' });
+// Fetch one complete conversation by using the required path identifier.
+export async function fetchConversation(
+    baseUrl: string,
+    conversationId: string
+): Promise<ConversationGetResponse> {
+    const response = await fetch(
+        `${normalizeBaseUrl(baseUrl)}/${encodeURIComponent(conversationId)}`,
+        { method: 'GET' }
+    );
     if (!response.ok) {
-        throw new Error(await errorMessage(response, 'Failed to list chats'));
+        throw new Error(await errorMessage(response, 'Failed to fetch conversation'));
     }
 
-    const data = (await response.json()) as { chats?: ChatSummary[] };
-    return { chats: Array.isArray(data.chats) ? data.chats : [] };
-}
-
-// Fetch one complete conversation for display or refresh.
-export async function fetchChat(
-    baseUrl: string,
-    chatId: string
-): Promise<ChatRecord> {
-    const query = new URLSearchParams({ chatId });
-    const response = await fetch(`${normalizeBaseUrl(baseUrl)}/?${query.toString()}`, { method: 'GET' });
-    if (!response.ok) {
-        throw new Error(await errorMessage(response, 'Failed to fetch chat'));
+    const data = (await response.json()) as Partial<ConversationGetResponse>;
+    if (!data.conversation || typeof data.conversationId !== 'string') {
+        throw new Error('Conversation response did not include a conversation record');
     }
-
-    const data = (await response.json()) as { chat?: ChatRecord };
-    if (!data.chat) throw new Error('Chat response did not include a chat record');
-    return data.chat;
+    return data as ConversationGetResponse;
 }
 
-// Create a chat or send a follow-up message, surfacing server validation errors verbatim.
-export async function createChat(
+// Create a conversation and return its identifier for the follow-up GET request.
+export async function createConversation(
     baseUrl: string,
-    request: ChatAssistantPostRequest
-): Promise<ChatAssistantPostResponse> {
-    const response = await fetch(`${normalizeBaseUrl(baseUrl)}/`, {
+    request: ConversationPostRequest
+): Promise<ConversationPostResponse> {
+    const response = await fetch(normalizeBaseUrl(baseUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request)
     });
     if (!response.ok) {
-        throw new Error(await errorMessage(response, 'Failed to send chat message'));
+        throw new Error(await errorMessage(response, 'Failed to create conversation'));
     }
 
-    return (await response.json()) as ChatAssistantPostResponse;
+    return (await response.json()) as ConversationPostResponse;
+}
+
+// Append a user turn to an existing conversation and return the same identifier
+// so the caller can retrieve the updated record with GET.
+export async function addToConversation(
+    baseUrl: string,
+    conversationId: string,
+    request: ConversationPostRequest
+): Promise<ConversationPostResponse> {
+    const response = await fetch(
+        `${normalizeBaseUrl(baseUrl)}/${encodeURIComponent(conversationId)}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        }
+    );
+    if (!response.ok) {
+        throw new Error(await errorMessage(response, 'Failed to add to conversation'));
+    }
+
+    return (await response.json()) as ConversationPostResponse;
+}
+
+// Permanently remove a conversation through the identified resource.
+export async function deleteConversation(
+    baseUrl: string,
+    conversationId: string
+): Promise<ConversationDeleteResponse> {
+    const response = await fetch(
+        `${normalizeBaseUrl(baseUrl)}/${encodeURIComponent(conversationId)}`,
+        { method: 'DELETE' }
+    );
+    if (!response.ok) {
+        throw new Error(await errorMessage(response, 'Failed to delete conversation'));
+    }
+
+    return (await response.json()) as ConversationDeleteResponse;
 }

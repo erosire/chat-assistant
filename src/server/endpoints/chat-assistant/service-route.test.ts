@@ -1,10 +1,16 @@
-// Route metadata test confirms service discovery receives both requested methods.
+// Route metadata tests confirm service discovery receives the two conversation resources.
 import { describe, expect, it } from 'vitest';
-import route from './service-route';
+import collectionRoute from './service-route';
+import conversationRoute from './service-route-conversation-id';
 
-describe('chat assistant service route', () => {
-    it('registers the trailing-slash route with GET and POST handlers', () => {
-        expect(route.route).toBe('/v1/chat-assistant/');
-        expect(typeof route.handler).toBe('function');
+describe('chat assistant service routes', () => {
+    it('registers the collection route for conversation creation', () => {
+        expect(collectionRoute.route).toBe('/v1/chat-assistant/conversation');
+        expect(typeof collectionRoute.handler).toBe('function');
+    });
+
+    it('registers the identified route for GET, POST, and DELETE operations', () => {
+        expect(conversationRoute.route).toBe('/v1/chat-assistant/conversation/:conversation_id');
+        expect(typeof conversationRoute.handler).toBe('function');
     });
 });

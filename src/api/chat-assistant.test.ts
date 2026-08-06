@@ -1,9 +1,13 @@
-// Deterministic tests for the browser API client.
-// The mocked responses mirror the documented GET list, GET record, and POST wire shapes.
+// Deterministic tests for the collection and identified conversation API clients.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createChat, fetchChat, fetchChatList } from './chat-assistant';
+import {
+    addToConversation,
+    createConversation,
+    deleteConversation,
+    fetchConversation
+} from './chat-assistant';
 
-// A small Response substitute keeps these tests independent from network implementations.
+// A small Response substitute keeps these tests independent from browser network implementations.
 const response = (status: number, body: unknown) =>
     ({
         ok: status >= 200 && status < 300,
@@ -11,9 +15,9 @@ const response = (status: number, body: unknown) =>
         json: async () => body
     }) as Response;
 
-// Shared exact record used by GET and POST assertions.
-const record = {
-    chatId: 'chat-1',
+// Shared exact record verifies the GET response without relying on partial assertions.
+const conversation = {
+    conversationId: 'conversation-1',
     title: 'Hello assistant',
     model: 'test-model',
     status: 'complete' as const,
@@ -26,60 +30,81 @@ const record = {
     updatedAt: '2026-08-06T00:00:01.000Z'
 };
 
-describe('chat assistant API client', () => {
-    // Each test receives a fresh fetch mock so URL and payload assertions cannot leak between cases.
+describe('conversation API client', () => {
+    // Each case receives an isolated fetch mock so URL and payload assertions cannot leak.
     beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
     afterEach(() => vi.unstubAllGlobals());
 
-    it('fetches the compact chat list from the trailing-slash collection URL', async () => {
-        const chats = [{
-            chatId: record.chatId,
-            title: record.title,
-            model: record.model,
-            status: record.status,
-            messageCount: record.messageCount,
-            createdAt: record.createdAt,
-            updatedAt: record.updatedAt
-        }];
-        (fetch as any).mockResolvedValueOnce(response(200, { chats }));
+    it('creates a conversation at the collection URL and returns its identifier', async () => {
+        (fetch as any).mockResolvedValueOnce(response(201, { conversationId: conversation.conversationId }));
 
-        const result = await fetchChatList('http://test.local/v1/chat-assistant/');
+        const result = await createConversation('http://test.local/v1/chat-assistant/conversation/', {});
 
-        expect(result).toEqual({ chats });
-        expect(fetch).toHaveBeenCalledWith('http://test.local/v1/chat-assistant/', { method: 'GET' });
+        expect(result).toEqual({ conversationId: 'conversation-1' });
+        expect(fetch).toHaveBeenCalledWith('http://test.local/v1/chat-assistant/conversation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+        });
     });
 
-    it('fetches one complete chat with an encoded chatId query parameter', async () => {
-        (fetch as any).mockResolvedValueOnce(response(200, { chat: record }));
+    it('gets a conversation through the encoded conversation_id path parameter', async () => {
+        (fetch as any).mockResolvedValueOnce(response(200, {
+            conversationId: conversation.conversationId,
+            conversation
+        }));
 
-        const result = await fetchChat('http://test.local/v1/chat-assistant/', 'chat/a b');
+        const result = await fetchConversation(
+            'http://test.local/v1/chat-assistant/conversation/',
+            'conversation/a b'
+        );
 
-        expect(result).toEqual(record);
+        expect(result).toEqual({ conversationId: conversation.conversationId, conversation });
         expect(fetch).toHaveBeenCalledWith(
-            'http://test.local/v1/chat-assistant/?chatId=chat%2Fa+b',
+            'http://test.local/v1/chat-assistant/conversation/conversation%2Fa%20b',
             { method: 'GET' }
         );
     });
 
-    it('posts a message and returns the completed conversation', async () => {
-        (fetch as any).mockResolvedValueOnce(response(200, { chatId: record.chatId, chat: record }));
+    it('posts an additional message to the identified conversation resource', async () => {
+        (fetch as any).mockResolvedValueOnce(response(200, { conversationId: 'conversation-1' }));
 
-        const result = await createChat('http://test.local/v1/chat-assistant', {
-            chatId: record.chatId,
-            message: 'Hello assistant'
-        });
+        const result = await addToConversation(
+            'http://test.local/v1/chat-assistant/conversation',
+            'conversation-1',
+            { message: 'Follow up' }
+        );
 
-        expect(result).toEqual({ chatId: record.chatId, chat: record });
-        expect(fetch).toHaveBeenCalledWith('http://test.local/v1/chat-assistant/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chatId: record.chatId, message: 'Hello assistant' })
-        });
+        expect(result).toEqual({ conversationId: 'conversation-1' });
+        expect(fetch).toHaveBeenCalledWith(
+            'http://test.local/v1/chat-assistant/conversation/conversation-1',
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: 'Follow up' })
+            }
+        );
     });
 
-    it('surfaces the server error message for a failed request', async () => {
-        (fetch as any).mockResolvedValueOnce(response(400, { error: 'message or messages is required' }));
+    it('deletes the complete identified conversation', async () => {
+        (fetch as any).mockResolvedValueOnce(response(200, { conversationId: 'conversation-1' }));
 
-        await expect(createChat('/v1/chat-assistant/', {})).rejects.toThrow('message or messages is required');
+        const result = await deleteConversation(
+            'http://test.local/v1/chat-assistant/conversation/',
+            'conversation-1'
+        );
+
+        expect(result).toEqual({ conversationId: 'conversation-1' });
+        expect(fetch).toHaveBeenCalledWith(
+            'http://test.local/v1/chat-assistant/conversation/conversation-1',
+            { method: 'DELETE' }
+        );
+    });
+
+    it('surfaces the server error message for a failed identified-resource request', async () => {
+        (fetch as any).mockResolvedValueOnce(response(404, { error: "Conversation 'missing' not found" }));
+
+        await expect(fetchConversation('/v1/chat-assistant/conversation', 'missing'))
+            .rejects.toThrow("Conversation 'missing' not found");
     });
 });
