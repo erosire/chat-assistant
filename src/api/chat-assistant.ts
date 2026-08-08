@@ -1,6 +1,8 @@
 // Client for the two conversation resources exposed by the service.
 // The collection accepts POST for creation, while the identified resource accepts
 // GET, POST, and DELETE; no collection GET or query-string identifier is used.
+// This API is pure chat storage: model traffic goes through ./provider.ts against
+// the runtime provider endpoints, and only completed turns are persisted here.
 export const DEFAULT_CHAT_ASSISTANT_URL = '/v1/chat-assistant/conversation';
 
 // The only message roles accepted by the server and rendered by the UI.
@@ -28,11 +30,17 @@ export type ConversationRecord = {
 };
 
 // Both POST operations accept one user message or an explicit initial/message history.
+// `usage` mirrors the token counters reported by the provider for the stored turn.
 export type ConversationPostRequest = {
     message?: string;
     messages?: ChatMessage[];
     model?: string;
     systemPrompt?: string;
+    usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+    };
 };
 
 // Creation and append requests return only the identifier; callers then use GET

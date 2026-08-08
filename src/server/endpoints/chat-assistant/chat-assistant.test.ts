@@ -1,12 +1,13 @@
-// Deterministic direct-handler tests for the conversation resource contract.
+// Deterministic direct-handler tests for the conversation storage contract.
+// The service is pure storage: no assistant/provider seam exists here anymore;
+// completed user+assistant turns arrive in the request body and are persisted.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChatMessage, ConversationRecord } from '../../../api';
+import type { ConversationRecord } from '../../../api';
 import {
     conversationCreate,
     conversationDelete,
     conversationGet,
-    conversationPost,
-    requestAssistantReply
+    conversationPost
 } from './chat-assistant';
 import type { ChatStore } from './chat-store';
 
@@ -36,11 +37,7 @@ const memoryStore = (initial: ConversationRecord[] = []): ChatStore => {
 
 // Stable request context and dependency injection make each response exactly assertable.
 const context = { req: { method: 'GET' } } as any;
-const variables = (
-    chatStore: ChatStore,
-    assistantReply = async () => ({ content: 'Exact assistant reply' }),
-    conversationId?: () => string
-) => ({ chatStore, assistantReply, conversationId });
+const variables = (chatStore: ChatStore, conversationId?: () => string) => ({ chatStore, conversationId });
 
 // A complete stored record is reused by GET, append, and DELETE tests.
 const existingConversation: ConversationRecord = {
@@ -71,7 +68,7 @@ describe('conversation service handlers', () => {
         const result = await conversationCreate(
             context,
             { path: {}, query: {}, body: {} },
-            variables(store, undefined, () => 'conversation-created')
+            variables(store, () => 'conversation-created')
         );
 
         expect(result).toEqual({ status: 201, response: { conversationId: 'conversation-created' } });
@@ -100,24 +97,25 @@ describe('conversation service handlers', () => {
         });
     });
 
-    it('adds a message and persists the assistant turn on the identified resource', async () => {
+    it('appends the completed user+assistant pair, model, and usage to the record', async () => {
         vi.setSystemTime(new Date('2026-08-06T00:00:10.000Z'));
         const store = memoryStore([existingConversation]);
-        const received: ChatMessage[][] = [];
-        const assistantReply = async (messages: ChatMessage[], model: string) => {
-            received.push(messages);
-            expect(model).toBe('test-model');
-            return { content: 'Exact assistant reply', usage: { total_tokens: 12 } };
-        };
 
         const result = await conversationPost(
             context,
             {
                 path: { conversation_id: 'conversation-1' },
                 query: {},
-                body: { message: 'Follow up' }
+                body: {
+                    messages: [
+                        { role: 'user', content: 'Follow up' },
+                        { role: 'assistant', content: 'Exact assistant reply' }
+                    ],
+                    model: 'test-model',
+                    usage: { total_tokens: 12 }
+                }
             },
-            variables(store, assistantReply)
+            variables(store)
         );
 
         expect(result).toEqual({
@@ -138,11 +136,84 @@ describe('conversation service handlers', () => {
                 }
             }
         });
-        expect(received).toEqual([[
-            { role: 'user', content: 'First question' },
-            { role: 'assistant', content: 'First answer' },
-            { role: 'user', content: 'Follow up' }
-        ]]);
+    });
+
+    it('records the new model when the turn was produced by a different model', async () => {
+        vi.setSystemTime(new Date('2026-08-06T00:00:10.000Z'));
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: {
+                    messages: [
+                        { role: 'user', content: 'Follow up' },
+                        { role: 'assistant', content: 'Other model reply' }
+                    ],
+                    model: 'qwen/makora-pro'
+                }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    model: 'qwen/makora-pro',
+                    messageCount: 4,
+                    messages: [
+                        { role: 'user', content: 'First question' },
+                        { role: 'assistant', content: 'First answer' },
+                        { role: 'user', content: 'Follow up' },
+                        { role: 'assistant', content: 'Other model reply' }
+                    ],
+                    updatedAt: '2026-08-06T00:00:10.000Z'
+                }
+            }
+        });
+    });
+
+    it('derives the title from the first stored user turn on an empty conversation', async () => {
+        vi.setSystemTime(new Date('2026-08-06T00:00:00.000Z'));
+        const store = memoryStore();
+        await conversationCreate(
+            context,
+            { path: {}, query: {}, body: {} },
+            variables(store, () => 'conversation-created')
+        );
+
+        vi.setSystemTime(new Date('2026-08-06T00:00:05.000Z'));
+        const result = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-created' },
+                query: {},
+                body: { message: 'What is the meaning of life?' }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-created',
+                conversation: {
+                    conversationId: 'conversation-created',
+                    title: 'What is the meaning of life?',
+                    model: 'openai/gpt-5.6-sol',
+                    status: 'complete',
+                    messageCount: 1,
+                    messages: [{ role: 'user', content: 'What is the meaning of life?' }],
+                    createdAt: '2026-08-06T00:00:00.000Z',
+                    updatedAt: '2026-08-06T00:00:05.000Z'
+                }
+            }
+        });
     });
 
     it('deletes an identified conversation completely', async () => {
@@ -176,8 +247,8 @@ describe('conversation service handlers', () => {
         });
     });
 
-    it('rejects invalid additions before contacting the assistant', async () => {
-        const assistantReply = vi.fn(async () => ({ content: 'should not run' }));
+    it('rejects invalid additions before persisting anything', async () => {
+        const store = memoryStore([existingConversation]);
 
         const result = await conversationPost(
             context,
@@ -186,38 +257,27 @@ describe('conversation service handlers', () => {
                 query: {},
                 body: { messages: [{ role: 'user', content: '' }] }
             },
-            variables(memoryStore([existingConversation]), assistantReply)
+            variables(store)
         );
 
         expect(result).toEqual({ status: 400, response: { error: 'messages must be an array of valid chat messages' } });
-        expect(assistantReply).not.toHaveBeenCalled();
+        expect(store.get('conversation-1')).toEqual(existingConversation);
     });
 
-    it('requests text from the OpenAI-compatible assistant upstream', async () => {
-        vi.stubGlobal('fetch', vi.fn(async () => ({
-            ok: true,
-            status: 200,
-            json: async () => ({
-                choices: [{ message: { content: 'Upstream answer' } }],
-                usage: { total_tokens: 9 }
-            })
-        })));
+    it('rejects non-numeric usage counters', async () => {
+        const store = memoryStore([existingConversation]);
 
-        const result = await requestAssistantReply(
-            [{ role: 'user', content: 'Upstream question' }],
-            'test-model',
-            'http://provider.local/v1/'
+        const result = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: { message: 'Follow up', usage: { total_tokens: 'many' as unknown as number } }
+            },
+            variables(store)
         );
 
-        expect(result).toEqual({ content: 'Upstream answer', usage: { total_tokens: 9 } });
-        expect(fetch).toHaveBeenCalledWith('http://provider.local/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: 'test-model',
-                stream: false,
-                messages: [{ role: 'user', content: 'Upstream question' }]
-            })
-        });
+        expect(result).toEqual({ status: 400, response: { error: 'usage must contain only numeric token counters' } });
+        expect(store.get('conversation-1')).toEqual(existingConversation);
     });
 });

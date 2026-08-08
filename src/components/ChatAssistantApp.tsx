@@ -1,15 +1,25 @@
 // Chat Assistant dashboard.
 //
-// This UI uses only the conversation collection POST and identified resource
-// GET/POST/DELETE contract; the server no longer exposes a collection listing.
+// Architecture: the chat-assistant API is pure conversation storage. Model traffic
+// goes directly from this UI to the runtime provider endpoints
+// (runtime/endpoint/provider/private): GET {provider}/models supplies the model
+// dropdown and POST {provider}/chat/completions produces assistant replies without
+// any API key in the browser (the provider attaches credentials server-side). After
+// the model's turn completes, the finished user+assistant pair is persisted through
+// the identified conversation POST. The complete history is sent to whichever model
+// is selected, and the conversation's last-used model stays selected until the user
+// picks another one from the dropdown.
 import React, { useCallback, useEffect } from 'react';
 import { arrayEach, isString } from '@presource/core';
 import { styledComponent, useStateHook } from '@presource/react';
 import {
     addToConversation,
     createConversation,
+    createProviderChatCompletion,
     fetchConversation,
+    fetchProviderModels,
     DEFAULT_CHAT_ASSISTANT_URL,
+    DEFAULT_PROVIDER_URL,
     type ChatMessage,
     type ConversationRecord
 } from '../api';
@@ -59,6 +69,26 @@ const HeaderTitle = styledComponent('h1', {
     fontWeight: 700,
     letterSpacing: 0.2
 });
+
+// Header controls (model picker + actions) stay grouped on the header's right side.
+const HeaderActions = styledComponent('div', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8
+});
+
+// Model dropdown adopts the dark surface so it reads as part of the header controls.
+const ModelSelect = styledComponent('select', {
+    minHeight: 34,
+    padding: '0 10px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 6,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    font: 'inherit',
+    fontSize: 13,
+    cursor: 'pointer'
+}) as unknown as React.FC<React.SelectHTMLAttributes<HTMLSelectElement>>;
 
 // Layout switches from two columns to one column on narrow screens.
 const Workspace = styledComponent('div', {
@@ -260,9 +290,11 @@ const ErrorBanner = styledComponent('div', {
     fontSize: 13
 });
 
-// The component accepts a base URL override so tests and embedded deployments can point at another service.
+// baseUrl points at the storage API; providerUrl points at the runtime provider
+// (models catalog + chat completions). Tests and embedded deployments can override both.
 export type ChatAssistantAppProps = {
     baseUrl?: string;
+    providerUrl?: string;
 };
 
 // Sidebar entries are derived locally from records because the focused API has no
@@ -300,14 +332,46 @@ const resizeMessageInput = (element: HTMLTextAreaElement): void => {
 };
 
 // Main dashboard state and event handlers.
-export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ baseUrl = DEFAULT_CHAT_ASSISTANT_URL }) => {
+export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
+    baseUrl = DEFAULT_CHAT_ASSISTANT_URL,
+    providerUrl = DEFAULT_PROVIDER_URL
+}) => {
     // Accessor state follows @presource/react's state-hook contract: read with (), write with (value).
     const chats = useStateHook<ConversationSummary[]>([]);
     const selected = useStateHook<ConversationRecord | null>(null);
+    // Available provider model ids, loaded once from GET {provider}/models.
+    const models = useStateHook<string[]>([]);
+    // Currently selected model. Persists across new chats (the "last model" rule);
+    // loading a conversation overrides it with that conversation's recorded model.
+    const model = useStateHook('');
     const message = useStateHook('');
     const loading = useStateHook(false);
     const refreshing = useStateHook(false);
     const error = useStateHook('');
+
+    // Load the provider model catalog once on mount; the first advertised model is
+    // the default until a conversation or the dropdown chooses another one. The
+    // provider needs no API key from the browser, so no credentials are handled here.
+    useEffect(() => {
+        let cancelled = false;
+        void (async () => {
+            try {
+                const catalog = await fetchProviderModels(providerUrl);
+                if (cancelled) return;
+                const ids = catalog.map((entry) => entry.id);
+                models(ids);
+                if (!model() && ids.length > 0) model(ids[0]);
+            } catch (reason) {
+                if (!cancelled) error(reason instanceof Error ? reason.message : String(reason));
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+        // Mount-only effect: the model catalog is static for the session while the
+        // accessor functions (models/model/error) are stable state-hook handles.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [providerUrl]);
 
     // Keep the editor synchronized with programmatic clears and restored values;
     // the input handler performs the same calculation immediately after typing.
@@ -322,48 +386,77 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
         if (!conversationId) return;
         refreshing(true);
         try {
-            selected((await fetchConversation(baseUrl, conversationId)).conversation);
+            const record = (await fetchConversation(baseUrl, conversationId)).conversation;
+            selected(record);
+            // The conversation's recorded model becomes the selected model again.
+            model(record.model);
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
         } finally {
             refreshing(false);
         }
-    }, [baseUrl, error, refreshing, selected]);
+    }, [baseUrl, error, model, refreshing, selected]);
 
-    // Select a conversation and fetch its full message history.
+    // Select a conversation and fetch its full message history; its recorded model
+    // is what the next provider request will use unless the dropdown changes it.
     const selectChat = useCallback(async (conversationId: string) => {
         loading(true);
         try {
-            selected((await fetchConversation(baseUrl, conversationId)).conversation);
+            const record = (await fetchConversation(baseUrl, conversationId)).conversation;
+            selected(record);
+            model(record.model);
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
         } finally {
             loading(false);
         }
-    }, [baseUrl, error, loading, selected]);
+    }, [baseUrl, error, loading, model, selected]);
 
-    // Reset the surface without creating a server record until the first message is sent.
+    // Reset the surface without creating a server record until the first provider
+    // turn completes. The model selection intentionally survives a new chat so the
+    // last-used model stays preselected.
     const startNewChat = useCallback(() => {
         selected(null);
         message('');
         error('');
     }, [error, message, selected]);
 
-    // Create an identifier for a new conversation, append the user turn through the
-    // identified POST, then GET the canonical completed record for rendering.
+    // Send flow: (1) ask the provider for the assistant turn using the ENTIRE
+    // conversation history plus the new user message, (2) only after the model's
+    // turn completes, persist the finished pair through the storage API
+    // (creating the conversation first when needed), (3) GET the canonical record.
+    // A provider failure saves nothing and keeps the composer text for retry.
     const submit = useCallback(async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         const text = message().trim();
-        if (!text || loading()) return;
+        const chosenModel = model();
+        if (!text || !chosenModel || loading()) return;
 
         loading(true);
         error('');
         try {
+            // Full history goes to whichever model is selected, even if earlier
+            // turns were produced by a different model.
+            const history: ChatMessage[] = [
+                ...(selected()?.messages ?? []),
+                { role: 'user', content: text }
+            ];
+            const reply = await createProviderChatCompletion(providerUrl, chosenModel, history);
+
+            // The model's turn completed: persist the pending user turn together
+            // with the assistant reply so storage always holds completed pairs.
             const conversationId = selected()?.conversationId ??
-                (await createConversation(baseUrl, {})).conversationId;
-            await addToConversation(baseUrl, conversationId, { message: text });
+                (await createConversation(baseUrl, { model: chosenModel })).conversationId;
+            await addToConversation(baseUrl, conversationId, {
+                messages: [
+                    { role: 'user', content: text },
+                    { role: 'assistant', content: reply.content }
+                ],
+                model: chosenModel,
+                ...(reply.usage ? { usage: reply.usage } : {})
+            });
             const result = (await fetchConversation(baseUrl, conversationId)).conversation;
             selected(result);
             message('');
@@ -386,7 +479,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
         } finally {
             loading(false);
         }
-    }, [baseUrl, chats, error, loading, message, selected]);
+    }, [baseUrl, providerUrl, chats, error, loading, message, model, selected]);
 
     // Build sidebar nodes from the latest compact summaries.
     const chatNodes: React.ReactNode[] = [];
@@ -405,6 +498,13 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
         );
     });
 
+    // Build model dropdown options from the provider catalog. If the recorded model
+    // of the selected conversation is missing from the catalog it stays selectable
+    // so the conversation remains usable with its historical model.
+    const catalog = models();
+    const chosenModel = model();
+    const modelOptions = chosenModel && !catalog.includes(chosenModel) ? [chosenModel, ...catalog] : catalog;
+
     // Render only the selected record; a new chat remains an empty composer until submitted.
     const currentMessages = selected()?.messages ?? [];
 
@@ -412,15 +512,25 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
         <Page data-testid="chat-assistant">
             <Header>
                 <HeaderTitle>Chat Assistant</HeaderTitle>
-                <div>
+                <HeaderActions>
+                    <ModelSelect
+                        value={chosenModel}
+                        onChange={(event) => model(event.target.value)}
+                        aria-label="Select model"
+                        data-testid="model-select"
+                        disabled={loading() || catalog.length === 0}
+                    >
+                        {catalog.length === 0
+                            ? <option value="">No models available</option>
+                            : modelOptions.map((id) => <option key={id} value={id}>{id}</option>)}
+                    </ModelSelect>
                     <SecondaryButton type="button" onClick={startNewChat} data-testid="new-chat-button">
                         New chat
                     </SecondaryButton>
-                    {' '}
                     <SecondaryButton type="button" onClick={() => void refresh()} disabled={refreshing()} data-testid="refresh-chats-button">
                         {refreshing() ? 'Refreshing...' : 'Refresh'}
                     </SecondaryButton>
-                </div>
+                </HeaderActions>
             </Header>
             <Workspace>
                 <Sidebar data-testid="chat-sidebar">
@@ -457,7 +567,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({ b
                             data-testid="chat-input"
                             disabled={loading()}
                         />
-                        <PrimaryButton type="submit" disabled={loading() || !isString(message()) || !message().trim()} data-testid="send-chat-button">
+                        <PrimaryButton
+                            type="submit"
+                            disabled={loading() || !chosenModel || !isString(message()) || !message().trim()}
+                            data-testid="send-chat-button"
+                        >
                             {loading() ? 'Sending...' : 'Send'}
                         </PrimaryButton>
                     </Composer>

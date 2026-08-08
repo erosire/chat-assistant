@@ -1,30 +1,25 @@
 // Conversation handlers for the collection and identified conversation resource.
-// The collection POST creates an empty persisted conversation, while the identified
-// resource owns reading, adding messages, and permanent deletion.
+// This service is PURE storage: model calls are performed by the UI against the
+// runtime provider endpoints (runtime/endpoint/provider/private), and the results
+// arrive here as ordinary chat messages to persist. The collection POST creates an
+// empty persisted conversation, while the identified resource owns reading, adding
+// messages, and permanent deletion.
 import { randomUUID } from 'node:crypto';
-import { arrayEnsures, isObject, isString } from '@presource/core';
+import { arrayEnsures, isNumber, isObject, isString } from '@presource/core';
 import { asHandlerMethod } from '@underload/service';
 import type { ConversationPostRequest, ConversationRecord, ChatMessage } from '../../../api';
 import { createChatStore, type ChatStore } from './chat-store';
 
 // The default model is stored on each conversation so later turns do not depend on
-// a process-wide mutable setting.
+// a process-wide mutable setting. It is only a fallback: the UI always supplies the
+// concrete provider model it used for the turn.
 export const DEFAULT_CHAT_MODEL = 'openai/gpt-5.6-sol';
-export const DEFAULT_CHAT_UPSTREAM_URL = 'http://localhost:5000/providers/cloud/v1';
-
-// The provider response is deliberately small because only text and usage are persisted.
-export type AssistantReply = {
-    content: string;
-    usage?: ConversationRecord['usage'];
-};
 
 // Handler variables provide deterministic test seams and permit service-level configuration.
 type ChatHandlerVariables = {
     root?: string;
     chatStore?: ChatStore;
     conversationId?: () => string;
-    assistantReply?: (messages: ChatMessage[], model: string) => Promise<AssistantReply>;
-    assistantUpstreamUrl?: string;
 };
 
 // Only the three documented roles are forwarded to the assistant provider.
@@ -61,39 +56,21 @@ const resolveStore = (variables: ChatHandlerVariables): ChatStore => {
     return createChatStore(variables.root ?? process.cwd());
 };
 
-// Call the OpenAI-compatible upstream endpoint without exposing provider credentials
-// to the browser. The local cloud provider needs no key; external endpoints can use
-// CHAT_ASSISTANT_API_KEY when configured.
-export const requestAssistantReply = async (
-    messages: ChatMessage[],
-    model: string,
-    upstreamUrl = process.env.CHAT_ASSISTANT_UPSTREAM_URL ?? DEFAULT_CHAT_UPSTREAM_URL
-): Promise<AssistantReply> => {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const apiKey = process.env.CHAT_ASSISTANT_API_KEY;
-    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-
-    const response = await fetch(`${upstreamUrl.replace(/\/+$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ model, stream: false, messages })
-    });
-
-    if (!response.ok) {
-        const detail = await response.text();
-        throw new Error(detail || `Assistant upstream failed with HTTP ${response.status}`);
+// Usage is optional metadata reported by the provider through the UI; only the
+// three numeric token counters are persisted so a malformed field cannot corrupt
+// the stored record shape.
+const parseUsage = (value: unknown): ConversationRecord['usage'] | null | undefined => {
+    if (value === undefined) return undefined;
+    if (!isObject(value)) return null;
+    const usage: NonNullable<ConversationRecord['usage']> = {};
+    for (const key of ['prompt_tokens', 'completion_tokens', 'total_tokens'] as const) {
+        const candidate = value[key];
+        if (candidate !== undefined) {
+            if (!isNumber(candidate)) return null;
+            usage[key] = candidate;
+        }
     }
-
-    const data = (await response.json()) as {
-        choices?: Array<{ message?: { content?: unknown } }>;
-        usage?: ConversationRecord['usage'];
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!isString(content) || content.length === 0) {
-        throw new Error('Assistant upstream returned no text content');
-    }
-
-    return { content, ...(data.usage ? { usage: data.usage } : {}) };
+    return usage;
 };
 
 // Read and validate the request body shared by identified POST requests.
@@ -126,6 +103,9 @@ const validateOptions = (body: ConversationPostRequest): string | undefined => {
     }
     if (body.systemPrompt !== undefined && (!isString(body.systemPrompt) || body.systemPrompt.trim().length === 0)) {
         return 'systemPrompt must be a non-empty string';
+    }
+    if (parseUsage(body.usage) === null) {
+        return 'usage must contain only numeric token counters';
     }
     return undefined;
 };
@@ -175,8 +155,10 @@ export const conversationGet = asHandlerMethod(async (_, parameters, rawVariable
     return { status: 200, response: { conversationId, conversation } };
 });
 
-// POST /v1/chat-assistant/conversation/:conversation_id appends the supplied user
-// turn, obtains the assistant response, and persists the complete updated record.
+// POST /v1/chat-assistant/conversation/:conversation_id appends the supplied turns
+// (the UI sends the completed user+assistant pair after the provider responds) and
+// persists the updated record. No provider traffic happens here: the body already
+// contains the model's reply, so this handler never returns 502.
 export const conversationPost = asHandlerMethod(async (_, parameters, rawVariables) => {
     const variables = rawVariables as ChatHandlerVariables;
     const conversationId = parameters.path.conversation_id;
@@ -196,47 +178,27 @@ export const conversationPost = asHandlerMethod(async (_, parameters, rawVariabl
     const messageResult = buildIncomingMessages(body);
     if (messageResult.error) return { status: 400, response: { error: messageResult.error } };
 
+    // The recorded model follows the turn the UI just completed; the UI re-selects
+    // that model on reload unless the user picks another one.
     const model = body.model?.trim() || existing.model;
+    const usage = parseUsage(body.usage) ?? undefined;
     const messages = [
         ...existing.messages,
         ...(body.systemPrompt ? [{ role: 'system' as const, content: body.systemPrompt.trim() }] : []),
         ...messageResult.messages
     ];
-    const pending: ConversationRecord = {
+    const conversation = store.upsert({
         ...existing,
+        title: existing.messages.length === 0 ? titleFromMessages(messageResult.messages) : existing.title,
         model,
         status: 'complete',
         messages,
         messageCount: messages.length,
         updatedAt: new Date().toISOString(),
-        error: undefined
-    };
-
-    // Persist the user request before contacting the provider so a provider failure
-    // leaves an inspectable conversation rather than losing the submitted turn.
-    store.upsert(pending);
-
-    try {
-        const reply = await (variables.assistantReply ?? ((requestMessages, requestModel) =>
-            requestAssistantReply(requestMessages, requestModel, variables.assistantUpstreamUrl)))(messages, model);
-        const conversation = store.upsert({
-            ...pending,
-            messages: [...messages, { role: 'assistant', content: reply.content }],
-            messageCount: messages.length + 1,
-            updatedAt: new Date().toISOString(),
-            ...(reply.usage ? { usage: reply.usage } : {})
-        });
-        return { status: 200, response: { conversationId, conversation } };
-    } catch (error) {
-        const failed: ConversationRecord = {
-            ...pending,
-            status: 'error',
-            updatedAt: new Date().toISOString(),
-            error: error instanceof Error ? error.message : String(error)
-        };
-        const conversation = store.upsert(failed);
-        return { status: 502, response: { conversationId, conversation, error: failed.error } };
-    }
+        error: undefined,
+        ...(usage ? { usage } : {})
+    });
+    return { status: 200, response: { conversationId, conversation } };
 });
 
 // DELETE /v1/chat-assistant/conversation/:conversation_id permanently removes the

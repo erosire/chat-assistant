@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Chat Assistant API
-  description: AI chat assistant conversation API with create, read, append, and delete operations.
+  description: AI chat assistant conversation storage API with create, read, append, and delete operations. Model calls are performed by clients against the runtime provider endpoints; this API only persists completed turns.
   version: 1.0.0
 servers:
   - url: http://127.0.0.1:5000
@@ -51,7 +51,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: addToConversation
-      summary: Add a message to a conversation
+      summary: Append completed turns to a conversation
+      description: Persists the supplied turns (typically the user message plus the assistant reply returned by the runtime provider) and records the model used for them.
       requestBody:
         required: true
         content:
@@ -60,11 +61,11 @@ paths:
               $ref: '#/components/schemas/ConversationPostRequest'
       responses:
         '200':
-          description: Updated conversation identifier.
+          description: Updated conversation record.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ConversationIdResponse'
+                $ref: '#/components/schemas/ConversationResponse'
         '400':
           description: Invalid request body.
           content:
@@ -73,8 +74,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation identifier was not found.
-        '502':
-          description: Assistant provider failed; the conversation retains the submitted messages and error.
     delete:
       operationId: deleteConversation
       summary: Delete a conversation
@@ -102,7 +101,15 @@ components:
           type: string
         systemPrompt:
           type: string
-      description: Supply message for a normal turn or messages for an explicit initial history.
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
+      description: Supply message for a normal turn or messages for an explicit history. model records which provider model produced the appended turns; usage carries its token counters.
+    TokenUsage:
+      type: object
+      properties:
+        prompt_tokens: { type: integer }
+        completion_tokens: { type: integer }
+        total_tokens: { type: integer }
     ChatMessage:
       type: object
       required: [role, content]
@@ -127,6 +134,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ChatMessage'
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
         error: { type: string }
     ConversationIdResponse:
       type: object
