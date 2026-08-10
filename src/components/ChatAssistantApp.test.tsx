@@ -53,11 +53,17 @@
 // button is a circular ">" arrow EMBEDDED in the input at its bottom-right —
 // rendered ONLY while the composer has focus (focus-within, including the
 // arrow and the model select). The input's right padding keeps text clear of
-// the arrow. While the message list overflows, a circular EDGE-JUMP control
-// floats at the panel's far left (over the ListViewport, not the scroller):
-// a DOWN chevron (the requested "V") fast-animates to the list's bottom (fixed 200ms
-// ease-out), flips to an UP chevron (the requested "^") AT the bottom and
-// flies back to the top; it vanishes when the content fits its scrollport.
+// the arrow. While the message list overflows, a bare-chevron EDGE-JUMP
+// control (no enclosing circle) floats at the panel's far left (over the
+// ListViewport, not the scroller), aligned with the list's own 24px content
+// padding: a DOWN chevron (the requested "V") fast-animates to the list's
+// bottom (fixed 200ms ease-out), flips to an UP chevron (the requested "^")
+// AT the bottom and flies back to the top; it vanishes when the content
+// fits its scrollport. The bottom-follow DETACHES while the user reads away
+// from the bottom mid-stream: incoming tokens (and any in-flight jump)
+// never re-pin the list — a jumped position STICKS at the top — while
+// typing, sends, and fresh record loads still pin unconditionally, and the
+// token follow resumes once the user returns to the bottom.
 // All control icons render as stroke SVGs from src/icons — the old unicode
 // text glyphs are retired. The rename dialog's actions
 // stack full-width on mobile and sit in a right-aligned row on desktop.
@@ -2446,14 +2452,17 @@ describe('ChatAssistantApp', () => {
         fireEvent.scroll(list);
 
         // The control floats at the FAR LEFT of the message panel (the
-        // surface whose turns carry the clone/exit chrome): absolute over the
-        // ListViewport, 12px in from the left edge, 16px above the list's
-        // bottom edge.
+        // surface whose turns carry the clone/exit chrome), aligned with the
+        // list's own 24px content padding: absolute over the ListViewport,
+        // left:24 / bottom:24 — and it paints NO chrome of its own (no
+        // circle): no border, no filled disc, just the glyph.
         const jump = await screen.findByTestId('scroll-jump-button');
         const jumpStyle = window.getComputedStyle(jump);
         expect(jumpStyle.position).toBe('absolute');
-        expect(jumpStyle.left).toBe('12px');
-        expect(jumpStyle.bottom).toBe('16px');
+        expect(jumpStyle.left).toBe('24px');
+        expect(jumpStyle.bottom).toBe('24px');
+        expect(jumpStyle.borderStyle).toBe('none');
+        expect(jumpStyle.backgroundColor).toBe('rgba(0, 0, 0, 0)');
 
         // At the top the control is the DOWN chevron (the requested "V")
         // targeting the bottom. Clicking runs the fixed-200ms ease-out
@@ -2482,6 +2491,78 @@ describe('ChatAssistantApp', () => {
 
         // Pure view state: the six send-flow calls only — jumping never
         // touches the network.
+        expect((fetch as any).mock.calls).toHaveLength(6);
+    });
+
+    it('keeps an edge jump at the very top while tokens keep streaming (token follow releases only off-bottom)', async () => {
+        // Controlled-stream variant of the default routes (identical to the
+        // auto-scroll test's) so the send record flow still makes its six
+        // calls end-to-end, while each chunk's arrival is driven by hand.
+        const stream = controlledStream();
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
+            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(200, { conversations: [] }));
+            }
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'POST') return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+            if (init?.method === 'GET') {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+
+        const list = screen.getByTestId('message-list');
+        // Long-chat geometry BEFORE typing: 2000px of content behind a 400px
+        // scrollport. The composer-typing pin is unconditional (documented),
+        // so typing lands the list exactly at the bottom edge.
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 2000 });
+        Object.defineProperty(list, 'clientHeight', { configurable: true, value: 400 });
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
+        await waitFor(() => expect(list.scrollTop).toBe(2000));
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect(screen.getByTestId('pending-user-message')).toBeDefined());
+
+        // The first chunk still follows: the list WAS at its bottom edge
+        // when it arrived (token ticks pin only at the bottom edge).
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 2400 });
+        await act(async () => stream.push(completionFrames[0]));
+        await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello'));
+        expect(list.scrollTop).toBe(2400);
+
+        // THE GLITCH: clicking the UP chevron must fly to the very top AND
+        // STAY there — a later chunk must NOT drag the list back down.
+        const jump = await screen.findByTestId('scroll-jump-button');
+        expect(jump.getAttribute('aria-label')).toBe('Scroll to top');
+        fireEvent.click(jump);
+        await waitFor(() => expect(list.scrollTop).toBe(0));
+        await waitFor(() => expect(jump.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull());
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 3000 });
+        await act(async () => stream.push(completionFrames[1]));
+        await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello from the assistant'));
+        // Off-bottom now: the token pin is released — the top position holds
+        // at EXACTLY 0 and the control keeps targeting the bottom.
+        expect(list.scrollTop).toBe(0);
+        expect(jump.getAttribute('aria-label')).toBe('Scroll to bottom');
+
+        // A fresh-record pin (the completed turn's canonical GET) is NOT a
+        // token tick: it still force-pins the list to its end (3000 under
+        // the current stub), and the token follow would resume from there.
+        await act(async () => {
+            stream.push(completionFrames[2]);
+            stream.push(completionFrames[3]);
+            stream.close();
+        });
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
+        expect(list.scrollTop).toBe(3000);
+
+        // Pure view state: the same six send-flow calls as any controlled
+        // send — jumping and follow-detaching never touch the network.
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 

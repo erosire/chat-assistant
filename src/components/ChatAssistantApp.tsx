@@ -122,14 +122,22 @@
 // pending bubble, every streamed token of the reply, and every fresh record
 // (chat selection, completed turn, edited history) re-pin the list's scroll
 // position to its end — the list is the page's only scrolling surface (see
-// the viewport-locked Page). A circular EDGE-JUMP control floats at the FAR
-// LEFT of that message panel (the surface whose turns carry the clone/copy
-// and exit/delete chrome): while the content overflows, a DOWN chevron (the
-// requested "V") fast-animates the list to its very bottom, and AT the
-// bottom the same button is the UP chevron (the requested "^") flying back
-// to the very top — fixed 200ms ease-out, distance-independent (see
-// jumpListEdge). The button rides the ListViewport overlay, NOT the list
-// itself (an absolutely positioned child of the scroller would scroll away).
+// the viewport-locked Page). ONE carve-out keeps a chosen reading position
+// stable: a commit where ONLY the stream chunk changed re-pins ONLY while
+// the list sits at its bottom edge, and no pin lands while an edge-jump
+// flight owns scrollTop — scrolling/jumping away mid-stream therefore
+// STICKS (the old unconditional per-token pin yanked the list back down,
+// which is why the UP chevron could never reach/stay at the top); the
+// follow silently resumes once the user returns to the bottom. A bare
+// EDGE-JUMP chevron (no enclosing circle) floats at the FAR LEFT of that
+// message panel, aligned with the list's own 24px content padding (the
+// surface whose turns carry the clone/copy and exit/delete chrome): while
+// the content overflows, a DOWN chevron (the requested "V") fast-animates
+// the list to its very bottom, and AT the bottom the same button is the UP
+// chevron (the requested "^") flying back to the very top — fixed 200ms
+// ease-out, distance-independent (see jumpListEdge). The button rides the
+// ListViewport overlay, NOT the list itself (an absolutely positioned child
+// of the scroller would scroll away).
 // ALL control icons in this file come from the shared stroke-based SVG icon
 // family in src/icons (menu, close, edit, copy, chevrons) — unicode text
 // glyphs were retired because their rendering depended on the system font.
@@ -393,22 +401,29 @@ const ListViewport = styledComponent('div', {
     position: 'relative'
 });
 
-// The edge-jump control: one circular icon button pinned to the FAR LEFT of
-// the message panel — the surface whose turns carry the clone/copy and
-// exit/delete chrome — 12px in from the left edge and 16px above the
-// composer's top border (the list's bottom padding keeps the lowest strip
-// out of its way). While the list overflows it shows the DOWN chevron (the
-// requested "V" shape, ChevronDownIcon); at the bottom it flips to the UP
-// chevron (the requested "^", ChevronUpIcon) — both from the shared
-// stroke-based family in src/icons, so the flip state is pixel-consistent.
-// Clicking drives jumpListEdge's fixed-200ms ease-out flight to the far
-// edge. zIndex 6 lifts it above the transparent bottom-sticky copy/edit
-// strips (position:sticky stacking contexts with auto z-index), whose icons
-// sit on the strip's RIGHT end, so no overlap.
+// The edge-jump control: ONE BARE chevron — no enclosing circle, border, or
+// filled disc; the button paints no chrome of its own, only the glyph — at
+// the FAR LEFT of the message panel (the surface whose turns carry the
+// clone/copy and exit/delete chrome). BOTH offsets mirror the message
+// list's own content padding (MessageList pads 24px on every side, see
+// above): left:24 lines the glyph up with the content's left padding edge
+// and bottom:24 seats it on the bottom padding line above the composer's
+// top border, so it registers as part of the content block's margin rhythm
+// instead of floating at an arbitrary inset. While the list overflows it
+// shows the DOWN chevron (the requested "V" shape, ChevronDownIcon); at the
+// bottom it flips to the UP chevron (the requested "^", ChevronUpIcon) —
+// both from the shared stroke-based family in src/icons (stroke:
+// currentColor → the glyph inherits `color`, no surface needed), so the
+// flip state is pixel-consistent. Clicking drives jumpListEdge's
+// fixed-200ms ease-out flight to the far edge. The 32x32 transparent box
+// keeps the glyph easily clickable without drawing a disc; zIndex 6 lifts
+// it above the transparent bottom-sticky copy/edit strips
+// (position:sticky stacking contexts with auto z-index), whose icons sit
+// on each strip's RIGHT end, so no overlap.
 const ScrollJumpButton = styledComponent('button', {
     position: 'absolute',
-    left: 12,
-    bottom: 16,
+    left: 24,
+    bottom: 24,
     zIndex: 6,
     display: 'inline-flex',
     alignItems: 'center',
@@ -416,15 +431,10 @@ const ScrollJumpButton = styledComponent('button', {
     width: 32,
     height: 32,
     padding: 0,
-    border: `1px solid ${COLORS.border}`,
-    borderRadius: '50%',
-    backgroundColor: COLORS.panelStrong,
+    border: 'none',
+    backgroundColor: 'transparent',
     color: COLORS.text,
-    cursor: 'pointer',
-    font: 'inherit',
-    fontWeight: 700,
-    fontSize: 14,
-    lineHeight: 1
+    cursor: 'pointer'
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Empty conversation state explains the one required action without inventing a fake assistant response.
@@ -1550,8 +1560,19 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // Ref-backed (write-without-render) rAF handle of an in-flight edge jump:
     // a fresh click cancels the running flight before retargeting, and the
     // unmount cleanup below cancels a pending frame so it never writes to a
-    // detached list.
+    // detached list. Also read by the bottom-follow effect below: while a
+    // flight owns scrollTop, NOTHING else may write it.
     const listJump = useReferenceHook<number | null>(null);
+    // Ref snapshot of the bottom-follow effect's OWN dep tuple from the
+    // previous run: a commit where ONLY the stream chunk moved is a TOKEN
+    // tick — the one trigger family that yields to a user-chosen scroll
+    // position (see the effect). Ref-backed so bookkeeping never re-renders.
+    const followSnapshot = useReferenceHook<{
+        draft: string;
+        pending: string;
+        stream: string;
+        record: ConversationRecord | null;
+    } | null>(null);
     const loading = useStateHook(false);
     // True while the selected conversation's identified DELETE is in flight.
     const deleting = useStateHook(false);
@@ -1654,11 +1675,41 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // token, and any fresh record (chat selection, completed turn, edited or
     // shortened history) all re-pin the message list — the page's only
     // scrolling surface — to its end so the latest turn stays in view.
+    // TWO carve-outs keep a USER-CHOSEN reading position stable against this
+    // force-pin (the reported "^ never reaches/stays at the top" glitch —
+    // the unconditional pin used to win every race):
+    // 1. IN-FLIGHT JUMP: while an edge-jump flight owns scrollTop (listJump
+    //    holds its rAF handle) NOTHING else may write it — a mid-flight pin
+    //    would fight the rAF's per-frame positions.
+    // 2. TOKEN TICKS OFF-BOTTOM: a commit where ONLY the streaming chunk
+    //    changed (classified against followSnapshot: draft text, pending
+    //    bubble, and record all identical to the previous run) re-pins ONLY
+    //    while the list sits at its bottom edge — listAtBottom, the very
+    //    accessor that flips the chevron. A mid-stream jump (or plain
+    //    wheel-scroll away) therefore STICKS instead of being yanked back
+    //    down by the next token; the follow silently resumes once the user
+    //    returns to the bottom (the scroll listener refreshes listAtBottom
+    //    through syncStickyControls). Every OTHER trigger (composer typing,
+    //    send, fresh record) keeps the original unconditional pin.
+    // The snapshot rewrites on EVERY run — skipped pins included — so the
+    // classification never goes stale (StrictMode's double-run reads an
+    // identical tuple: stream differs on neither, so the pin is idempotent).
     // scrollTop/scrollHeight are plain settable properties everywhere
     // (jsdom included: scrollHeight is 0 there, so tests stub it).
     useEffect(() => {
         const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
-        if (list) list.scrollTop = list.scrollHeight;
+        const current = { draft: message(), pending: pendingUser(), stream: streaming(), record: selected() };
+        const previous = followSnapshot();
+        followSnapshot(current);
+        const streamTick =
+            previous !== null &&
+            previous.draft === current.draft &&
+            previous.pending === current.pending &&
+            previous.record === current.record &&
+            previous.stream !== current.stream;
+        if (list && listJump() === null && !(streamTick && !listAtBottom())) {
+            list.scrollTop = list.scrollHeight;
+        }
         // Deps read accessor state: draft text, pending bubble, stream, record.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [message(), pendingUser(), streaming(), selected()]);
