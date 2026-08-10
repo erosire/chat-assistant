@@ -1,5 +1,7 @@
 // Deterministic persistence tests for the conversation store. The layout under
-// test: one folder per chat (<root>/chat-assistant/<uuid>/conversation.json).
+// test: one folder per chat, grouped under a `conversations` subfolder of the
+// database directory (<root>/chat-assistant/conversations/<uuid>/conversation.json),
+// so the database root stays free for other collections.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,16 +35,18 @@ describe('chat assistant store', () => {
     it('upserts, reads, lists, deletes, and reloads complete conversation records', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-assistant-test-'));
         temporaryRoots.push(root);
-        const folder = path.join(root, 'chat-assistant', 'conversation-1');
+        const folder = path.join(root, 'chat-assistant', 'conversations', 'conversation-1');
 
         const firstStore = createChatStore(root);
         expect(firstStore.upsert(record)).toEqual(record);
         expect(firstStore.get('conversation-1')).toEqual(record);
         expect(firstStore.list()).toEqual([record]);
 
-        // Each chat lives in its own folder holding exactly one document; the
-        // legacy single-table chats.json database file must NOT be recreated.
+        // Each chat lives in its own folder under the conversations subfolder,
+        // holding exactly one document; the uuid must NOT sit at the database
+        // root and the legacy single-table chats.json must NOT be recreated.
         expect(fs.existsSync(path.join(folder, 'conversation.json'))).toBe(true);
+        expect(fs.existsSync(path.join(root, 'chat-assistant', 'conversation-1'))).toBe(false);
         expect(fs.existsSync(path.join(root, 'chat-assistant', 'chats.json'))).toBe(false);
 
         // A second store instance reads the same folder, proving request-scoped stores see persisted data.
@@ -65,7 +69,10 @@ describe('chat assistant store', () => {
         store.upsert(record);
         store.upsert(second);
 
-        expect(fs.readdirSync(path.join(root, 'chat-assistant')).sort()).toEqual([
+        // The database root holds ONLY the conversations grouping folder; the
+        // uuid folders are its children.
+        expect(fs.readdirSync(path.join(root, 'chat-assistant'))).toEqual(['conversations']);
+        expect(fs.readdirSync(path.join(root, 'chat-assistant', 'conversations')).sort()).toEqual([
             'conversation-1',
             'conversation-2'
         ]);
@@ -80,7 +87,9 @@ describe('chat assistant store', () => {
     it('treats missing, non-directory, and malformed entries as absent', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-assistant-test-'));
         temporaryRoots.push(root);
-        const directory = path.join(root, 'chat-assistant');
+        // Stray entries are planted directly in the conversations subfolder,
+        // exactly where list() scans.
+        const directory = path.join(root, 'chat-assistant', 'conversations');
         fs.mkdirSync(path.join(directory, 'broken'), { recursive: true });
         fs.writeFileSync(path.join(directory, 'broken', 'conversation.json'), '{not json', 'utf8');
         fs.writeFileSync(path.join(directory, 'stray-file.json'), '{}', 'utf8');

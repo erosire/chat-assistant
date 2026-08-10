@@ -9,21 +9,29 @@
 // Conversation management covered here: "New chat" lives at the sidebar's top-left,
 // the header's top-right Delete issues the identified DELETE, the sidebar drawer is
 // toggleable on mobile, and the header title mirrors the selected chat's title
-// (click it to open the rename dialog). Every assistant response is marked on the
-// left of its caption row with the producing model (per-message ChatMessage.model);
-// the edit pen sits on the right of that row and the x delete control in a row
-// above the bubble (right-aligned) — both rewrite the history through the
-// identified PUT, so the next turn sends the edited/shortened history upstream.
+// (click it to open the rename dialog). Every assistant response is marked in
+// its top-left corner with the producing model (per-message ChatMessage.model);
+// the edit pen sits on the right of the controls row under the bubble, the x
+// delete control in the row above the bubble (right-aligned) — both rewrite the
+// history through the identified PUT, so the next turn sends the
+// edited/shortened history upstream.
 // Every turn also carries a copy action next to the pen that writes the raw
 // message text to the system clipboard (a pure client-side action: no storage).
 // Every chat is led by a system prompt: while the record has no system message
 // an editable draft box shows (even empty); a non-empty draft is persisted as
 // the leading system message on the next send (prepended to the provider
 // history) and then renders like any turn (edit pen + copy) EXCEPT it cannot
-// be deleted. Every turn carries a collapse caret in the row above its bubble:
-// collapsed turns hide the bubble (and its controls) behind a one-line preview.
-// System turns start COLLAPSED by default (prompts can be long); all other
-// roles default to expanded.
+// be deleted. Every turn carries an attribution label in the top-left corner
+// of the row above its bubble (the producing model for assistant turns, the
+// literal "user"/"system" speaker otherwise); that label IS the collapse
+// toggle — no chevron glyph anywhere — and collapsed turns hide the bubble
+// (and its controls) behind a one-line preview whose click expands the turn.
+// By default EVERY turn starts COLLAPSED except the LATEST assistant reply —
+// user turns fold, system turns fold, and older replies fold once a newer
+// reply lands. Composer keyboard rules: Enter submits on desktop (md+),
+// Shift+Enter inserts a newline; on mobile (below md) Enter only inserts a
+// newline. The rename dialog's actions stack full-width on mobile and sit in
+// a right-aligned row on desktop.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatAssistantApp } from './ChatAssistantApp';
@@ -345,7 +353,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined();
         expect(screen.getByTestId('chat-model').textContent).toBe('Model: alpha-org/zeta-model');
         // The response is marked with its producing model (fixture attribution,
-        // stripped-label form) under the assistant bubble.
+        // stripped-label form) in the assistant turn's top-left corner.
         expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
         // The completed send is what the browser remembers as the last used model.
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBe(DEFAULT_MODEL);
@@ -380,7 +388,7 @@ describe('ChatAssistantApp', () => {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     // The persisted assistant message is marked with the model that
-                    // produced it (per-message attribution for the response caption).
+                    // produced it (per-message attribution for the top-left label).
                     body: JSON.stringify({
                         messages: [
                             { role: 'user', content: 'Hello assistant' },
@@ -423,8 +431,8 @@ describe('ChatAssistantApp', () => {
         await waitFor(() => expect(screen.getByTestId('pending-user-message').textContent).toBe('Hello assistant'));
         expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('');
         // The in-flight response is already marked with the model producing it
-        // (stripped label of the currently selected model, as a sibling caption
-        // so the streaming bubble's textContent stays exact).
+        // (stripped label of the currently selected model, in the top-left row
+        // above the streaming bubble so the bubble's textContent stays exact).
         expect(screen.getByTestId('streaming-message-model').textContent).toBe('test-model');
 
         // First token renders live; storage stays untouched mid-stream.
@@ -697,6 +705,11 @@ describe('ChatAssistantApp', () => {
         await waitForModelSelection();
         await sendFirstTurn();
 
+        // User turns start COLLAPSED by default: expand the first turn so its
+        // edit pen (hidden while collapsed) can open the inline editor.
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+        expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('true');
+
         // Open the inline editor on the first (user) message; it seeds the
         // current content. Only one edit runs at a time — the other affordance hides.
         fireEvent.click(screen.getByTestId('edit-message-0'));
@@ -786,7 +799,7 @@ describe('ChatAssistantApp', () => {
         ]);
         await waitFor(() => expect(screen.queryByTestId('edit-message-input')).toBeNull());
         expect(screen.getByText('Rewritten answer')).toBeDefined();
-        // The model caption still marks the rewritten response.
+        // The top-left model label still marks the rewritten response.
         expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
     });
 
@@ -795,6 +808,8 @@ describe('ChatAssistantApp', () => {
         await waitForModelSelection();
         await sendFirstTurn();
 
+        // The user turn starts collapsed; expand it to reach its edit pen.
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
         fireEvent.click(screen.getByTestId('edit-message-0'));
         fireEvent.change(screen.getByTestId('edit-message-input'), { target: { value: '   ' } });
 
@@ -809,6 +824,9 @@ describe('ChatAssistantApp', () => {
         renderApp();
         await waitForModelSelection();
         await sendFirstTurn();
+
+        // The user turn starts collapsed; expand it to reach its delete cross.
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
 
         // The x control on the user turn removes exactly that message and
         // persists the shortened history as a whole history replacement.
@@ -831,7 +849,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('message-model-0').textContent).toBe('zeta-model');
     });
 
-    it('deletes an individual assistant message together with its model caption', async () => {
+    it('deletes an individual assistant message together with its model label', async () => {
         renderApp();
         await waitForModelSelection();
         await sendFirstTurn();
@@ -848,7 +866,7 @@ describe('ChatAssistantApp', () => {
             }
         ]);
         await waitFor(() => expect(screen.queryByText('Hello from the assistant')).toBeNull());
-        // The attribution caption disappears with its message.
+        // The attribution label disappears with its message.
         expect(screen.queryByTestId('message-model-1')).toBeNull();
     });
 
@@ -861,8 +879,12 @@ describe('ChatAssistantApp', () => {
         await waitForModelSelection();
         await sendFirstTurn();
 
+        // The user turn starts collapsed; expand it to reach its copy control
+        // (the assistant turn is the latest reply, so it is already expanded).
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+
         // On EVERY turn the copy control sits immediately LEFT of the edit pen
-        // inside the shared action pair on the caption row.
+        // inside the shared action pair on the row under the bubble.
         const copyUser = screen.getByTestId('copy-message-0');
         expect(copyUser.nextElementSibling?.getAttribute('data-testid')).toBe('edit-message-0');
         const copyAssistant = screen.getByTestId('copy-message-1');
@@ -997,15 +1019,19 @@ describe('ChatAssistantApp', () => {
 
         // The record now leads with a system turn: the draft box is replaced.
         expect(screen.queryByTestId('system-prompt-input')).toBeNull();
-        // The SYSTEM turn starts COLLAPSED by default (prompts can be long):
-        // only its caret + first-line preview show, bubble/controls hidden.
+        // Defaults: EVERY turn except the latest assistant reply starts
+        // COLLAPSED — the system turn (prompts can be long) AND the user turn
+        // show only their top-left label + first-line preview, bubbles/controls
+        // hidden. The system turn's label is the literal "system" for now.
+        expect(screen.getByTestId('message-label-0').textContent).toBe('system');
         expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('false');
         expect(screen.getByTestId('message-preview-0').textContent).toBe('You are terse.');
         expect(screen.getByTestId('message-turn-0').querySelector('article')).toBeNull();
-        // User + assistant turns default to EXPANDED with bubbles and controls.
-        expect(screen.getByTestId('collapse-message-1').getAttribute('aria-expanded')).toBe('true');
+        expect(screen.getByTestId('collapse-message-1').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.getByTestId('message-preview-1').textContent).toBe('Hello assistant');
+        expect(screen.getByTestId('message-turn-1').querySelector('article')).toBeNull();
+        // The LATEST assistant reply stays expanded with bubble and controls.
         expect(screen.getByTestId('collapse-message-2').getAttribute('aria-expanded')).toBe('true');
-        expect(screen.getByTestId('message-turn-1').querySelector('article')?.textContent).toBe('Hello assistant');
         expect(screen.getByTestId('message-turn-2').querySelector('article')?.textContent).toBe('Hello from the assistant');
 
         // Expanding the system turn reveals it like any other turn: edit pen +
@@ -1019,8 +1045,14 @@ describe('ChatAssistantApp', () => {
         const copySystem = screen.getByTestId('copy-message-0');
         expect(copySystem.nextElementSibling?.getAttribute('data-testid')).toBe('edit-message-0');
         expect(screen.queryByTestId('delete-message-0')).toBeNull();
-        expect(screen.getByTestId('delete-message-1')).toBeDefined();
+        // The collapsed user turn hides its delete cross until expanded; the
+        // expanded (latest) assistant turn's delete cross is already visible.
+        expect(screen.queryByTestId('delete-message-1')).toBeNull();
         expect(screen.getByTestId('delete-message-2')).toBeDefined();
+        fireEvent.click(screen.getByTestId('collapse-message-1'));
+        expect(screen.getByTestId('delete-message-1')).toBeDefined();
+        // Re-collapse the user turn to restore the default collapse state.
+        fireEvent.click(screen.getByTestId('collapse-message-1'));
 
         // Copying the system prompt writes its raw text to the clipboard.
         fireEvent.click(copySystem);
@@ -1120,11 +1152,15 @@ describe('ChatAssistantApp', () => {
         await waitForModelSelection();
         await sendFirstTurn();
 
-        // Defaults: user + assistant turns expanded (caret down), no previews.
-        expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('true');
+        // Defaults: the USER turn starts collapsed (top-left "user" label,
+        // first-line preview, bubble hidden); only the LATEST ASSISTANT reply
+        // starts expanded (model label, no preview).
+        expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.getByTestId('message-preview-0').textContent).toBe('Hello assistant');
+        expect(screen.getByTestId('message-turn-0').querySelector('article')).toBeNull();
         expect(screen.getByTestId('collapse-message-1').getAttribute('aria-expanded')).toBe('true');
-        expect(screen.queryByTestId('message-preview-0')).toBeNull();
         expect(screen.queryByTestId('message-preview-1')).toBeNull();
+        expect(screen.getByTestId('message-turn-1').querySelector('article')?.textContent).toBe('Hello from the assistant');
 
         // Collapse the ASSISTANT turn: bubble + edit/copy/delete hide behind a
         // one-line preview of the reply's first line.
@@ -1146,11 +1182,63 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('copy-message-1')).toBeDefined();
         expect(screen.getByTestId('delete-message-1')).toBeDefined();
 
-        // The USER turn collapses the same way: preview is the query's first line.
+        // Expanding the collapsed USER turn restores its bubble the same way.
         fireEvent.click(screen.getByTestId('collapse-message-0'));
-        expect(screen.getByTestId('message-preview-0').textContent).toBe('Hello assistant');
-        expect(screen.getByTestId('message-turn-0').querySelector('article')).toBeNull();
+        expect(screen.queryByTestId('message-preview-0')).toBeNull();
+        expect(screen.getByTestId('message-turn-0').querySelector('article')?.textContent).toBe('Hello assistant');
         expect((fetch as any).mock.calls).toHaveLength(6);
+    });
+
+    it('labels every turn in its top-left corner (model for assistant, speaker otherwise) without any chevron', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+
+        // The USER turn's top-left label is the literal "user" (a placeholder
+        // until a real speaker identity exists). The label text lives INSIDE
+        // the collapse toggle button — the label IS the toggle.
+        const userToggle = screen.getByTestId('collapse-message-0');
+        expect(userToggle.tagName).toBe('BUTTON');
+        expect(screen.getByTestId('message-label-0').textContent).toBe('user');
+        expect(userToggle.contains(screen.getByTestId('message-label-0'))).toBe(true);
+
+        // The ASSISTANT turn's top-left label is its producing model's
+        // stripped name, again inside the toggle button.
+        const assistantToggle = screen.getByTestId('collapse-message-1');
+        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+        expect(assistantToggle.contains(screen.getByTestId('message-model-1'))).toBe(true);
+
+        // No chevron glyph renders on either toggle, in EITHER state.
+        expect(userToggle.querySelector('span[aria-hidden="true"]')).toBeNull();
+        expect(assistantToggle.querySelector('span[aria-hidden="true"]')).toBeNull();
+        fireEvent.click(assistantToggle);
+        expect(assistantToggle.getAttribute('aria-expanded')).toBe('false');
+        expect(assistantToggle.querySelector('span[aria-hidden="true"]')).toBeNull();
+    });
+
+    it('expands a collapsed turn by clicking its preview line (the visible collapsed message)', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+
+        // The user turn starts collapsed: clicking the one-line preview — the
+        // visible collapsed "message" — expands it, no chevron involved.
+        const preview = screen.getByTestId('message-preview-0');
+        expect(preview.textContent).toBe('Hello assistant');
+        fireEvent.click(preview);
+        expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('true');
+        expect(screen.queryByTestId('message-preview-0')).toBeNull();
+        expect(screen.getByTestId('message-turn-0').querySelector('article')?.textContent).toBe('Hello assistant');
+        // Preview clicks are pure view state — still only the send flow ran.
+        expect((fetch as any).mock.calls).toHaveLength(6);
+
+        // Collapse through the top-left "user" label, then expand through the
+        // preview again: both affordances drive the same toggle.
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+        expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('false');
+        fireEvent.click(screen.getByTestId('message-preview-0'));
+        expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('true');
+        expect(screen.getByTestId('message-turn-0').querySelector('article')?.textContent).toBe('Hello assistant');
     });
 
     it('renames the selected chat by clicking its title and using the dialog', async () => {
@@ -1226,5 +1314,140 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('title-dialog')).toBeNull();
         expect((fetch as any).mock.calls).toHaveLength(6);
         expect(screen.getByTestId('chat-title').textContent).toBe('Hello assistant');
+    });
+
+    it('submits the composer with Enter on desktop while Shift+Enter stays a newline', async () => {
+        // jsdom implements no matchMedia, and the viewport gate treats a
+        // missing API as the DESKTOP default — no stub needed here.
+        renderApp();
+        await waitForModelSelection();
+
+        const input = screen.getByTestId('chat-input');
+        fireEvent.change(input, { target: { value: 'Hello assistant' } });
+        // Enter on desktop submits exactly like the send button: the default
+        // newline is prevented (fireEvent returns false only when the event
+        // was defaultPrevented) and the full six-call send flow runs.
+        expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false);
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
+        expect((fetch as any).mock.calls).toHaveLength(6);
+        expect(JSON.parse((fetch as any).mock.calls[2][1].body as string)).toEqual({
+            model: DEFAULT_MODEL,
+            stream: true,
+            messages: [{ role: 'user', content: 'Hello assistant' }]
+        });
+
+        // Shift+Enter is the desktop newline escape hatch: the keydown is NOT
+        // prevented and no request fires.
+        expect(fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })).toBe(true);
+        expect((fetch as any).mock.calls).toHaveLength(6);
+    });
+
+    it('keeps Enter as a newline-only key on mobile viewports', async () => {
+        // jsdom has no matchMedia: stub a below-md (mobile) result so the
+        // viewport gate takes its mobile branch.
+        vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query }));
+        renderApp();
+        await waitForModelSelection();
+
+        const input = screen.getByTestId('chat-input');
+        fireEvent.change(input, { target: { value: 'Hello assistant' } });
+        // Enter keeps the textarea's default (a newline): the keydown is NOT
+        // prevented and no completion request fires — mobile submission stays
+        // on the split send button.
+        expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(true);
+        expect((fetch as any).mock.calls).toHaveLength(2);
+
+        // The send button remains the mobile submission path.
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
+        expect((fetch as any).mock.calls).toHaveLength(6);
+    });
+
+    it('collapses every turn except the latest assistant reply by default on chat selection', async () => {
+        // A four-turn record from a previous session: two user queries and
+        // two replies, so BOTH folding rules are exercised at once.
+        const restored = {
+            ...conversation,
+            messageCount: 4,
+            createdAt: '2026-08-06T00:00:03.000Z',
+            updatedAt: '2026-08-06T00:00:04.000Z',
+            messages: [
+                { role: 'user' as const, content: 'First question' },
+                { role: 'assistant' as const, content: 'First answer', model: ALT_MODEL },
+                { role: 'user' as const, content: 'Second question' },
+                { role: 'assistant' as const, content: 'Second answer', model: ALT_MODEL }
+            ]
+        };
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(200, {
+                    conversations: [{
+                        conversationId: restored.conversationId,
+                        title: restored.title,
+                        model: restored.model,
+                        status: restored.status,
+                        messageCount: restored.messageCount,
+                        createdAt: restored.createdAt,
+                        updatedAt: restored.updatedAt
+                    }]
+                }));
+            }
+            if (init?.method === 'GET') {
+                return Promise.resolve(response(200, { conversationId: restored.conversationId, conversation: restored }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(await screen.findByTestId('chat-tab-conversation-1'));
+        await waitFor(() => expect(screen.getByTestId('collapse-message-3')).toBeDefined());
+
+        // Exact default state: turns 0-2 fold (BOTH user turns AND the older
+        // assistant reply), each down to its first-line preview with bubbles
+        // and controls hidden.
+        expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.getByTestId('collapse-message-1').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.getByTestId('collapse-message-2').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.getByTestId('message-preview-0').textContent).toBe('First question');
+        expect(screen.getByTestId('message-preview-1').textContent).toBe('First answer');
+        expect(screen.getByTestId('message-preview-2').textContent).toBe('Second question');
+        expect(screen.getByTestId('message-turn-0').querySelector('article')).toBeNull();
+        expect(screen.getByTestId('message-turn-1').querySelector('article')).toBeNull();
+        expect(screen.getByTestId('message-turn-2').querySelector('article')).toBeNull();
+        // Only the LATEST assistant reply renders expanded, with its controls.
+        expect(screen.getByTestId('collapse-message-3').getAttribute('aria-expanded')).toBe('true');
+        expect(screen.queryByTestId('message-preview-3')).toBeNull();
+        expect(screen.getByTestId('message-turn-3').querySelector('article')?.textContent).toBe('Second answer');
+        expect(screen.getByTestId('edit-message-3')).toBeDefined();
+        expect(screen.getByTestId('message-model-3').textContent).toBe('zeta-model');
+    });
+
+    it('stacks the rename dialog actions on mobile and rows them on desktop', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+        fireEvent.click(screen.getByTestId('chat-title'));
+        expect(screen.getByTestId('title-dialog')).toBeDefined();
+
+        // jsdom's getComputedStyle cannot evaluate media queries, so the
+        // responsive proof reads Emotion's stylesheet text directly (test mode
+        // keeps rule text readable). The DialogActions rule is identified by
+        // its exact property sequences: below md (@media (min-width: 0px)) the
+        // buttons STACK full-width (column + stretch); at md+ (@media
+        // (min-width: 900px)) the right-aligned ROW returns.
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        const mobile = /@media \(min-width: 0px\)\{\.css-[^{]+\{([^}]*flex-direction:column[^}]*)\}\}/.exec(css);
+        expect(mobile?.[1]).toBe(
+            '-webkit-flex-direction:column;-ms-flex-direction:column;flex-direction:column;' +
+            '-webkit-align-items:stretch;-webkit-box-align:stretch;-ms-flex-align:stretch;align-items:stretch;'
+        );
+        const desktop = /@media \(min-width: 900px\)\{\.css-[^{]+\{([^}]*flex-direction:row[^}]*)\}\}/.exec(css);
+        expect(desktop?.[1]).toBe(
+            '-webkit-flex-direction:row;-ms-flex-direction:row;flex-direction:row;' +
+            '-webkit-align-items:center;-webkit-box-align:center;-ms-flex-align:center;align-items:center;'
+        );
     });
 });

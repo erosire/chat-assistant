@@ -22,8 +22,9 @@
 // (derived server-side from the trimmed first line of the first user message)
 // and is renameable by clicking the title itself, which opens a dialog box.
 // Every assistant response
-// is marked with the model that produced it (per-message attribution persisted
-// via ChatMessage.model). History is freely editable: user and assistant
+// is marked in its TOP-LEFT corner with the model that produced it
+// (per-message attribution persisted via ChatMessage.model). History is freely
+// editable: user and assistant
 // messages offer an inline editor (pen icon) and individual deletion (x icon);
 // next to the edit pen EVERY turn also carries a copy action (two-squares
 // icon) that writes the raw message text to the system clipboard without
@@ -38,13 +39,22 @@
 // as the leading system message on the next send (and prepended to the
 // provider history), after which the system turn behaves like any other turn
 // (same inline editor, same copy action, full-history PUT rewrites) EXCEPT it
-// cannot be deleted. Every message TURN carries a collapse toggle: a caret in
-// the row above the bubble (left side; the delete cross stays right) folds the
-// turn down to a one-line preview of its first line. SYSTEM turns start
-// COLLAPSED by default because prompts can be long — the collapsed set is
-// re-seeded from the record's system indices whenever a fresh record loads;
-// all other roles default to expanded. Collapse is session-level UI state
-// only. The sidebar is a
+// cannot be deleted. Every message TURN carries an attribution label in the
+// TOP-LEFT corner of the row above its bubble: the producing model's name for
+// assistant turns, the literal speaker ("user" / "system" for now) otherwise.
+// That label IS the turn's collapse toggle — no chevron glyph ever renders.
+// Collapsing folds the turn down to the label plus a one-line preview of its
+// first line; clicking the collapsed preview line (the visible "message") or
+// the label expands it back. The delete cross stays on the row's right. By
+// default EVERY turn starts COLLAPSED except the LATEST assistant reply —
+// user turns fold to one-line previews of their questions, system turns fold
+// (prompts can be long), and each older assistant reply folds once a newer
+// reply lands; the collapsed set is re-seeded from the fresh record's default
+// indices whenever a record loads or the history is replaced. Collapse is
+// session-level UI state only. Composer keyboard rules: on DESKTOP (md+) Enter submits the
+// message and Shift+Enter inserts a newline; on MOBILE (below md) Enter always
+// inserts a newline so the on-screen keyboard's return key only grows the
+// draft — submission stays on the split send button. The sidebar is a
 // static column on md+ screens and a toggleable drawer below the md breakpoint.
 import React, { useCallback, useEffect } from 'react';
 import { arrayEach, isString } from '@presource/core';
@@ -214,10 +224,15 @@ const TitleInput = styledComponent('input', {
     outline: 'none'
 }) as unknown as React.FC<React.InputHTMLAttributes<HTMLInputElement>>;
 
-// Dialog actions right-align per common dialog convention.
+// Dialog actions right-align in a ROW on desktop (md+) per common dialog
+// convention, but STACK full-width on mobile (xs): narrow screens read better
+// with each button on its own line (stacking is a media-query concern — see
+// styleMedia in @presource/react — so jsdom cannot observe it via
+// getComputedStyle).
 const DialogActions = styledComponent('div', {
     display: 'flex',
-    alignItems: 'center',
+    flexDirection: () => ({ xs: 'column', md: 'row' }),
+    alignItems: () => ({ xs: 'stretch', md: 'center' }),
     justifyContent: 'flex-end',
     gap: 8
 });
@@ -340,7 +355,7 @@ const EmptyState = styledComponent('div', {
 });
 
 // Turn wrappers own alignment and max-width so each bubble can sit together
-// with its turn chrome (model attribution caption, edit controls, inline editor)
+// with its turn chrome (attribution label, edit controls, inline editor)
 // inside one flex column — the bubbles themselves no longer self-align.
 const UserTurn = styledComponent('div', {
     alignSelf: 'flex-end',
@@ -384,19 +399,11 @@ const AssistantMessage = styledComponent('article', {
     lineHeight: 1.5
 });
 
-// Caption marking which provider model produced an assistant response; rendered
-// under the bubble inside the turn wrapper (sibling, so bubble textContent — and
-// therefore the streaming assertions in ChatAssistantApp.test.tsx — stay exact).
-const MessageModel = styledComponent('span', {
-    color: COLORS.muted,
-    fontSize: 11,
-    lineHeight: 1.3
-});
-
-// Per-message caption row under a bubble: the model name that generated the
-// message sits on the LEFT, the copy + edit pair on the RIGHT (space-between
-// spans the row's full width). box-sizing keeps the 4px side padding inside
-// the turn.
+// Row under a turn's bubble that holds ONLY the copy + edit action pair (the
+// attribution label moved to the row ABOVE the bubble, where it doubles as the
+// collapse toggle). box-sizing keeps the 4px side padding inside the turn.
+// Used directly only as the base for TrailingControls, the row every turn
+// actually renders.
 const TurnControls = styledComponent('div', {
     display: 'flex',
     alignItems: 'center',
@@ -416,18 +423,19 @@ const TurnActionPair = styledComponent('div', {
     gap: 6
 });
 
-// Right-aligned control row for turns WITHOUT a model caption (user + system):
-// only the copy + edit pair, pushed to the row's right edge.
+// The control row EVERY turn renders under its bubble: only the copy + edit
+// pair, pushed to the row's right edge.
 const TrailingControls = styledComponent(TurnControls, {
     justifyContent: 'flex-end'
 });
 
-// Row ABOVE every turn's bubble: the collapse caret (+ one-line preview while
-// collapsed) on the LEFT, the delete cross on the RIGHT — the cross floats
-// above the message instead of overlapping its content. width:100% is required:
-// turn wrappers shrink their column children to fit content (AssistantTurn's
-// align-items:flex-start would otherwise left-pack the row). minHeight keeps
-// the caret row stable when no delete cross renders on its right.
+// Row ABOVE every turn's bubble: the attribution label/collapse toggle (+
+// one-line preview while collapsed) on the LEFT, the delete cross on the
+// RIGHT — the cross floats above the message instead of overlapping its
+// content. width:100% is required: turn wrappers shrink their column children
+// to fit content (AssistantTurn's align-items:flex-start would otherwise
+// left-pack the row). minHeight keeps the header row stable when no delete
+// cross renders on its right (e.g. on collapsed turns, whose cross hides).
 const TurnHeaderRow = styledComponent('div', {
     display: 'flex',
     alignItems: 'center',
@@ -439,7 +447,7 @@ const TurnHeaderRow = styledComponent('div', {
     boxSizing: 'border-box'
 });
 
-// Left group of the header row: caret + preview shrink together, never the caret.
+// Left group of the header row: label + preview share the row's flex space.
 const TurnHeaderLead = styledComponent('div', {
     flex: 1,
     minWidth: 0,
@@ -448,8 +456,36 @@ const TurnHeaderLead = styledComponent('div', {
     gap: 6
 });
 
+// Top-left attribution label of a persisted turn: the producing model's
+// stripped name for assistant turns, the literal speaker ("user" / "system"
+// for now) otherwise. The label IS the collapse toggle — clicking it folds or
+// unfolds the turn, and NO chevron glyph ever accompanies it. Typography
+// lives on the inner TurnLabelText so in-flight turns (which cannot collapse
+// yet) can render the identical label as a plain span.
+const TurnLabel = styledComponent('button', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    minWidth: 0,
+    padding: 0,
+    border: 'none',
+    borderRadius: 4,
+    backgroundColor: 'transparent',
+    cursor: 'pointer',
+    font: 'inherit'
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+
+// Shared typography of the turn label: used inside TurnLabel for persisted
+// turns and rendered bare for the in-flight pending/streaming turns.
+const TurnLabelText = styledComponent('span', {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.3
+});
+
 // One-line preview replacing a collapsed bubble: first line of the message,
-// muted, ellipsis-truncated.
+// muted, ellipsis-truncated. The preview is CLICKABLE — since no chevron
+// exists, clicking the visible collapsed "message" expands the turn again.
 const TurnPreview = styledComponent('span', {
     flex: 1,
     minWidth: 0,
@@ -458,7 +494,8 @@ const TurnPreview = styledComponent('span', {
     whiteSpace: 'nowrap',
     color: COLORS.muted,
     fontSize: 12,
-    lineHeight: 1.4
+    lineHeight: 1.4,
+    cursor: 'pointer'
 });
 
 // The per-message delete control (x icon in the DeleteRow above the bubble).
@@ -589,10 +626,13 @@ const Composer = styledComponent('form', {
 });
 
 // Textarea starts exactly one line high (1.4em line box + 24px vertical padding)
-// and grows through eight rows as Enter/newlines add content; the explicit CSS
+// and grows through eight rows as newlines add content; the explicit CSS
 // height avoids the browser's default two-row textarea flash before the resize
 // effect runs. Mouse resizing is disabled so the composer height remains
-// controlled by the message content.
+// controlled by the message content. Keyboard behavior (see the onKeyDown
+// handler at the render site below): on DESKTOP (md+ viewport) Enter submits
+// the message and Shift+Enter inserts a newline; on MOBILE Enter always
+// inserts a newline and the split send button performs submission.
 const MessageInput = styledComponent('textarea', {
     flex: 1,
     minHeight: 0,
@@ -771,8 +811,9 @@ type MessageListOptions = {
     onMessageDelete: (index: number) => void;
     // Copies a message's raw text to the system clipboard (client-side only).
     onMessageCopy: (content: string) => void;
-    // Indices of currently collapsed turns (system indices seed this set;
-    // everything else defaults to expanded). Pure session-level UI state.
+    // Indices of currently collapsed turns (the fresh-record default seeds
+    // this set: everything except the latest assistant reply). Pure
+    // session-level UI state.
     collapsedTurns: number[];
     onToggleTurnCollapse: (index: number) => void;
 };
@@ -808,27 +849,28 @@ const renderEditor = (options: MessageListOptions): React.ReactNode => (
 
 // Convert an API record into message nodes while keeping rendering logic
 // role-specific and explicit. User and assistant turns are freely editable (pen
-// icon, right side of the caption row under the bubble) and individually
-// deletable (x icon in a row ABOVE the bubble, right-aligned); both actions
+// icon, right side of the controls row under the bubble) and individually
+// deletable (x icon in the row ABOVE the bubble, right-aligned); both actions
 // rewrite the whole history through the identified PUT. Every turn additionally
 // carries a copy action (two-squares icon, immediately LEFT of the pen) that
 // sends the raw message text to the clipboard. SYSTEM turns behave exactly like
 // user/assistant turns (same inline editor, same copy action) EXCEPT they never
 // render the delete cross — the system prompt cannot be removed (a chat without
 // one shows the empty draft box above the list instead, not a system turn).
-// Every turn's row ABOVE its bubble carries the collapse caret on the LEFT:
-// collapsed turns hide the bubble AND its edit/copy/delete controls, showing a
-// one-line first-line preview instead. Every assistant
-// response is marked on the caption row's LEFT with the model that produced it
-// when the per-message attribution (ChatMessage.model) is present — older
-// records without it render no caption.
+// Every turn's row ABOVE its bubble carries an ATTRIBUTION LABEL on the LEFT:
+// the producing model's stripped name for assistant turns with a recorded
+// ChatMessage.model (older records without it fall back to "assistant"),
+// otherwise the literal speaker label ("user" / "system" for now). That label
+// IS the collapse toggle — no chevron glyph ever renders. Collapsed turns hide
+// the bubble AND its edit/copy/delete controls, showing the label plus a
+// one-line first-line preview instead; clicking the preview expands the turn.
 const renderMessages = (messages: ChatMessage[], options: MessageListOptions): React.ReactNode[] => {
     const nodes: React.ReactNode[] = [];
     arrayEach(messages, ({ index, value: message }) => {
         const key = `${message.role}-${index}`;
         const editing = options.editingIndex === index;
         const collapsed = options.collapsedTurns.includes(index);
-        // The pen (edit, caption row under the bubble), the copy action beside
+        // The pen (edit, controls row under the bubble), the copy action beside
         // it, and the delete cross appear only while idle AND expanded: one
         // edit at a time, none during streaming/conversation deletion, and none
         // while the turn is collapsed (its bubble is hidden).
@@ -870,14 +912,22 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 <span aria-hidden="true">⧉</span>
             </TurnIconButton>
         ) : null;
-        // Header row above the bubble: collapse caret (+ first-line preview
-        // while collapsed) LEFT, delete cross RIGHT. The caret is always
-        // available — collapsing is pure view state — except while this turn is
-        // being edited (the editor occupies the bubble slot).
+        // Top-left attribution text: the producing model's stripped name for
+        // assistant turns WITH per-message attribution (ChatMessage.model);
+        // the literal role name otherwise ("user" / "system" for now — a real
+        // speaker identity can replace these labels later).
+        const speakerLabel = message.role === 'assistant' && message.model !== undefined
+            ? modelLabel(message.model)
+            : message.role;
+        // Header row above the bubble: the attribution label (+ first-line
+        // preview while collapsed) LEFT, delete cross RIGHT. The label itself
+        // is the collapse toggle — collapsing is pure view state — and renders
+        // except while this turn is being edited (the editor occupies the
+        // bubble slot). No chevron glyph ever renders beside it.
         const headerRow = !editing ? (
             <TurnHeaderRow>
                 <TurnHeaderLead>
-                    <TurnIconButton
+                    <TurnLabel
                         type="button"
                         onClick={() => options.onToggleTurnCollapse(index)}
                         aria-expanded={!collapsed}
@@ -885,10 +935,27 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                         title={collapsed ? 'Expand message' : 'Collapse message'}
                         data-testid={`collapse-message-${index}`}
                     >
-                        <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
-                    </TurnIconButton>
+                        {/* `message-model-N` keeps the producing-model assertion
+                            hook at the assistant turn's top-left (the former
+                            caption position is gone); other roles get `message-label-N`. */}
+                        <TurnLabelText
+                            data-testid={message.role === 'assistant' && message.model !== undefined
+                                ? `message-model-${index}`
+                                : `message-label-${index}`}
+                        >
+                            {speakerLabel}
+                        </TurnLabelText>
+                    </TurnLabel>
                     {collapsed && (
-                        <TurnPreview data-testid={`message-preview-${index}`}>{message.content.split('\n')[0]}</TurnPreview>
+                        // The collapsed "message" is this preview line: clicking
+                        // it expands the turn again (there is no chevron to click).
+                        <TurnPreview
+                            onClick={() => options.onToggleTurnCollapse(index)}
+                            title="Expand message"
+                            data-testid={`message-preview-${index}`}
+                        >
+                            {message.content.split('\n')[0]}
+                        </TurnPreview>
                     )}
                 </TurnHeaderLead>
                 {deleteControl}
@@ -909,6 +976,10 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 </UserTurn>
             );
         } else if (message.role === 'assistant') {
+            // The producing model marks the turn in its top-left header label
+            // (see headerRow above, replacing the old caption under the bubble);
+            // the row below carries only the shared copy + edit pair, exactly
+            // like the other roles.
             nodes.push(
                 <AssistantTurn key={key} data-testid={`message-turn-${index}`}>
                     {editing ? renderEditor(options) : (
@@ -917,15 +988,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                             {!collapsed && <AssistantMessage>{message.content}</AssistantMessage>}
                         </>
                     )}
-                    {!editing && (message.model !== undefined || editControl !== null) && (
-                        <TurnControls>
-                            {message.model !== undefined && (
-                                <MessageModel data-testid={`message-model-${index}`}>{modelLabel(message.model)}</MessageModel>
-                            )}
-                            {editControl !== null && (
-                                <TurnActionPair>{copyControl}{editControl}</TurnActionPair>
-                            )}
-                        </TurnControls>
+                    {!editing && editControl !== null && (
+                        <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
                 </AssistantTurn>
             );
@@ -933,7 +997,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             // System turn: same edit pen + copy action as every other turn, but
             // NO delete cross — the system prompt cannot be removed. It starts
             // collapsed by default (the component seeds collapsedTurns with the
-            // record's system indices whenever a fresh record loads).
+            // record's default collapsed indices — every turn except the latest
+            // assistant reply — whenever a fresh record loads).
             nodes.push(
                 <SystemTurn key={key} data-testid={`message-turn-${index}`}>
                     {editing ? renderEditor(options) : (
@@ -964,16 +1029,31 @@ const summaryFromRecord = (result: ConversationRecord): ConversationSummary => (
     updatedAt: result.updatedAt
 });
 
-// Indices of the system messages in a record's history. These seed the
-// collapsed-turn set because system prompts can be long — system turns start
-// collapsed by default while every other role starts expanded.
-const systemIndicesOf = (messages: ChatMessage[]): number[] => {
-    const indices: number[] = [];
+// Indices of every turn that starts COLLAPSED when a fresh record loads or
+// replaces the history: ALL user turns (their questions stay skim-able as
+// one-line previews), all system turns (prompts can be long), and every
+// assistant turn EXCEPT the latest reply — the single turn expanded by
+// default. A record without any assistant reply collapses everything.
+const defaultCollapsedIndices = (messages: ChatMessage[]): number[] => {
+    // The LAST assistant turn in history order is the one expanded by default.
+    let latestAssistantIndex = -1;
     arrayEach(messages, ({ index, value }) => {
-        if (value.role === 'system') indices.push(index);
+        if (value.role === 'assistant') latestAssistantIndex = index;
+    });
+    const indices: number[] = [];
+    arrayEach(messages, ({ index }) => {
+        if (index !== latestAssistantIndex) indices.push(index);
     });
     return indices;
 };
+
+// Viewport gate for the composer's Enter-to-send rule: true at/above the md
+// breakpoint (900px, the same threshold the CSS media queries use — see
+// styledComponent's breakpoints in @presource/react). jsdom implements no
+// matchMedia, so a missing API counts as DESKTOP (the browser default);
+// tests stub matchMedia to exercise the mobile branch.
+const isDesktopViewport = (): boolean =>
+    typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 900px)').matches;
 
 // Resize the textarea from its content height while capping the visible editor
 // at eight rows; resetting height first also shrinks the field after deletion.
@@ -1010,10 +1090,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // is persisted as the leading system message (see submit); cleared on new
     // chat, on chat switch, on conversation deletion, and after a send.
     const systemPrompt = useStateHook('');
-    // Indices of currently collapsed message turns. Seeded from the record's
-    // SYSTEM messages (prompts can be long → collapsed by default) whenever a
-    // fresh record loads or replaces the history; resetting accompanies new
-    // chat / chat switch / deletion. Session-level UI state, never persisted.
+    // Indices of currently collapsed message turns. Seeded via
+    // defaultCollapsedIndices (ALL turns except the latest assistant reply:
+    // user turns fold, system turns fold, older replies fold) whenever a fresh
+    // record loads or replaces the history; resetting accompanies new chat /
+    // chat switch / deletion. Session-level UI state, never persisted.
     const collapsedTurns = useStateHook<number[]>([]);
     const loading = useStateHook(false);
     const refreshing = useStateHook(false);
@@ -1158,10 +1239,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             cancelEdit();
             cancelTitleEdit();
             // The system prompt draft belongs to the previous chat's surface,
-            // and turn collapse re-seeds from the freshly loaded record (its
-            // system messages start collapsed).
+            // and turn collapse re-seeds from the freshly loaded record (every
+            // turn folds except its latest assistant reply).
             systemPrompt('');
-            collapsedTurns(systemIndicesOf(record.messages));
+            collapsedTurns(defaultCollapsedIndices(record.messages));
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
@@ -1234,10 +1315,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             const summary = summaryFromRecord(result);
             chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
             // A deletion can shift indices, so any open edit is abandoned and
-            // the collapse set re-seeds from the shortened record (system stays
-            // at index 0, so this effectively restores default collapse).
+            // the collapse set re-seeds from the shortened record's defaults
+            // (everything folds except its latest assistant reply).
             cancelEdit();
-            collapsedTurns(systemIndicesOf(result.messages));
+            collapsedTurns(defaultCollapsedIndices(result.messages));
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
@@ -1343,8 +1424,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // history and persisted ONLY when the record does not already lead with a
     // system message; an empty draft adds nothing. A failure before or during
     // streaming saves nothing and restores the composer text for retry.
-    const submit = useCallback(async (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
+    // Invoked from the form's onSubmit (event present: prevent the browser's
+    // default GET-reload) AND directly from the composer's desktop Enter key
+    // (no event: the keydown handler already prevented the newline). The event
+    // type follows the styledComponent form's FormEventHandler<HTMLElement>.
+    const submit = useCallback(async (event?: React.FormEvent<HTMLElement>) => {
+        event?.preventDefault();
         const text = message().trim();
         const chosenModel = model();
         if (!text || !chosenModel || loading()) return;
@@ -1412,8 +1497,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             // The draft prompt is now persisted (or was never needed) — clear it.
             systemPrompt('');
             // A fresh record replaced the history (the PUT prepend path can
-            // even shift indices), so re-seed turn collapse: system turns fold.
-            collapsedTurns(systemIndicesOf(result.messages));
+            // even shift indices), so re-seed turn collapse: the just-finished
+            // assistant reply stays expanded, every earlier turn folds.
+            collapsedTurns(defaultCollapsedIndices(result.messages));
             // A completed turn makes this model the browser's remembered last-used one.
             rememberModel(chosenModel);
             pendingUser('');
@@ -1575,16 +1661,27 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 {renderMessages(currentMessages, messageOptions)}
                                 {hasPendingTurn && (
                                     <UserTurn>
+                                        {/* In-flight turns carry the same top-left
+                                            attribution label as persisted ones (plain
+                                            span — they cannot collapse yet), so the
+                                            turn chrome does not jump on completion. */}
+                                        <TurnHeaderRow>
+                                            <TurnHeaderLead>
+                                                <TurnLabelText>user</TurnLabelText>
+                                            </TurnHeaderLead>
+                                        </TurnHeaderRow>
                                         <UserMessage data-testid="pending-user-message">{pendingUser()}</UserMessage>
                                     </UserTurn>
                                 )}
                                 {hasPendingTurn && (
                                     <AssistantTurn>
+                                        <TurnHeaderRow>
+                                            <TurnHeaderLead>
+                                                {/* The in-flight response is marked in its top-left corner with the model currently producing it. */}
+                                                <TurnLabelText data-testid="streaming-message-model">{modelLabel(chosenModel)}</TurnLabelText>
+                                            </TurnHeaderLead>
+                                        </TurnHeaderRow>
                                         <AssistantMessage data-testid="streaming-message">{streaming()}</AssistantMessage>
-                                        <TurnControls>
-                                            {/* The in-flight response is marked with the model currently producing it. */}
-                                            <MessageModel data-testid="streaming-message-model">{modelLabel(chosenModel)}</MessageModel>
-                                        </TurnControls>
                                     </AssistantTurn>
                                 )}
                             </>
@@ -1607,6 +1704,20 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             onChange={(event) => {
                                 message(event.target.value);
                                 resizeMessageInput(event.currentTarget);
+                            }}
+                            onKeyDown={(event) => {
+                                // DESKTOP: Enter submits (identical to the send
+                                // button; submit() guards empty text/in-flight
+                                // turns itself) and the newline is suppressed.
+                                // Shift+Enter keeps the textarea's newline
+                                // default, and MOBILE (<md) always keeps it so
+                                // the on-screen keyboard's return key grows the
+                                // draft. isComposing guards IME confirmation
+                                // (e.g. Japanese input) which also fires Enter.
+                                if (event.nativeEvent.isComposing || event.key !== 'Enter' || event.shiftKey) return;
+                                if (!isDesktopViewport()) return;
+                                event.preventDefault();
+                                void submit();
                             }}
                             placeholder="Message the assistant..."
                             aria-label="Message the assistant"
