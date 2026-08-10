@@ -10,12 +10,14 @@
 // completes. The complete history is sent to whichever model is selected.
 // On mount the sidebar restores the persisted chat history through the collection
 // GET (summaries only); a selected chat's messages come from the identified GET.
-// Model selection lives on the split send control ([model|^]):
+// Model selection lives on the clickable model TEXT above the composer input:
 // - the browser remembers the last model actually used (localStorage);
 // - with nothing remembered, a selected chat's recorded model applies;
 // - otherwise the first catalog entry sorted by MODEL NAME applies — provider /
 //   organisation prefixes are stripped from labels ("zai-org/GLM-5.2-NVFP4" shows
 //   as "GLM-5.2-NVFP4") but kept in values for provider routing.
+// Per-message attribution (the assistant turn's top-left label) already marks
+// WHICH model produced each reply, so no separate "Model: ..." strip exists.
 // Conversation management lives ENTIRELY in the sidebar: "New chat" sits at
 // its top-left and EVERY conversation entry carries an "x" delete control at
 // its top-right corner that permanently deletes THAT conversation (identified
@@ -64,15 +66,21 @@
 // session-level UI state only. Composer keyboard rules: on DESKTOP (md+) Enter submits the
 // message and Shift+Enter inserts a newline; on MOBILE (below md) Enter always
 // inserts a newline so the on-screen keyboard's return key only grows the
-// draft — submission stays on the split send button. The composer input
+// draft — submission stays on the send button. The composer is a slim modern
+// COLUMN: the model selection is a quiet clickable TEXT line ABOVE the input
+// (the stripped model name; the native dropdown select overlays it invisibly
+// so clicking the text opens the real picker), and the send button is a
+// circular ">" arrow pinned INSIDE the input box at its bottom-right corner —
+// rendered ONLY while the composer has focus (focus-within via the form's
+// onFocus/onBlur: moving between the input, the arrow, and the model select
+// keeps it visible; leaving the composer hides it again). The composer input
 // starts EXACTLY one text row tall (rows=1 + border-box height math that
 // counts the 1px borders, so the first measurement can never inflate the
-// box to the browser's two-row textarea default) top-aligned with the
-// equally tall split send control, and auto-grows with newlines up to eight
-// rows. The split send control NEVER collapses on narrow screens: both
-// halves are flex-shrink:0 while the input yields the space (min-width:0),
-// so the model half keeps its label visible on mobile instead of being
-// squeezed out of the row. The sidebar is a
+// box to the browser's two-row textarea default) and auto-grows with newlines
+// up to eight rows; its right padding is deepened so text never slides under
+// the embedded arrow. The layout needs no narrow-screen shrink defenses:
+// the model text and the input stack vertically on every viewport. The
+// sidebar is a
 // static column on md+ screens and a toggleable drawer below the md breakpoint.
 // The message list ALWAYS follows the conversation bottom: typing in the
 // composer (the field grows and squeezes the list), the sent message's
@@ -667,13 +675,15 @@ const SystemMessage = styledComponent<{ empty?: boolean }>('article', {
 // Composer separates the editable input from the message list and exposes a stable
 // test hook. flexShrink:0 pins it to the conversation column's BOTTOM edge: it
 // never shrinks or scrolls away while the message list above absorbs all the
-// overflow as the column's only scrolling surface. align-items: flex-start
-// keeps the send control pinned to the top of the composer row even when the
-// textarea grows to multiple lines.
+// overflow as the column's only scrolling surface. The composer is a single
+// COLUMN (input full-width on top, focus-gated send control docked
+// bottom-right below it — see SendGroup); align-items:stretch lets the input
+// span the whole row.
 const Composer = styledComponent('form', {
     display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'stretch',
     flexShrink: 0,
-    alignItems: 'flex-start',
     gap: 12,
     padding: 16,
     borderTop: `1px solid ${COLORS.border}`,
@@ -691,14 +701,16 @@ const Composer = styledComponent('form', {
 // resize effect would otherwise MEASURE as the empty box's scrollHeight and
 // lock the field at two rows (the pre-fix bug: a new chat always showed a
 // two-row composer). Mouse resizing is disabled so the composer height
-// remains controlled by the message content. min-width:0 lets this flex item
-// yield space to the split send control on narrow (mobile) widths instead of
-// overflowing the composer row. Keyboard behavior (see the onKeyDown handler
-// at the render site below): on DESKTOP (md+ viewport) Enter submits the
-// message and Shift+Enter inserts a newline; on MOBILE Enter always inserts
-// a newline and the split send button performs submission.
+// remains controlled by the message content. The composer is a COLUMN now
+// (input on top, model text above), so the input spans the full row via
+// width:100% — flex:1 would be a flex-basis:0 HEIGHT in a column and collapse
+// the field. The RIGHT padding is deepened so typed text never slides under
+// the embedded send arrow (32px circle at right:8px). Keyboard behavior (see
+// the onKeyDown handler at the render site below): on DESKTOP (md+ viewport)
+// Enter submits the message and Shift+Enter inserts a newline; on MOBILE
+// Enter always inserts a newline and the send arrow performs submission.
 const MessageInput = styledComponent('textarea', {
-    flex: 1,
+    width: '100%',
     minWidth: 0,
     minHeight: 0,
     boxSizing: 'border-box',
@@ -706,7 +718,7 @@ const MessageInput = styledComponent('textarea', {
     maxHeight: 'calc(1.4em * 8 + 26px)',
     resize: 'none',
     overflowY: 'auto',
-    padding: '12px 14px',
+    padding: '12px 52px 12px 14px',
     border: `1px solid ${COLORS.border}`,
     borderRadius: 8,
     backgroundColor: COLORS.page,
@@ -716,61 +728,63 @@ const MessageInput = styledComponent('textarea', {
     outline: 'none'
 }) as unknown as React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>>;
 
-// Send control group: split control rendered as [{model}|^]. The left half submits
-// using the selected model name as its label; the right half ("^") opens the model
-// dropdown. Both halves share the accent surface so they read as one control.
-const SendGroup = styledComponent('div', {
-    display: 'flex',
-    alignItems: 'stretch',
-    flexShrink: 0
+// The model selection presentation: a quiet TEXT line sitting ABOVE the input
+// (the stripped model name as muted label text — no button chrome). Shrink-
+// wrapped (inline-flex) so the invisible select overlaying it covers exactly
+// the clickable text, and flush-left inside the composer's column.
+const ModelPicker = styledComponent('div', {
+    position: 'relative',
+    alignSelf: 'flex-start',
+    display: 'inline-flex',
+    alignItems: 'center'
 });
 
-// Left half of the send control: the submit button whose label is the model
-// name. flex-shrink:0 is load-bearing on MOBILE: with the composer row under
-// width pressure this button must never be squeezed to zero width (the
-// reported "only the ^ caret is visible" bug — some mobile engines evaluate
-// a <button> flex item's automatic minimum as 0), so neither half of the
-// split control may shrink; the textarea (min-width:0) yields instead.
-// min-height mirrors the input's one-row border-box height so the control
-// and the single-line composer sit perfectly level.
+// The model text itself: muted label typography reading as metadata, with the
+// pointer cursor hinting the dropdown. Property ORDER matters for the tests
+// (they identify this rule by its exact declaration sequence).
+const ModelText = styledComponent('span', {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer'
+});
+
+// Positioning context for the embedded send arrow: wraps the input.
+const ComposerField = styledComponent('div', {
+    position: 'relative',
+    width: '100%'
+});
+
+// The send button: a circular ">" arrow pinned INSIDE the input box at its
+// bottom-right corner (position:absolute inside ComposerField), rendered ONLY
+// while the composer has focus. border-radius:50% identifies this rule
+// uniquely in Emotion's sheet (asserted by the tests).
 const SendButton = styledComponent('button', {
-    minHeight: 'calc(1.4em + 26px)',
-    flexShrink: 0,
-    padding: '0 16px',
-    border: `1px solid ${COLORS.accentStrong}`,
-    borderRadius: '8px 0 0 8px',
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 32,
+    height: 32,
+    padding: 0,
+    border: 'none',
+    borderRadius: '50%',
     backgroundColor: COLORS.accentStrong,
     color: '#ffffff',
     cursor: 'pointer',
     font: 'inherit',
     fontWeight: 700,
-    whiteSpace: 'nowrap'
+    fontSize: 15,
+    lineHeight: 1
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
-// Right half of the send control: the visible "^" caret. A hairline divider
-// separates it from the model-name half to communicate the split behavior.
-// flex-shrink:0 pairs with the model half: neither half of the split control
-// collapses under mobile width pressure (see SendButton).
-const CaretField = styledComponent('span', {
-    position: 'relative',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    minWidth: 42,
-    border: `1px solid ${COLORS.accentStrong}`,
-    borderLeft: '1px solid rgba(255, 255, 255, 0.35)',
-    borderRadius: '0 8px 8px 0',
-    backgroundColor: COLORS.accentStrong,
-    color: '#ffffff',
-    fontWeight: 700,
-    lineHeight: 1
-});
-
-// Native select layered invisibly over the caret half. Every click on "^" actually
-// lands on this select, which opens the real model dropdown; keeping it a native
-// <select> preserves keyboard support and the existing data-testid="model-select"
-// contract used by the tests (fireEvent.change selects a model by value).
+// Native select layered invisibly over the model TEXT. Every click on the
+// text actually lands on this select, which opens the real model dropdown;
+// keeping it a native <select> preserves keyboard support and the existing
+// data-testid="model-select" contract used by the tests (fireEvent.change
+// selects a model by value).
 const ModelSelect = styledComponent('select', {
     position: 'absolute',
     inset: 0,
@@ -805,15 +819,6 @@ const Metadata = styledComponent('span', {
     color: COLORS.muted,
     fontSize: 12,
     lineHeight: 1.3
-});
-
-// Model metadata receives its own layout component so the JSX contains no
-// inline style object. flexShrink:0 keeps the one-line strip from being
-// squeezed between the message list and the pinned composer.
-const ModelMetadata = styledComponent(Metadata, {
-    display: 'block',
-    flexShrink: 0,
-    padding: '0 24px 8px'
 });
 
 // Error banner is explicit and non-modal so a failed provider request leaves
@@ -1203,6 +1208,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // (or when the stream fails, after the composer text is restored).
     const pendingUser = useStateHook('');
     const streaming = useStateHook('');
+    // The split send control renders ONLY while focus is inside the composer
+    // (focus-within on the form: input, both button halves, and the model
+    // select all count). Hidden otherwise, keeping the idle composer a bare
+    // full-width text field.
+    const composerFocus = useStateHook(false);
     // Mobile drawer state; at md+ the sidebar is a permanent column and this
     // state is ignored by CSS (the toggle button is display:none there).
     const sidebarOpen = useStateHook(false);
@@ -1761,7 +1771,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 </HeaderLead>
                 {/* No header actions: conversation deletion lives on each sidebar
                     entry's "x" (top-right corner of the entry) and the model
-                    picker lives on the split send control in the composer. */}
+                    picker is the clickable text above the composer input. */}
             </Header>
             <Workspace>
                 {/* Scrim sits before the sidebar so the drawer paints above it. */}
@@ -1897,74 +1907,96 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                         )}
                     </MessageList>
                     {error() && <ErrorBanner data-testid="chat-error">{error()}</ErrorBanner>}
-                    {selected() && (
-                        <ModelMetadata data-testid="chat-model">
-                            Model: {selected()!.model}
-                        </ModelMetadata>
-                    )}
-                    <Composer onSubmit={submit} data-testid="chat-composer">
-                        <MessageInput
-                            value={message()}
-                            onChange={(event) => {
-                                message(event.target.value);
-                                resizeMessageInput(event.currentTarget);
-                            }}
-                            onKeyDown={(event) => {
-                                // DESKTOP: Enter submits (identical to the send
-                                // button; submit() guards empty text/in-flight
-                                // turns itself) and the newline is suppressed.
-                                // Shift+Enter keeps the textarea's newline
-                                // default, and MOBILE (<md) always keeps it so
-                                // the on-screen keyboard's return key grows the
-                                // draft. isComposing guards IME confirmation
-                                // (e.g. Japanese input) which also fires Enter.
-                                if (event.nativeEvent.isComposing || event.key !== 'Enter' || event.shiftKey) return;
-                                if (!isDesktopViewport()) return;
-                                event.preventDefault();
-                                void submit();
-                            }}
-                            placeholder="Message the assistant..."
-                            aria-label="Message the assistant"
-                            data-testid="chat-input"
-                            disabled={loading()}
-                            // one row by default: the browser's two-row
-                            // textarea default would otherwise survive the
-                            // resize effect's 'auto' measurement and lock the
-                            // empty composer at two rows; combined with the
-                            // border-box one-row height above, the input and
-                            // the split send control stay level
-                            rows={1}
-                        />
-                        <SendGroup data-testid="send-group">
-                            <SendButton
-                                type="submit"
-                                disabled={loading() || !chosenModel || !isString(message()) || !message().trim()}
-                                data-testid="send-chat-button"
+                    {/* No "Model: ..." strip: the selected model is the text
+                        above the input, and each assistant turn's top-left
+                        label already attributes its producing model. */}
+                    <Composer
+                        onSubmit={submit}
+                        // Focus-within gating for the embedded send arrow: show it
+                        // when focus ENTERS the composer; hide it only when
+                        // focus LEAVES the form entirely (moving among the
+                        // input, the arrow, and the model select keeps it
+                        // visible — otherwise clicking the arrow would blur
+                        // the input first and unmount it before its click).
+                        onFocus={() => composerFocus(true)}
+                        onBlur={(event) => {
+                            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) composerFocus(false);
+                        }}
+                        data-testid="chat-composer"
+                    >
+                        {/* The model selection as a TEXT line above the input:
+                            the stripped model name, clickable — the invisible
+                            native select overlays exactly this text and opens
+                            the real dropdown on click. Always visible. */}
+                        <ModelPicker data-testid="model-picker">
+                            <ModelText data-testid="model-label">
+                                {chosenModel ? modelLabel(chosenModel) : catalog.length === 0 ? 'No models available' : 'Select model'}
+                            </ModelText>
+                            <ModelSelect
+                                value={chosenModel}
+                                onChange={(event) => {
+                                    model(event.target.value);
+                                    // An explicit pick is immediately the remembered last-used model.
+                                    rememberModel(event.target.value);
+                                }}
+                                aria-label="Select model"
+                                data-testid="model-select"
+                                disabled={loading() || catalog.length === 0}
                             >
-                                {loading() ? 'Sending...' : chosenModel ? modelLabel(chosenModel) : 'Send'}
-                            </SendButton>
-                            <CaretField data-testid="model-caret">
-                                <span aria-hidden="true">^</span>
-                                <ModelSelect
-                                    value={chosenModel}
-                                    onChange={(event) => {
-                                        model(event.target.value);
-                                        // An explicit pick is immediately the remembered last-used model.
-                                        rememberModel(event.target.value);
-                                    }}
-                                    aria-label="Select model"
-                                    data-testid="model-select"
-                                    disabled={loading() || catalog.length === 0}
+                                {catalog.length === 0
+                                    ? <option value="">No models available</option>
+                                    : modelOptions.map((id) => (
+                                        // Values keep the full provider-routed id; labels strip the prefix.
+                                        <option key={id} value={id}>{modelLabel(id)}</option>
+                                    ))}
+                            </ModelSelect>
+                        </ModelPicker>
+                        <ComposerField data-testid="chat-input-field">
+                            <MessageInput
+                                value={message()}
+                                onChange={(event) => {
+                                    message(event.target.value);
+                                    resizeMessageInput(event.currentTarget);
+                                }}
+                                onKeyDown={(event) => {
+                                    // DESKTOP: Enter submits (identical to the send
+                                    // arrow; submit() guards empty text/in-flight
+                                    // turns itself) and the newline is suppressed.
+                                    // Shift+Enter keeps the textarea's newline
+                                    // default, and MOBILE (<md) always keeps it so
+                                    // the on-screen keyboard's return key grows the
+                                    // draft. isComposing guards IME confirmation
+                                    // (e.g. Japanese input) which also fires Enter.
+                                    if (event.nativeEvent.isComposing || event.key !== 'Enter' || event.shiftKey) return;
+                                    if (!isDesktopViewport()) return;
+                                    event.preventDefault();
+                                    void submit();
+                                }}
+                                placeholder="Message the assistant..."
+                                aria-label="Message the assistant"
+                                data-testid="chat-input"
+                                disabled={loading()}
+                                // one row by default: the browser's two-row
+                                // textarea default would otherwise survive the
+                                // resize effect's 'auto' measurement and lock the
+                                // empty composer at two rows
+                                rows={1}
+                            />
+                            {/* The ">" send arrow lives INSIDE the input box at
+                                its bottom-right corner and exists ONLY while the
+                                composer is focused (see onFocus/onBlur above). */}
+                            {composerFocus() && (
+                                <SendButton
+                                    type="submit"
+                                    disabled={loading() || !chosenModel || !isString(message()) || !message().trim()}
+                                    aria-label="Send message"
+                                    title="Send message"
+                                    data-testid="send-chat-button"
                                 >
-                                    {catalog.length === 0
-                                        ? <option value="">No models available</option>
-                                        : modelOptions.map((id) => (
-                                            // Values keep the full provider-routed id; labels strip the prefix.
-                                            <option key={id} value={id}>{modelLabel(id)}</option>
-                                        ))}
-                                </ModelSelect>
-                            </CaretField>
-                        </SendGroup>
+                                    <span aria-hidden="true">&gt;</span>
+                                </SendButton>
+                            )}
+                        </ComposerField>
                     </Composer>
                 </Conversation>
             </Workspace>

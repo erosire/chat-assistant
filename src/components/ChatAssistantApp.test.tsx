@@ -38,11 +38,14 @@
 // reply lands. Composer keyboard rules: Enter submits on desktop (md+),
 // Shift+Enter inserts a newline; on mobile (below md) Enter only inserts a
 // newline. The composer input starts at EXACTLY one row (rows=1, border-box
-// height math incl. the 2px borders) top-aligned with the equally tall split
-// send control; that control never collapses under mobile width pressure —
-// both halves are flex-shrink:0 and the input yields (min-width:0) so the
-// model label stays visible. The rename dialog's actions stack full-width on
-// mobile and sit in a right-aligned row on desktop.
+// height math incl. the 2px borders); the composer is a COLUMN: the model
+// selection is a clickable TEXT line ABOVE the full-width input (always
+// visible, the native dropdown select overlaying it invisibly), and the send
+// button is a circular ">" arrow EMBEDDED in the input at its bottom-right —
+// rendered ONLY while the composer has focus (focus-within, including the
+// arrow and the model select). The input's right padding keeps text clear of
+// the arrow. The rename dialog's actions
+// stack full-width on mobile and sit in a right-aligned row on desktop.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatAssistantApp } from './ChatAssistantApp';
@@ -182,7 +185,12 @@ const renderApp = () =>
     render(<ChatAssistantApp baseUrl={BASE_URL} providerUrl={PROVIDER_URL} />);
 
 // Sending requires the catalog's sorted default model, which arrives asynchronously.
+// The split send control only exists while the composer has focus, so every
+// helper focuses the input before touching the control (jsdom focus events
+// reach React's root capture listener: no blur follows in these flows, so the
+// control stays mounted for the rest of each test).
 const waitForModelSelection = async () => {
+    fireEvent.focus(screen.getByTestId('chat-input'));
     await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(DEFAULT_MODEL));
 };
 
@@ -217,16 +225,29 @@ describe('ChatAssistantApp', () => {
         // The mobile sidebar drawer starts closed; the toggle lives in the header.
         expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('false');
         expect(screen.getByTestId('chat-sidebar').getAttribute('data-open')).toBe('false');
+        // The send arrow stays HIDDEN until the composer has focus; the model
+        // selection (plain text above the input) is always visible.
+        expect(screen.queryByTestId('send-chat-button')).toBeNull();
+        expect(screen.getByTestId('model-picker')).toBeDefined();
+        expect(screen.getByTestId('model-select')).toBeDefined();
+
         const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
         expect(input).toBeDefined();
         // rows=1: the browser's two-row textarea default must not survive the
         // resize effect's 'auto' measurement (see resizeMessageInput).
         expect(input.getAttribute('rows')).toBe('1');
         expect(window.getComputedStyle(input).resize).toBe('none');
-        expect(screen.getByTestId('send-chat-button')).toBeDefined();
 
-        // The composer keeps the send control aligned to the top while the input grows.
-        expect(window.getComputedStyle(screen.getByTestId('chat-composer')).alignItems).toBe('flex-start');
+        // Composer geometry: model text ABOVE, then the field carrying the
+        // input; focusing reveals the arrow INSIDE the field, after the input.
+        const composer = screen.getByTestId('chat-composer');
+        expect(window.getComputedStyle(composer).flexDirection).toBe('column');
+        expect(composer.firstElementChild).toBe(screen.getByTestId('model-picker'));
+        const field = screen.getByTestId('chat-input-field');
+        expect(composer.lastElementChild).toBe(field);
+        expect(field.firstElementChild).toBe(input);
+        fireEvent.focus(input);
+        expect(field.lastElementChild).toBe(screen.getByTestId('send-chat-button'));
 
         // Mount requests are the credential-free provider model catalog followed by
         // the collection GET that restores the persisted chat history (empty here).
@@ -280,18 +301,18 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls[2]).toEqual([`${BASE_URL}/conversation-1`, { method: 'GET' }]);
     });
 
-    it('labels the send button with the stripped model name and sorts options by model name', async () => {
+    it('shows the selected model as a text line above the input and sorts options by model name', async () => {
         renderApp();
         await waitForModelSelection();
 
-        // Split control: [model|^] — the submit half is labeled with the stripped model name,
-        // the caret half carries the hidden dropdown select.
-        const sendButton = screen.getByTestId('send-chat-button') as HTMLButtonElement;
-        const caret = screen.getByTestId('model-caret');
-        expect(sendButton.textContent).toBe('test-model');
-        // The caret glyph is the only visible label; the select inside stays invisible.
-        expect(caret.querySelector('span[aria-hidden="true"]')?.textContent).toBe('^');
-        expect(caret.querySelector('[data-testid="model-select"]')).not.toBeNull();
+        // The model selection is a plain TEXT line above the input labeled
+        // with the stripped model name; the invisible dropdown select overlays it.
+        const picker = screen.getByTestId('model-picker');
+        expect(screen.getByTestId('model-label').textContent).toBe('test-model');
+        expect(picker.contains(screen.getByTestId('model-label'))).toBe(true);
+        expect(picker.querySelector('[data-testid="model-select"]')).not.toBeNull();
+        // The picker's position context is what the overlay select fills.
+        expect(window.getComputedStyle(picker).position).toBe('relative');
 
         // Options are sorted by stripped model name, NOT by organisation prefix:
         // raw catalog order is alpha-org first, yet 'test-model' sorts before 'zeta-model'.
@@ -301,9 +322,12 @@ describe('ChatAssistantApp', () => {
             { value: ALT_MODEL, label: 'zeta-model' }
         ]);
 
-        // Changing the model through the caret dropdown updates the stripped button label.
+        // Changing the model through the text's dropdown updates the label.
         fireEvent.change(select, { target: { value: ALT_MODEL } });
-        expect(sendButton.textContent).toBe('zeta-model');
+        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model');
+
+        // The send button carries no model name anymore: it is the ">" arrow.
+        expect(screen.getByTestId('send-chat-button').textContent).toBe('>');
     });
 
     it('remembers the explicitly chosen model across remounts', async () => {
@@ -315,9 +339,11 @@ describe('ChatAssistantApp', () => {
         first.unmount();
 
         renderApp();
-        // The remembered id wins over the sorted catalog default on the fresh mount.
+        // The remembered id wins over the sorted catalog default on the fresh
+        // mount (this test cannot reuse waitForModelSelection: it asserts the
+        // DEFAULT model; the model text is always rendered, no focus needed).
         await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(ALT_MODEL));
-        expect(screen.getByTestId('send-chat-button').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model');
     });
 
     it('grows the message input from its content and keeps mouse resizing disabled', async () => {
@@ -356,42 +382,91 @@ describe('ChatAssistantApp', () => {
         await waitFor(() => expect(input.style.height).toBe('48.4px'));
     });
 
-    it('starts the composer at exactly one row level with the send control, which never collapses on mobile', async () => {
+    it('embeds the focused send arrow inside the input on the shared one-row geometry, with the model as text above', async () => {
         renderApp();
+        // waitForModelSelection focuses the composer: the arrow's rules only
+        // EXIST in the sheet once it renders.
         await waitForModelSelection();
 
         // The value-bearing one-row behavior is covered by the resize tests
-        // above; the STATIC alignment/shrink contract lives in Emotion's
-        // injected stylesheet, which this test reads directly (jsdom cannot
-        // evaluate calc() or flex shrink resolution — see the z-index and
-        // dialog tests for the same technique).
+        // above; the STATIC layout contract lives in Emotion's injected
+        // stylesheet, which this test reads directly (jsdom cannot evaluate
+        // calc() or absolute positioning — see the z-index and dialog tests
+        // for the same technique).
         const css = Array.from(document.querySelectorAll('style[data-emotion]'))
             .map((tag) => tag.textContent)
             .join('\n');
 
         // MessageInput is the only resize:none element; its rule must carry
-        // the border-box one-row height AND min-width:0 (the flex item yields
-        // space to the send control on narrow screens instead of overflowing).
+        // the border-box one-row height AND the deepened RIGHT padding that
+        // keeps text clear of the embedded arrow (32px circle at right:8px).
         const inputRule = /\.css-[^{]+\{[^}]*resize:none;[^}]*\}/.exec(css)?.[0];
         expect(inputRule).toBeDefined();
         expect(inputRule).toContain('box-sizing:border-box');
         expect(inputRule).toContain('height:calc(1.4em + 26px)');
         expect(inputRule).toContain('max-height:calc(1.4em * 8 + 26px)');
-        expect(inputRule).toContain('min-width:0');
+        expect(inputRule).toContain('padding:12px 52px 12px 14px');
 
-        // The model half of the split send control: SAME one-row min-height
-        // as the input (they sit level), and flex-shrink:0 so mobile width
-        // pressure can never squeeze the model label out of the row (the
-        // reported "only the ^ is visible" bug).
-        const buttonRule = /\.css-[^{]+\{[^}]*border-radius:8px 0 0 8px;[^}]*\}/.exec(css)?.[0];
-        expect(buttonRule).toBeDefined();
-        expect(buttonRule).toContain('min-height:calc(1.4em + 26px)');
-        expect(buttonRule).toContain('flex-shrink:0');
+        // The arrow: a 32px circle pinned absolute to the field's bottom-right
+        // (border-radius:50% identifies the rule uniquely).
+        const arrowRule = /\.css-[^{]+\{[^}]*border-radius:50%;[^}]*\}/.exec(css)?.[0];
+        expect(arrowRule).toBeDefined();
+        expect(arrowRule).toContain('position:absolute');
+        expect(arrowRule).toContain('right:8px');
+        expect(arrowRule).toContain('bottom:8px');
+        expect(arrowRule).toContain('width:32px');
+        expect(arrowRule).toContain('height:32px');
+        expect(arrowRule).toContain('background-color:#5f82f0');
 
-        // The caret half shares the no-collapse guarantee.
-        const caretRule = /\.css-[^{]+\{[^}]*border-radius:0 8px 8px 0;[^}]*\}/.exec(css)?.[0];
-        expect(caretRule).toBeDefined();
-        expect(caretRule).toContain('flex-shrink:0');
+        // The model selection is plain muted TEXT (no button chrome): the
+        // exact declaration sequence identifies its rule.
+        expect(css).toMatch(/\.css-[^{]+\{color:#9ca8b8;font-size:12px;font-weight:700;cursor:pointer;\}/);
+        // ...and the invisible overlay select fills the picker exactly.
+        const selectRule = /\.css-[^{]+\{[^}]*opacity:0;[^}]*\}/.exec(css)?.[0];
+        expect(selectRule).toBeDefined();
+        expect(selectRule).toContain('position:absolute');
+        expect(selectRule).toContain('inset:0');
+    });
+
+    it('keeps the send arrow hidden until the composer has focus, then shows it inside the input at the bottom-right', async () => {
+        renderApp();
+        // Catalog + history resolve regardless of focus (the mount effects).
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(2));
+
+        // The model selection text above the input is ALWAYS there (with its
+        // overlay select); the send arrow is NOT.
+        expect(screen.getByTestId('model-picker')).toBeDefined();
+        expect(screen.getByTestId('model-select')).toBeDefined();
+        expect(screen.queryByTestId('send-chat-button')).toBeNull();
+
+        // Focus: the arrow appears INSIDE the field, docked bottom-right: the
+        // field is the positioning context, the arrow absolute at right/bottom.
+        fireEvent.focus(screen.getByTestId('chat-input'));
+        const composer = screen.getByTestId('chat-composer');
+        expect(composer.firstElementChild).toBe(screen.getByTestId('model-picker'));
+        const field = screen.getByTestId('chat-input-field');
+        expect(composer.lastElementChild).toBe(field);
+        const arrow = screen.getByTestId('send-chat-button');
+        expect(field.contains(arrow)).toBe(true);
+        expect(window.getComputedStyle(field).position).toBe('relative');
+        const arrowStyle = window.getComputedStyle(arrow);
+        expect(arrowStyle.position).toBe('absolute');
+        expect(arrowStyle.right).toBe('8px');
+        expect(arrowStyle.bottom).toBe('8px');
+
+        // Moving focus WITHIN the composer (input → arrow) keeps it visible —
+        // the arrow must survive its own click focus move.
+        fireEvent.blur(screen.getByTestId('chat-input'), { relatedTarget: arrow });
+        expect(screen.getByTestId('send-chat-button')).toBeDefined();
+
+        // Leaving the composer entirely (relatedTarget null) hides it again.
+        fireEvent.blur(arrow, { relatedTarget: null });
+        expect(screen.queryByTestId('send-chat-button')).toBeNull();
+
+        // Re-focusing brings it back; only the two mount fetches ever ran.
+        fireEvent.focus(screen.getByTestId('chat-input'));
+        expect(screen.getByTestId('send-chat-button')).toBeDefined();
+        expect((fetch as any).mock.calls).toHaveLength(2);
     });
 
     it('streams from the provider first, then persists the completed pair, then GETs the record', async () => {
@@ -406,7 +481,10 @@ describe('ChatAssistantApp', () => {
         // top-left chat title, the sidebar label, and the user message bubble.
         expect(screen.getAllByText('Hello assistant')).toHaveLength(3);
         expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined();
-        expect(screen.getByTestId('chat-model').textContent).toBe('Model: alpha-org/zeta-model');
+        // No "Model: ..." metadata strip exists; the producing model shows as
+        // the composer text line (selected model) and on the turn's own label.
+        expect(screen.queryByTestId('chat-model')).toBeNull();
+        expect(screen.getByTestId('model-label').textContent).toBe('test-model');
         // The response is marked with its producing model (fixture attribution,
         // stripped-label form) in the assistant turn's top-left corner.
         expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
@@ -586,7 +664,7 @@ describe('ChatAssistantApp', () => {
         await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(ALT_MODEL));
         // The inherited model becomes the remembered one from then on.
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBe(ALT_MODEL);
-        expect(screen.getByTestId('send-chat-button').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model');
     });
 
     it('restores the composer text and saves nothing when the provider fails before streaming', async () => {
@@ -773,9 +851,9 @@ describe('ChatAssistantApp', () => {
         // New chat clears the selection without touching the model selection,
         // and the header title falls back to the product name.
         expect(screen.getByTestId('empty-chat-state')).toBeDefined();
-        expect(screen.queryByTestId('chat-model')).toBeNull();
         expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
         expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(DEFAULT_MODEL);
+        expect(screen.getByTestId('model-label').textContent).toBe('test-model');
     });
 
     it('toggles the sidebar drawer through the header button and the scrim', async () => {
@@ -1786,9 +1864,6 @@ describe('ChatAssistantApp', () => {
         await sendFirstTurn();
         expect(list.contains(screen.getByTestId('chat-composer'))).toBe(false);
         expect(window.getComputedStyle(page).overflow).toBe('hidden');
-        // The fixed bottom chrome strip between list and composer (the
-        // selected chat's model metadata) also resists shrinking.
-        expect(window.getComputedStyle(screen.getByTestId('chat-model')).flexShrink).toBe('0');
     });
 
     it('stacks the rename dialog actions on mobile and rows them on desktop', async () => {
