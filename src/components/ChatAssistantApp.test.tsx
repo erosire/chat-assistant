@@ -1265,6 +1265,49 @@ describe('ChatAssistantApp', () => {
         fireEvent.keyDown(bubble, { key: 'Escape' });
     });
 
+    it('focuses the inline editor with preventScroll so starting an edit never jumps the list', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+
+        // Spy BEFORE the click so the editable REMOUNT's programmatic focus is
+        // captured (callThrough keeps jsdom's own focus semantics — activeElement
+        // still advances). The editing auto-focus effect is the component's ONLY
+        // focus() caller, and the auto-pin effect never runs on edit-flag
+        // changes, so the list's scroll offset must survive the edit start.
+        // 87 stands in for a long chat's deep scroll position (jsdom never
+        // scrolls by itself; the pin effect wrote scrollTop = scrollHeight = 0
+        // while the first turn persisted).
+        const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus');
+        const list = screen.getByTestId('message-list');
+        list.scrollTop = 87;
+
+        // Word-click edit start on the expanded assistant turn: exactly ONE
+        // focus runs (the remounted bubble's) and it MUST carry
+        // preventScroll:true — the option that stops the browser from
+        // scrolling the provisional offset-0 caret (the bubble's top edge)
+        // into view. Without it a long chat snapped the list UP to the message
+        // top while the real caret sat at the clicked word — the regression
+        // this test locks out.
+        fireEvent.click(screen.getByTestId('message-content-1'));
+        expect(focusSpy.mock.calls).toEqual([[{ preventScroll: true }]]);
+        expect(document.activeElement).toBe(screen.getByTestId('message-content-1'));
+        // Caret behavior is unchanged: jsdom has no caretRangeFromPoint, so the
+        // null-offset fallback lands at the END of the 24-character text.
+        expect(window.getSelection()?.focusOffset).toBe(24);
+        expect(list.scrollTop).toBe(87);
+
+        // The pen routes through the SAME effect after Escape closes the first
+        // edit (Escape itself focuses nothing): same single preventScroll
+        // focus, caret at the end, scroll untouched.
+        fireEvent.keyDown(screen.getByTestId('message-content-1'), { key: 'Escape' });
+        expect(focusSpy.mock.calls).toEqual([[{ preventScroll: true }]]);
+        fireEvent.click(screen.getByTestId('edit-message-1'));
+        expect(focusSpy.mock.calls).toEqual([[{ preventScroll: true }], [{ preventScroll: true }]]);
+        expect(window.getSelection()?.focusOffset).toBe(24);
+        expect(list.scrollTop).toBe(87);
+    });
+
     it('commits on blur without resurrecting the chat when the surface moved on mid-save', async () => {
         renderApp();
         await waitForModelSelection();

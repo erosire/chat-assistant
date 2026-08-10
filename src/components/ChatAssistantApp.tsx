@@ -32,9 +32,12 @@
 // (per-message attribution persisted via ChatMessage.model). History is freely
 // editable — SMART INLINE EDITING: there is NO input field. Clicking an
 // expanded turn's WORDS (the bubble itself, hinted by an I-beam cursor) turns
-// the bubble ITSELF into the editor (contentEditable, auto-focused, caret
-// RESTORED ONTO THE CLICKED WORD via the captured click-point offset — see
-// textOffsetFromPoint; pen-triggered edits place the caret at the text end);
+// the bubble ITSELF into the editor (contentEditable, auto-focused with
+// preventScroll:true so the list NEVER jumps — default focus() scrolls the
+// provisional offset-0 caret into view and in a long chat snapped the list
+// to the message's top; caret RESTORED ONTO THE CLICKED WORD via the
+// captured click-point offset — see textOffsetFromPoint; pen-triggered edits
+// place the caret at the text end);
 // the pen icon does the same redundantly. The edit SAVES AUTOMATICALLY ON BLUR (the
 // bubble's DOM text commits through the whole-history PUT; blank text just
 // restores the original) and ESCAPE cancels (a keyed bubble remount reverts
@@ -1642,11 +1645,25 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // captured character offset (without it, programmatic focus dumps the
     // caret at the text start); null offset (pen-triggered, or jsdom without
     // caretRangeFromPoint) lands at the text end.
+    // preventScroll is LOAD-BEARING — the long-chat scroll-jump fix: default
+    // focus() SCROLLS every scrollable ancestor to reveal the focused node,
+    // and for a contentEditable the browser additionally plants a provisional
+    // caret at offset 0 and scrolls THAT into view. With a long chat the
+    // clicked bubble's top edge (the offset-0 spot) sits above the list's
+    // scrollport, so the list snapped UP to the message's top — and because
+    // placeCaretAtOffset's programmatic addRange never scrolls back, the-view
+    // stayed jumped while the caret sat at the clicked word: the reported
+    // disorientation. preventScroll:true skips the scroll step entirely (HTML
+    // focus processing model); the clicked word is on screen by definition,
+    // so nothing ever needs revealing. Pen-triggered edits (caret at the text
+    // end) stay equally calm — if the end is below the fold, the browser's
+    // native caret reveal engages on the first typed character instead.
+    // Browsers too old for FocusOptions ignore the argument harmlessly.
     useEffect(() => {
         if (editingIndex() !== null || editingSystemPrompt() || editingTitle()) {
             const target = document.querySelector<HTMLElement>('[data-editing="true"]');
             if (target) {
-                target.focus();
+                target.focus({ preventScroll: true });
                 placeCaretAtOffset(target, caretOffset() ?? Number.MAX_SAFE_INTEGER);
                 caretOffset(null);
             }
