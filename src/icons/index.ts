@@ -10,3 +10,4 @@ export { ChevronRightIcon } from './ChevronRightIcon';
 export { ChevronDownIcon } from './ChevronDownIcon';
 export { ChevronUpIcon } from './ChevronUpIcon';
 export { SwitchIcon } from './SwitchIcon';
+export { ForkIcon } from './ForkIcon';

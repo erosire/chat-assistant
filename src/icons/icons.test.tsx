@@ -13,6 +13,7 @@ import {
     CloseIcon,
     CopyIcon,
     EditIcon,
+    ForkIcon,
     MenuIcon,
     SwitchIcon
 } from '.';
@@ -32,7 +33,8 @@ const family: ReadonlyArray<readonly [string, ComponentType<{ size?: number }>, 
     ['chevron-right', ChevronRightIcon, '<path d="M9 6l6 6-6 6"></path>'],
     ['chevron-down', ChevronDownIcon, '<path d="M6 9l6 6 6-6"></path>'],
     ['chevron-up', ChevronUpIcon, '<path d="M6 15l6-6 6 6"></path>'],
-    ['switch', SwitchIcon, '<path d="M4 7h16l-3-3"></path><path d="M20 17H4l3 3"></path>']
+    ['switch', SwitchIcon, '<path d="M4 7h16l-3-3"></path><path d="M20 17H4l3 3"></path>'],
+    ['fork', ForkIcon, '<circle cx="6" cy="5" r="3"></circle><circle cx="18" cy="5" r="3"></circle><circle cx="18" cy="19" r="3"></circle><path d="M6 8v3a5 5 0 0 0 5 5h4"></path><path d="M18 8v8"></path>']
 ];
 
 describe('icons', () => {

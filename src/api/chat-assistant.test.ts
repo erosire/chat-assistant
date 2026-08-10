@@ -85,6 +85,29 @@ describe('conversation API client', () => {
         });
     });
 
+    it('creates a fork with the supplied complete history and source model', async () => {
+        // Forking is a collection POST rather than an identified PUT: the source
+        // conversation remains untouched while the server receives the exact
+        // prefix through the selected user/assistant interval.
+        (fetch as any).mockResolvedValueOnce(response(201, { conversationId: 'conversation-fork' }));
+        const messages = [
+            { role: 'user' as const, content: 'Hello assistant' },
+            { role: 'assistant' as const, content: 'Hello user', model: 'test-model' }
+        ];
+
+        const result = await createConversation(
+            'http://test.local/v1/chat-assistant/conversation',
+            { messages, model: 'test-model' }
+        );
+
+        expect(result).toEqual({ conversationId: 'conversation-fork' });
+        expect(fetch).toHaveBeenCalledWith('http://test.local/v1/chat-assistant/conversation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages, model: 'test-model' })
+        });
+    });
+
     it('gets a conversation through the encoded conversation_id path parameter', async () => {
         (fetch as any).mockResolvedValueOnce(response(200, {
             conversationId: conversation.conversationId,

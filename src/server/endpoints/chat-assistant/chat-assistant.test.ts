@@ -86,6 +86,45 @@ describe('conversation service handlers', () => {
         });
     });
 
+    it('creates a fork from a complete history without mutating the source conversation', async () => {
+        // The fork request contains the system prompt and every turn through the
+        // selected assistant interval. A deterministic id factory proves the new
+        // record is separate from the source while exact timestamps and metadata
+        // prove the copied prefix is persisted as submitted.
+        vi.setSystemTime(new Date('2026-08-06T00:00:10.000Z'));
+        const store = memoryStore([existingConversation]);
+        const forkMessages = [
+            { role: 'system' as const, content: 'You are concise.' },
+            { role: 'user' as const, content: 'First question' },
+            { role: 'assistant' as const, content: 'First answer', model: 'test-model' }
+        ];
+
+        const result = await conversationCreate(
+            context,
+            {
+                path: {},
+                query: {},
+                body: { messages: forkMessages, model: 'test-model' }
+            },
+            variables(store, () => 'conversation-fork')
+        );
+
+        expect(result).toEqual({ status: 201, response: { conversationId: 'conversation-fork' } });
+        expect(store.get('conversation-fork')).toEqual({
+            conversationId: 'conversation-fork',
+            title: 'First question',
+            model: 'test-model',
+            status: 'complete',
+            messageCount: 3,
+            messages: forkMessages,
+            createdAt: '2026-08-06T00:00:10.000Z',
+            updatedAt: '2026-08-06T00:00:10.000Z'
+        });
+        // A fork is additive: the original conversation and its complete history
+        // are still present byte-for-byte in the injected store.
+        expect(store.get('conversation-1')).toEqual(existingConversation);
+    });
+
     it('lists persisted conversations as summaries ordered by most recent activity', async () => {
         // Older and newer records interleave creation order with activity order so
         // the updatedAt-descending sort is what the assertion actually verifies.

@@ -143,8 +143,10 @@ export const conversationList = asHandlerMethod(async (_, _parameters, rawVariab
     return { status: 200, response: { conversations } };
 });
 
-// POST /v1/chat-assistant/conversation creates a blank conversation and returns
-// only its identifier, allowing the caller to retrieve it through the identified GET.
+// POST /v1/chat-assistant/conversation creates a blank conversation or clones a
+// supplied complete history and returns only its identifier. The fork path uses
+// `messages` so the client can create a new branch up to any persisted turn
+// without mutating the source conversation.
 export const conversationCreate = asHandlerMethod(async (_, parameters, rawVariables) => {
     const variables = rawVariables as ChatHandlerVariables;
     const body = (parameters.body ?? {}) as ConversationPostRequest;
@@ -155,9 +157,22 @@ export const conversationCreate = asHandlerMethod(async (_, parameters, rawVaria
     // normal service requests continue to use cryptographically random identifiers.
     const conversationId = variables.conversationId?.() ?? randomUUID();
     const now = new Date().toISOString();
-    const messages: ChatMessage[] = body.systemPrompt
-        ? [{ role: 'system', content: body.systemPrompt.trim() }]
-        : [];
+    // A supplied history is the server-side fork payload. It must contain at
+    // least one user turn because a conversation ending in only a system prompt
+    // cannot be continued as a valid chat. The ordinary blank/system-prompt
+    // creation path remains unchanged when `messages` is omitted.
+    let messages: ChatMessage[];
+    if (body.messages !== undefined) {
+        const parsed = parseMessages(body.messages);
+        if (parsed === null || !parsed.some((message) => message.role === 'user')) {
+            return { status: 400, response: { error: 'messages must include at least one valid user message' } };
+        }
+        messages = parsed;
+    } else {
+        messages = body.systemPrompt
+            ? [{ role: 'system', content: body.systemPrompt.trim() }]
+            : [];
+    }
     const conversation: ConversationRecord = {
         conversationId,
         title: titleFromMessages(messages),

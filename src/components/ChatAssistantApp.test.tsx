@@ -373,6 +373,79 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls[2]).toEqual([`${BASE_URL}/conversation-1`, { method: 'GET' }]);
     });
 
+    it('forks at an expanded user interval, copies the complete prefix, and selects the new conversation', async () => {
+        const forkMessages = [conversation.messages[0]];
+        const forkConversation = {
+            ...conversation,
+            conversationId: 'conversation-fork',
+            title: 'Hello assistant',
+            messageCount: 1,
+            messages: forkMessages,
+            createdAt: '2026-08-06T00:00:02.000Z',
+            updatedAt: '2026-08-06T00:00:02.000Z'
+        };
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(200, {
+                    conversations: [{
+                        conversationId: conversation.conversationId,
+                        title: conversation.title,
+                        model: conversation.model,
+                        status: conversation.status,
+                        messageCount: conversation.messageCount,
+                        createdAt: conversation.createdAt,
+                        updatedAt: conversation.updatedAt
+                    }]
+                }));
+            }
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                expect(JSON.parse(String(init.body))).toEqual({
+                    messages: forkMessages,
+                    model: ALT_MODEL
+                });
+                return Promise.resolve(response(201, { conversationId: forkConversation.conversationId }));
+            }
+            if (init?.method === 'GET' && url.endsWith('/conversation/conversation-1')) {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation }));
+            }
+            if (init?.method === 'GET' && url.endsWith('/conversation/conversation-fork')) {
+                return Promise.resolve(response(200, { conversationId: forkConversation.conversationId, conversation: forkConversation }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(await screen.findByTestId('chat-tab-conversation-1'));
+        await waitFor(() => expect(screen.getByTestId('collapse-message-0')).toBeDefined());
+
+        // Fork belongs beside copy in the trailing controls, so a collapsed
+        // interval intentionally has no fork action until its content expands.
+        expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.queryByTestId('fork-message-0')).toBeNull();
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+        expect(screen.getByTestId('fork-message-0').querySelector('svg[data-icon="fork"]')).not.toBeNull();
+        expect(screen.getByTestId('copy-message-0').parentElement).toBe(screen.getByTestId('fork-message-0').parentElement);
+        fireEvent.click(screen.getByTestId('fork-message-0'));
+
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-fork')).toBeDefined());
+        expect(screen.getByTestId('chat-title').textContent).toBe('Hello assistant');
+        expect(screen.getByTestId('message-preview-0').textContent).toBe('Hello assistant');
+        expect(screen.queryByTestId('message-model-1')).toBeNull();
+        expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(ALT_MODEL);
+        expect((fetch as any).mock.calls).toEqual([
+            [`${PROVIDER_URL}/models`, { method: 'GET' }],
+            [BASE_URL, { method: 'GET' }],
+            [`${BASE_URL}/conversation-1`, { method: 'GET' }],
+            [BASE_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: forkMessages, model: ALT_MODEL })
+            }],
+            [`${BASE_URL}/conversation-fork`, { method: 'GET' }]
+        ]);
+    });
+
     it('shows the selected model as a text line above the input and sorts options by model name', async () => {
         renderApp();
         await waitForModelSelection();

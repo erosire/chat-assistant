@@ -1,5 +1,6 @@
 // Client for the two conversation resources exposed by the service.
-// The collection accepts GET (history list) and POST (creation), while the
+// The collection accepts GET (history list) and POST (creation, including a
+// complete history when the UI forks a conversation), while the
 // identified resource accepts GET, POST (append), PUT (history replacement for
 // the edit-history flow), and DELETE; no query-string identifier is used. This
 // API is pure chat storage: model traffic goes through ./provider.ts against

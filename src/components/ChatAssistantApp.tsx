@@ -169,6 +169,7 @@ import {
     ChevronUpIcon,
     CloseIcon,
     CopyIcon,
+    ForkIcon,
     MenuIcon,
     SwitchIcon
 } from '../icons';
@@ -1038,6 +1039,9 @@ type MessageListOptions = {
     onMessageRoleSwitch: (index: number) => void;
     // Copies a message's raw text to the system clipboard (client-side only).
     onMessageCopy: (content: string) => void;
+    // Creates a new conversation containing this message and its complete
+    // persisted prefix, leaving the source conversation unchanged.
+    onMessageFork: (index: number) => void;
     // Indices of currently collapsed turns (the fresh-record default seeds
     // this set: everything except the latest assistant reply). Pure
     // session-level UI state.
@@ -1249,6 +1253,22 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 <CopyIcon size={14} />
             </TurnIconButton>
         ) : null;
+        // Forking is available beside copy for every EXPANDED persisted
+        // user/assistant interval. Collapsed turns intentionally hide all
+        // bubble controls, including fork, until their content is expanded.
+        const forkControl = controlsVisible && message.role !== 'system' ? (
+            <TurnIconButton
+                type="button"
+                greyed={controlsGreyed}
+                disabled={controlsGreyed}
+                onClick={() => options.onMessageFork(index)}
+                aria-label="Fork conversation from this message"
+                title="Fork conversation from this message"
+                data-testid={`fork-message-${index}`}
+            >
+                <ForkIcon size={14} />
+            </TurnIconButton>
+        ) : null;
         // The role switch remains beside the attribution label even while a turn
         // is collapsed, because the label is the visible handle in that state.
         // During another inline edit it stays rendered but disabled/greyed, while
@@ -1411,7 +1431,10 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                                  <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
                                  <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
-                            <TurnActionPair>{copyControl}</TurnActionPair>
+                            <TurnActionPair>
+                                {copyControl}
+                                {forkControl}
+                            </TurnActionPair>
                         </TrailingControls>
                     )}
                 </UserTurn>
@@ -1439,7 +1462,10 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                                  <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
                                  <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
-                            <TurnActionPair>{copyControl}</TurnActionPair>
+                            <TurnActionPair>
+                                {copyControl}
+                                {forkControl}
+                            </TurnActionPair>
                         </TrailingControls>
                     )}
                 </AssistantTurn>
@@ -1469,7 +1495,10 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                                  <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
                                  <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
-                            <TurnActionPair>{copyControl}</TurnActionPair>
+                            <TurnActionPair>
+                                {copyControl}
+                                {forkControl}
+                            </TurnActionPair>
                         </TrailingControls>
                     )}
                 </SystemTurn>
@@ -2291,6 +2320,42 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [error]);
 
+    // Fork a persisted user/assistant interval into a new conversation. The
+    // selected index is inclusive, so forking at a user message copies that
+    // user turn and every earlier turn; forking at an assistant message copies
+    // the completed exchange. The source record is never rewritten.
+    const forkConversation = useCallback(async (index: number) => {
+        const record = selected();
+        if (!record || deleting() || savingSystemPrompt()) return;
+        const message = record.messages[index];
+        if (!message || message.role === 'system') return;
+
+        try {
+            const prefix = record.messages.slice(0, index + 1);
+            const fork = await createConversation(baseUrl, {
+                messages: prefix,
+                model: record.model || model()
+            });
+            const forkRecord = (await fetchConversation(baseUrl, fork.conversationId)).conversation;
+            const summary = summaryFromRecord(forkRecord);
+            // Put the new branch first because it is the most recently created
+            // conversation, then make it the active surface for continuation.
+            chats([summary, ...chats().filter((chat) => chat.conversationId !== summary.conversationId)]);
+            selected(forkRecord);
+            model(forkRecord.model);
+            rememberModel(forkRecord.model);
+            systemPrompt('');
+            cancelSystemPromptDraft();
+            cancelEdit();
+            cancelTitleEdit();
+            collapsedTurns(defaultCollapsedIndices(forkRecord.messages));
+            selectionPin(true);
+            error('');
+        } catch (reason) {
+            error(reason instanceof Error ? reason.message : String(reason));
+        }
+    }, [baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, model, savingSystemPrompt, selected, selectionPin, systemPrompt]);
+
     // Commit a rename delivered by the title h1's BLUR (or Enter): the SAME
     // identified PUT the message editor uses — the history round-trips
     // unchanged while the explicit title wins over the server's first-line
@@ -2569,6 +2634,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         onMessageDelete: (index) => void deleteMessage(index),
         onMessageRoleSwitch: (index) => void switchMessage(index),
         onMessageCopy: (content) => void copyMessage(content),
+        onMessageFork: (index) => void forkConversation(index),
         collapsedTurns: collapsedTurns(),
         onToggleTurnCollapse: toggleTurnCollapse,
         // Measured sticky gate: which turns' strips currently float (see
