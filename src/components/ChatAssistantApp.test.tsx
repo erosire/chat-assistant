@@ -6,8 +6,10 @@
 // canonical record GET. Model selection rules: remembered last-used model wins (localStorage),
 // else the selected chat's recorded model, else the first catalog entry sorted by stripped
 // model name (organisation prefixes are stripped from labels only).
-// Conversation management covered here: "New chat" lives at the sidebar's top-left,
-// the header's top-right Delete issues the identified DELETE, the sidebar drawer is
+// Conversation management covered here: "New chat" lives at the sidebar's
+// top-left, EVERY sidebar entry carries an "x" delete control at its top-right
+// corner (identified DELETE on that conversation; deleting the OPEN chat also
+// resets the surface), the sidebar drawer is
 // toggleable on mobile, and the header title mirrors the selected chat's title
 // (click it to open the rename dialog). Every assistant response is marked in
 // its top-left corner with the producing model (per-message ChatMessage.model);
@@ -17,11 +19,16 @@
 // edited/shortened history upstream.
 // Every turn also carries a copy action next to the pen that writes the raw
 // message text to the system clipboard (a pure client-side action: no storage).
-// Every chat is led by a system prompt: while the record has no system message
-// an editable draft box shows (even empty); a non-empty draft is persisted as
-// the leading system message on the next send (prepended to the provider
-// history) and then renders like any turn (edit pen + copy) EXCEPT it cannot
-// be deleted. Every turn carries an attribution label in the top-left corner
+// Every chat is led by a system prompt row: while the record has no system
+// message the DRAFT form shows (even empty) as a regular LEFT-aligned turn —
+// top-left "system" label (plain span: nothing to fold), the literal
+// placeholder "no prompt" in the bubble, and ONLY an edit pen (no copy
+// without text) that opens the same inline editor every turn uses; a saved
+// non-empty draft replaces the placeholder and is persisted as the leading
+// system message on the next send (prepended to the provider history); system
+// turns then render like any turn (same bubble styling as user/assistant,
+// edit pen + copy) EXCEPT they cannot be deleted.
+// Every turn carries an attribution label in the top-left corner
 // of the row above its bubble (the producing model for assistant turns, the
 // literal "user"/"system" speaker otherwise); that label IS the collapse
 // toggle — no chevron glyph anywhere — and collapsed turns hide the bubble
@@ -30,8 +37,12 @@
 // user turns fold, system turns fold, and older replies fold once a newer
 // reply lands. Composer keyboard rules: Enter submits on desktop (md+),
 // Shift+Enter inserts a newline; on mobile (below md) Enter only inserts a
-// newline. The rename dialog's actions stack full-width on mobile and sit in
-// a right-aligned row on desktop.
+// newline. The composer input starts at EXACTLY one row (rows=1, border-box
+// height math incl. the 2px borders) top-aligned with the equally tall split
+// send control; that control never collapses under mobile width pressure —
+// both halves are flex-shrink:0 and the input yields (min-width:0) so the
+// model label stays visible. The rename dialog's actions stack full-width on
+// mobile and sit in a right-aligned row on desktop.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatAssistantApp } from './ChatAssistantApp';
@@ -208,7 +219,9 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('chat-sidebar').getAttribute('data-open')).toBe('false');
         const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
         expect(input).toBeDefined();
-        expect(input.getAttribute('rows')).toBeNull();
+        // rows=1: the browser's two-row textarea default must not survive the
+        // resize effect's 'auto' measurement (see resizeMessageInput).
+        expect(input.getAttribute('rows')).toBe('1');
         expect(window.getComputedStyle(input).resize).toBe('none');
         expect(screen.getByTestId('send-chat-button')).toBeDefined();
 
@@ -314,7 +327,9 @@ describe('ChatAssistantApp', () => {
         Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 72 });
         fireEvent.change(input, { target: { value: 'Two rows of text' } });
 
-        await waitFor(() => expect(input.style.height).toBe('72px'));
+        // scrollHeight excludes borders; the border-box height adds the 2px
+        // of vertical borders back: 72 + 2 = 74.
+        await waitFor(() => expect(input.style.height).toBe('74px'));
         expect(window.getComputedStyle(input).resize).toBe('none');
     });
 
@@ -325,7 +340,8 @@ describe('ChatAssistantApp', () => {
         Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 1000 });
         fireEvent.change(input, { target: { value: 'A long message' } });
 
-        await waitFor(() => expect(input.style.height).toBe('203.2px'));
+        // Eight 22.4px lines + 24px padding + 2px borders = 205.2px outer.
+        await waitFor(() => expect(input.style.height).toBe('205.2px'));
         expect(window.getComputedStyle(input).overflowY).toBe('auto');
     });
 
@@ -336,7 +352,46 @@ describe('ChatAssistantApp', () => {
         Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 0 });
         fireEvent.change(input, { target: { value: '' } });
 
-        await waitFor(() => expect(input.style.height).toBe('46.4px'));
+        // Exactly one outer row: 22.4px line + 24px padding + 2px borders.
+        await waitFor(() => expect(input.style.height).toBe('48.4px'));
+    });
+
+    it('starts the composer at exactly one row level with the send control, which never collapses on mobile', async () => {
+        renderApp();
+        await waitForModelSelection();
+
+        // The value-bearing one-row behavior is covered by the resize tests
+        // above; the STATIC alignment/shrink contract lives in Emotion's
+        // injected stylesheet, which this test reads directly (jsdom cannot
+        // evaluate calc() or flex shrink resolution — see the z-index and
+        // dialog tests for the same technique).
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+
+        // MessageInput is the only resize:none element; its rule must carry
+        // the border-box one-row height AND min-width:0 (the flex item yields
+        // space to the send control on narrow screens instead of overflowing).
+        const inputRule = /\.css-[^{]+\{[^}]*resize:none;[^}]*\}/.exec(css)?.[0];
+        expect(inputRule).toBeDefined();
+        expect(inputRule).toContain('box-sizing:border-box');
+        expect(inputRule).toContain('height:calc(1.4em + 26px)');
+        expect(inputRule).toContain('max-height:calc(1.4em * 8 + 26px)');
+        expect(inputRule).toContain('min-width:0');
+
+        // The model half of the split send control: SAME one-row min-height
+        // as the input (they sit level), and flex-shrink:0 so mobile width
+        // pressure can never squeeze the model label out of the row (the
+        // reported "only the ^ is visible" bug).
+        const buttonRule = /\.css-[^{]+\{[^}]*border-radius:8px 0 0 8px;[^}]*\}/.exec(css)?.[0];
+        expect(buttonRule).toBeDefined();
+        expect(buttonRule).toContain('min-height:calc(1.4em + 26px)');
+        expect(buttonRule).toContain('flex-shrink:0');
+
+        // The caret half shares the no-collapse guarantee.
+        const caretRule = /\.css-[^{]+\{[^}]*border-radius:0 8px 8px 0;[^}]*\}/.exec(css)?.[0];
+        expect(caretRule).toBeDefined();
+        expect(caretRule).toContain('flex-shrink:0');
     });
 
     it('streams from the provider first, then persists the completed pair, then GETs the record', async () => {
@@ -604,15 +659,40 @@ describe('ChatAssistantApp', () => {
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBeNull();
     });
 
-    it('deletes the selected conversation from the header action', async () => {
+    it('deletes a conversation through the "x" at the top-right corner of its sidebar entry', async () => {
         renderApp();
         await waitForModelSelection();
-        // Nothing selected yet: the destructive action stays disabled.
-        expect((screen.getByTestId('delete-chat-button') as HTMLButtonElement).disabled).toBe(true);
+        // No header delete anywhere — the control moved onto the entries.
+        expect(screen.queryByTestId('delete-chat-button')).toBeNull();
         await sendFirstTurn();
-        expect((screen.getByTestId('delete-chat-button') as HTMLButtonElement).disabled).toBe(false);
 
-        fireEvent.click(screen.getByTestId('delete-chat-button'));
+        // The "x" lives INSIDE the sidebar entry as the select button's
+        // SIBLING (the button immediately precedes it) — nested inside the
+        // button it would be invalid HTML, and its clicks would select the chat.
+        const tab = screen.getByTestId('chat-tab-conversation-1');
+        const remove = screen.getByTestId('delete-chat-conversation-1');
+        const entry = screen.getByTestId('chat-entry-conversation-1');
+        expect(entry).toBe(tab.parentElement);
+        expect(entry.contains(remove)).toBe(true);
+        expect(tab.nextElementSibling).toBe(remove);
+        expect(remove.tagName).toBe('BUTTON');
+        // The glyph is the plain-text multiplication cross.
+        expect(remove.querySelector('span[aria-hidden="true"]')?.textContent).toBe('×');
+
+        // Placement: the entry is exactly the positioning context (the CSS rule
+        // is the single bare declaration) and the x pins absolute top-right;
+        // the select button's deep right padding keeps long titles clear of it.
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        expect(css).toMatch(/\.css-[^{]+\{position:relative;\}/);
+        const removeRule = /\.css-[^{]+\{[^}]*top:6px;right:6px;[^}]*\}/.exec(css)?.[0];
+        expect(removeRule).toBeDefined();
+        expect(removeRule).toContain('position:absolute');
+        const tabRule = /\.css-[^{]+\{[^}]*padding:12px 32px 12px 12px;[^}]*\}/.exec(css)?.[0];
+        expect(tabRule).toBeDefined();
+
+        fireEvent.click(remove);
 
         // The identified DELETE runs; the sidebar entry and the selection vanish.
         await waitFor(() => expect(screen.queryByTestId('chat-tab-conversation-1')).toBeNull());
@@ -623,8 +703,57 @@ describe('ChatAssistantApp', () => {
         // The header title falls back to the product name with nothing selected.
         expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
         expect(screen.getByTestId('chat-title').tagName).toBe('H1');
-        // With nothing selected the action disables itself again.
-        expect((screen.getByTestId('delete-chat-button') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('deleting a sidebar entry that is NOT the open chat keeps the open chat intact', async () => {
+        // Two conversations: create#1 → conversation-1, create#2 → conversation-2;
+        // a chat is selected right after its own send completes.
+        let created = 0;
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (url.endsWith('/chat/completions')) return Promise.resolve(sseResponse(completionFrames));
+            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(200, { conversations: [] }));
+            }
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                created += 1;
+                return Promise.resolve(response(201, { conversationId: `conversation-${created}` }));
+            }
+            if (init?.method === 'POST' || init?.method === 'DELETE') {
+                return Promise.resolve(response(200, { conversationId: url }));
+            }
+            if (init?.method === 'GET') {
+                // The record must carry the bare id (summaries derive tab ids
+                // from it), not the full request URL.
+                const id = url.slice(url.lastIndexOf('/') + 1);
+                return Promise.resolve(response(200, {
+                    conversationId: id,
+                    conversation: { ...conversation, conversationId: id }
+                }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+
+        // First chat: sent and selected; then a second chat sent and selected.
+        await sendFirstTurn();
+        fireEvent.click(screen.getByTestId('new-chat-button'));
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-2')).toBeDefined());
+        expect((fetch as any).mock.calls).toHaveLength(10);
+
+        // Deleting conversation-1 (NOT the open chat) removes ONLY that entry:
+        // the open chat, its title, and its messages all stay put.
+        fireEvent.click(screen.getByTestId('delete-chat-conversation-1'));
+        await waitFor(() => expect(screen.queryByTestId('chat-tab-conversation-1')).toBeNull());
+        expect((fetch as any).mock.calls).toHaveLength(11);
+        expect((fetch as any).mock.calls[10]).toEqual([`${BASE_URL}/conversation-1`, { method: 'DELETE' }]);
+        expect(screen.getByTestId('chat-tab-conversation-2')).toBeDefined();
+        expect(screen.getByTestId('chat-title').textContent).toBe('Hello assistant');
+        expect(screen.getByText('Hello from the assistant')).toBeDefined();
+        expect(screen.queryByTestId('empty-chat-state')).toBeNull();
     });
 
     it('places the new chat action at the sidebar top-left and resets the surface', async () => {
@@ -918,18 +1047,28 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
-    it('leads every chat with an empty system prompt draft box that an empty draft never persists', async () => {
+    it('leads every chat with the system prompt turn ("no prompt" by default) and an empty draft never persists', async () => {
         renderApp();
         await waitForModelSelection();
 
-        // New chat surface: the draft box is the message list's FIRST child,
-        // empty — it renders even though nothing has been typed or sent.
-        const box = screen.getByTestId('system-prompt-input') as HTMLTextAreaElement;
-        expect(screen.getByTestId('message-list').firstElementChild).toBe(box);
-        expect(box.value).toBe('');
+        // New chat surface: the system prompt row is the message list's FIRST
+        // turn, its bubble showing the literal placeholder — NO text box until
+        // the pen is clicked.
+        const draftTurn = screen.getByTestId('system-prompt-turn');
+        expect(screen.getByTestId('message-list').firstElementChild).toBe(draftTurn);
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
+        expect(screen.queryByTestId('system-prompt-input')).toBeNull();
 
-        // Send a turn WITHOUT typing a prompt: neither payload nor storage gain
-        // a system message, and the (still empty) box keeps leading the chat.
+        // Opening the editor and CANCELLING leaves the placeholder untouched.
+        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        expect((screen.getByTestId('system-prompt-input') as HTMLTextAreaElement).value).toBe('');
+        fireEvent.change(screen.getByTestId('system-prompt-input'), { target: { value: 'Discarded prompt' } });
+        fireEvent.click(screen.getByTestId('system-prompt-cancel'));
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
+        expect(screen.queryByTestId('system-prompt-input')).toBeNull();
+
+        // Send a turn WITHOUT a prompt: neither payload nor storage gain
+        // a system message, and the leading turn still shows the placeholder.
         fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
         fireEvent.click(screen.getByTestId('send-chat-button'));
         await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
@@ -946,12 +1085,103 @@ describe('ChatAssistantApp', () => {
             model: DEFAULT_MODEL,
             usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 }
         });
-        expect(screen.getByTestId('message-list').firstElementChild).toBe(screen.getByTestId('system-prompt-input'));
-        expect((screen.getByTestId('system-prompt-input') as HTMLTextAreaElement).value).toBe('');
+        expect(screen.getByTestId('message-list').firstElementChild).toBe(screen.getByTestId('system-prompt-turn'));
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
 
-        // A fresh chat keeps the draft box empty.
+        // A fresh chat keeps the placeholder too.
         fireEvent.click(screen.getByTestId('new-chat-button'));
-        expect((screen.getByTestId('system-prompt-input') as HTMLTextAreaElement).value).toBe('');
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
+    });
+
+    it('renders the system prompt row like an assistant/user turn: "no prompt" placeholder with only the edit pen', async () => {
+        renderApp();
+        await waitForModelSelection();
+
+        // Regular turn chrome: header label row above, bubble, controls below.
+        const turn = screen.getByTestId('system-prompt-turn');
+        expect(screen.getByTestId('message-list').firstElementChild).toBe(turn);
+        expect(turn.children).toHaveLength(3);
+
+        // The top-left label is literally "system" (the same placeholder
+        // speaker the persisted system turn gets) and it is a PLAIN SPAN, not
+        // a collapse-toggle button — a local draft has nothing to fold.
+        const label = screen.getByTestId('system-prompt-label');
+        expect(label.textContent).toBe('system');
+        expect(label.tagName).toBe('SPAN');
+        expect(turn.children[0].contains(label)).toBe(true);
+
+        // EMPTY state: the bubble is the literal placeholder, marked
+        // data-empty — and ONLY the edit pen renders (no textarea until the
+        // pen is clicked, no copy without text, no delete cross EVER).
+        const bubble = screen.getByTestId('system-prompt-value');
+        expect(turn.children[1]).toBe(bubble);
+        expect(bubble.textContent).toBe('no prompt');
+        expect(bubble.getAttribute('data-empty')).toBe('true');
+        expect(bubble.tagName).toBe('ARTICLE');
+        expect(screen.queryByTestId('system-prompt-input')).toBeNull();
+        expect(screen.getByTestId('edit-system-prompt')).toBeDefined();
+        expect(screen.queryByTestId('copy-system-prompt')).toBeNull();
+        expect(screen.queryByTestId('delete-message-0')).toBeNull();
+
+        // The system turn shares the assistant's LEFT-side full-width layout:
+        // both wrappers cap at 100% of the list's content width — user turns
+        // alone keep the min(760px, 86%) right-aligned cap.
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        expect(/\.css-[^{]+\{[^}]*align-self:flex-start;[^}]*max-width:100%;[^}]*\}/.test(css)).toBe(true);
+        expect(/\.css-[^{]+\{[^}]*align-self:flex-end;[^}]*max-width:min\(760px, 86%\);[^}]*\}/.test(css)).toBe(true);
+        // The empty placeholder bubble: the panel surface + bubble padding are
+        // static, while the color is the dynamic (media-wrapped) MUTED variant
+        // — styledComponent serializes function-valued props under
+        // @media (min-width: 0px).
+        const systemBase = /\.css-[^{]+\{[^}]*border-radius:16px;[^}]*\}/.exec(css)?.[0];
+        expect(systemBase).toBeDefined();
+        expect(systemBase).toContain('background-color:#1d2430');
+        expect(systemBase).toContain('padding:12px 16px');
+        expect(css).toMatch(/@media \(min-width: 0px\)\{\.css-[^{]+\{color:#9ca8b8;\}\}/);
+        // The assistant bubble's border-box guard: with the full-width turn, a
+        // content-box bubble would spill its 32px padding past the wrapper.
+        const assistantBubble = /\.css-[^{]+\{[^}]*background-color:#202936;[^}]*\}/.exec(css)?.[0];
+        expect(assistantBubble).toBeDefined();
+        expect(assistantBubble).toContain('box-sizing:border-box');
+    });
+
+    it('edits the system prompt draft through its pen, copies the saved draft, and still persists nothing until the next send', async () => {
+        // Clipboard stub (jsdom has no Clipboard API).
+        const writeText = vi.fn((_text: string) => Promise.resolve());
+        Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } });
+        renderApp();
+        await waitForModelSelection();
+
+        // The pen opens the same inline editor the messages use, seeded empty.
+        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        const editor = screen.getByTestId('system-prompt-input') as HTMLTextAreaElement;
+        expect(editor.value).toBe('');
+        fireEvent.change(editor, { target: { value: 'You are terse.' } });
+        fireEvent.click(screen.getByTestId('system-prompt-save'));
+
+        // The saved draft replaces the placeholder; the copy action appears
+        // immediately LEFT of the pen; the editor closed. NOTHING hit storage.
+        const bubble = screen.getByTestId('system-prompt-value');
+        expect(bubble.textContent).toBe('You are terse.');
+        expect(bubble.getAttribute('data-empty')).toBe('false');
+        expect(screen.queryByTestId('system-prompt-input')).toBeNull();
+        const copy = screen.getByTestId('copy-system-prompt');
+        expect(copy.nextElementSibling?.getAttribute('data-testid')).toBe('edit-system-prompt');
+        expect((fetch as any).mock.calls).toHaveLength(2);
+
+        fireEvent.click(copy);
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith('You are terse.'));
+
+        // Reopening reseeds the saved draft; a blank save restores the
+        // placeholder (and the copy action disappears again).
+        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        expect((screen.getByTestId('system-prompt-input') as HTMLTextAreaElement).value).toBe('You are terse.');
+        fireEvent.change(screen.getByTestId('system-prompt-input'), { target: { value: '   ' } });
+        fireEvent.click(screen.getByTestId('system-prompt-save'));
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
+        expect(screen.queryByTestId('copy-system-prompt')).toBeNull();
     });
 
     it('persists a typed system prompt as the leading system message on send and gives it edit/copy but no delete', async () => {
@@ -999,8 +1229,12 @@ describe('ChatAssistantApp', () => {
         renderApp();
         await waitForModelSelection();
 
-        // Type a prompt, then send the first turn.
+        // Draft a prompt through the turn's pen (the editor blooms inline),
+        // then send the first turn.
+        fireEvent.click(screen.getByTestId('edit-system-prompt'));
         fireEvent.change(screen.getByTestId('system-prompt-input'), { target: { value: 'You are terse.' } });
+        fireEvent.click(screen.getByTestId('system-prompt-save'));
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
         fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
         fireEvent.click(screen.getByTestId('send-chat-button'));
         await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
@@ -1055,6 +1289,34 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('true');
         expect(screen.getByTestId('message-turn-0').querySelector('article')?.textContent).toBe('You are terse.');
         expect(screen.queryByTestId('message-preview-0')).toBeNull();
+
+        // The system bubble carries the SAME styling as the user/assistant
+        // bubbles: shared padding, body text color, 16px bubble radius, and
+        // inherited font size (no 13px/muted caption). Only the surface color
+        // is its own — like the user (#273d72) and assistant (#202936)
+        // surfaces differ. Read from Emotion's sheet (jsdom cannot compare
+        // cascade inheritance): 'border-radius:16px;' exact matches only the
+        // system bubble (user/assistant radii keep tail corners).
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        const systemBubble = /\.css-[^{]+\{[^}]*border-radius:16px;[^}]*\}/.exec(css)?.[0];
+        expect(systemBubble).toBeDefined();
+        expect(systemBubble).toContain('background-color:#1d2430');
+        expect(systemBubble).toContain('padding:12px 16px');
+        expect(systemBubble).toContain('line-height:1.5');
+        expect(systemBubble).not.toContain('font-size');
+        // The bubble color is dynamic (empty placeholder = muted, content =
+        // body text): styledComponent serializes function values under
+        // @media (min-width: 0px), so the CONTENT variant proves itself there.
+        expect(css).toMatch(/@media \(min-width: 0px\)\{\.css-[^{]+\{color:#e8ecf2;\}\}/);
+        // Parity with the assistant bubble, rendered expanded at index 2.
+        const assistantBubble = /\.css-[^{]+\{[^}]*background-color:#202936;[^}]*\}/.exec(css)?.[0];
+        expect(assistantBubble).toBeDefined();
+        expect(assistantBubble).toContain('padding:12px 16px');
+        expect(assistantBubble).toContain('color:#e8ecf2');
+        expect(assistantBubble).toContain('line-height:1.5');
+        expect(assistantBubble).not.toContain('font-size');
         expect(screen.getByTestId('edit-message-0')).toBeDefined();
         const copySystem = screen.getByTestId('copy-message-0');
         expect(copySystem.nextElementSibling?.getAttribute('data-testid')).toBe('edit-message-0');
@@ -1104,12 +1366,14 @@ describe('ChatAssistantApp', () => {
         // First turn WITHOUT a prompt: the record has no system message...
         await sendFirstTurn();
         expect((fetch as any).mock.calls).toHaveLength(6);
-        // ...so the empty draft box is still showing.
-        const box = screen.getByTestId('system-prompt-input') as HTMLTextAreaElement;
-        expect(box.value).toBe('');
+        // ...so the leading system turn still shows the "no prompt" placeholder.
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
 
-        // NOW type a prompt and send a second turn.
-        fireEvent.change(box, { target: { value: 'You are terse.' } });
+        // NOW draft a prompt through the pen and send a second turn.
+        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        fireEvent.change(screen.getByTestId('system-prompt-input'), { target: { value: 'You are terse.' } });
+        fireEvent.click(screen.getByTestId('system-prompt-save'));
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
         fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Turn two' } });
         fireEvent.click(screen.getByTestId('send-chat-button'));
 

@@ -16,9 +16,12 @@
 // - otherwise the first catalog entry sorted by MODEL NAME applies — provider /
 //   organisation prefixes are stripped from labels ("zai-org/GLM-5.2-NVFP4" shows
 //   as "GLM-5.2-NVFP4") but kept in values for provider routing.
-// Conversation management: "New chat" sits at the sidebar's top-left and the
-// selected chat can be permanently deleted from the header's top-right delete
-// action (identified DELETE). The header title mirrors the selected chat's title
+// Conversation management lives ENTIRELY in the sidebar: "New chat" sits at
+// its top-left and EVERY conversation entry carries an "x" delete control at
+// its top-right corner that permanently deletes THAT conversation (identified
+// DELETE) without entering it — deleting the currently selected chat also
+// resets the surface to the empty new-chat state. The header title mirrors
+// the selected chat's title
 // (derived server-side from the trimmed first line of the first user message)
 // and is renameable by clicking the title itself, which opens a dialog box.
 // Every assistant response
@@ -34,12 +37,19 @@
 // edited/shortened history to the provider. Every turn also carries a copy
 // action next to the edit pen that writes the raw message text to the system
 // clipboard (client-side only, no storage). Every chat is led by a SYSTEM
-// prompt: while the conversation has no system message, an editable draft box
-// renders at the start of the chat (even empty); a non-empty draft is persisted
-// as the leading system message on the next send (and prepended to the
-// provider history), after which the system turn behaves like any other turn
-// (same inline editor, same copy action, full-history PUT rewrites) EXCEPT it
-// cannot be deleted. Every message TURN carries an attribution label in the
+// prompt turn: a regular LEFT-aligned message row (same wrapper + bubble
+// styling as the assistant) that sits at the start of the chat even while
+// EMPTY — showing the literal placeholder "no prompt" with only an edit pen
+// (no textarea until the pen opens the same inline editor every turn uses,
+// no copy while there is nothing to copy). A saved non-empty draft replaces
+// the placeholder text and is persisted as the leading system message on the
+// next send (prepended to the provider history); after that the system turn
+// behaves like any other persisted turn (same inline editor, same copy
+// action, same bubble styling, full-history PUT rewrites) EXCEPT it cannot
+// be deleted. Assistant (and system) turns span the conversation's FULL
+// content width (max-width:100%); user turns stay right-aligned under the
+// narrower min(760px, 86%) cap. Every message TURN carries an attribution
+// label in the
 // TOP-LEFT corner of the row above its bubble: the producing model's name for
 // assistant turns, the literal speaker ("user" / "system" for now) otherwise.
 // That label IS the turn's collapse toggle — no chevron glyph ever renders.
@@ -54,7 +64,15 @@
 // session-level UI state only. Composer keyboard rules: on DESKTOP (md+) Enter submits the
 // message and Shift+Enter inserts a newline; on MOBILE (below md) Enter always
 // inserts a newline so the on-screen keyboard's return key only grows the
-// draft — submission stays on the split send button. The sidebar is a
+// draft — submission stays on the split send button. The composer input
+// starts EXACTLY one text row tall (rows=1 + border-box height math that
+// counts the 1px borders, so the first measurement can never inflate the
+// box to the browser's two-row textarea default) top-aligned with the
+// equally tall split send control, and auto-grows with newlines up to eight
+// rows. The split send control NEVER collapses on narrow screens: both
+// halves are flex-shrink:0 while the input yields the space (min-width:0),
+// so the model half keeps its label visible on mobile instead of being
+// squeezed out of the row. The sidebar is a
 // static column on md+ screens and a toggleable drawer below the md breakpoint.
 // The message list ALWAYS follows the conversation bottom: typing in the
 // composer (the field grows and squeezes the list), the sent message's
@@ -254,15 +272,6 @@ const DialogActions = styledComponent('div', {
     gap: 8
 });
 
-// Header actions (just the conversation delete) stay grouped on the header's
-// right side; "New chat" lives in the sidebar and the model picker lives on
-// the split send control in the composer instead.
-const HeaderActions = styledComponent('div', {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8
-});
-
 // Layout switches from a single mobile column to two columns at md (900px):
 // below md the conversation surface is the only column and the sidebar floats
 // above it as a drawer; md+ renders the classic 280px sidebar column.
@@ -329,14 +338,24 @@ const SidebarHeading = styledComponent('div', {
     textTransform: 'uppercase'
 });
 
+// Each sidebar conversation ENTRY is a positioning context: the select button
+// fills it and the per-conversation "x" delete control overlays its top-right
+// corner. The rule MUST stay exactly `position:relative` alone — the tests
+// identify this rule by that single declaration.
+const ChatEntry = styledComponent('div', {
+    position: 'relative'
+});
+
 // Each conversation button presents the server summary without rendering message content in the sidebar.
+// The right padding is deepened so a long title never slides under the
+// overlaid "x" delete control in the entry's top-right corner.
 const ChatButton = styledComponent('button', {
     width: '100%',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-start',
     gap: 4,
-    padding: 12,
+    padding: '12px 32px 12px 12px',
     border: `1px solid ${COLORS.border}`,
     borderRadius: 8,
     backgroundColor: COLORS.panelStrong,
@@ -383,6 +402,9 @@ const EmptyState = styledComponent('div', {
 // Turn wrappers own alignment and max-width so each bubble can sit together
 // with its turn chrome (attribution label, edit controls, inline editor)
 // inside one flex column — the bubbles themselves no longer self-align.
+// User turns stay right-aligned under the narrow cap; ASSISTANT (and system —
+// SystemTurn aliases AssistantTurn below) turns span the message list's FULL
+// content width (max-width:100%) so long responses use the whole row.
 const UserTurn = styledComponent('div', {
     alignSelf: 'flex-end',
     maxWidth: 'min(760px, 86%)',
@@ -394,7 +416,7 @@ const UserTurn = styledComponent('div', {
 
 const AssistantTurn = styledComponent('div', {
     alignSelf: 'flex-start',
-    maxWidth: 'min(760px, 86%)',
+    maxWidth: '100%',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-start',
@@ -414,8 +436,13 @@ const UserMessage = styledComponent('article', {
     lineHeight: 1.5
 });
 
+// box-sizing:border-box is load-bearing on the full-width assistant turn: a
+// content-box width:100% would push the bubble 32px (its horizontal padding)
+// PAST the wrapper's right edge once the wrapper pins at the list's content
+// width, dragging a horizontal scrollbar into the message list.
 const AssistantMessage = styledComponent('article', {
     width: '100%',
+    boxSizing: 'border-box',
     padding: '12px 16px',
     borderRadius: '16px 16px 16px 4px',
     backgroundColor: COLORS.assistant,
@@ -524,7 +551,7 @@ const TurnPreview = styledComponent('span', {
     cursor: 'pointer'
 });
 
-// The per-message delete control (x icon in the DeleteRow above the bubble).
+// The per-message delete control (x icon in the row above the bubble).
 // The glyph stays plain text (U+00D7 MULTIPLICATION SIGN — text presentation,
 // not emoji) with the accessible label on the button itself.
 const MessageDeleteButton = styledComponent('button', {
@@ -542,6 +569,17 @@ const MessageDeleteButton = styledComponent('button', {
     font: 'inherit',
     fontSize: 13,
     lineHeight: 1
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+
+// The per-conversation delete control: the SAME "x" glyph treatment as the
+// per-message delete, absolutely pinned to the top-right corner of a sidebar
+// conversation entry (ChatEntry is its positioning context). It is a SIBLING
+// of the select button inside the entry — not nested in it — so clicking the
+// x deletes without ever triggering the entry's chat selection.
+const ConversationDeleteButton = styledComponent(MessageDeleteButton, {
+    position: 'absolute',
+    top: 6,
+    right: 6
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Icon-only affordance for the per-message edit action (the pen). The glyph
@@ -589,54 +627,41 @@ const EditActions = styledComponent('div', {
     gap: 8
 });
 
-// System prompt DRAFT box shown at the START of every chat whose record does
-// not already lead with a system message — rendered even while empty. Typed
-// text stays local until the next send: on submit a non-empty draft becomes
-// the conversation's leading `system` message (prepended to the provider
-// history AND persisted with the turn), after which this box is replaced by
-// the rendered system turn (editable + copyable, never deletable). Styling
-// echoes the composer input, slightly de-emphasised (panelStrong, smaller font).
-const SystemPromptBox = styledComponent('textarea', {
+// The system prompt row leads every chat — whether the record leads with a
+// persisted system message or the system prompt only exists as a local draft.
+// Both forms render as regular turns with identical chrome (top-left "system"
+// label, bubble, pen-driven inline editor); the draft form's persistence is
+// deferred: a saved non-empty draft is stored locally until the next send
+// persists it as the conversation's leading `system` message (prepended to
+// the provider history AND persisted with the turn — see submit), after which
+// the persisted system turn (editable + copyable, never deletable) takes over.
+// System turns share the ASSISTANT turn layout exactly: LEFT-aligned wrapper
+// spanning the list's full content width (no centering, no narrow cap) — the
+// system prompt row reads just like an assistant/user row. Aliasing (instead
+// of duplicating the CSS) keeps the layouts structurally locked together.
+const SystemTurn = AssistantTurn;
+
+// System turns get the SAME bubble treatment as user and assistant turns:
+// identical padding (12px 16px), inherited font size and body text color
+// (NOT a smaller muted caption), the shared 16px bubble radius (user's keeps
+// its bottom-right tail, assistant's its bottom-left tail, system's is plain
+// because the centered turn has no side), and the same 1.5 line box. Only the
+// surface color differs — panelStrong — exactly like the user (#273d72) and
+// assistant (#202936) surfaces differ from each other. The bubble fills the
+// SystemTurn wrapper's width. The optional `empty` prop marks the
+// not-yet-persisted DRAFT row's EMPTY state: its only text is the literal
+// placeholder "no prompt", rendered muted so the placeholder reads as a
+// placeholder and not as content.
+const SystemMessage = styledComponent<{ empty?: boolean }>('article', {
     width: '100%',
     boxSizing: 'border-box',
-    minHeight: 'calc(1.4em * 2 + 24px)',
-    resize: 'vertical',
-    overflowY: 'auto',
-    padding: '12px 14px',
-    border: `1px solid ${COLORS.border}`,
-    borderRadius: 8,
+    padding: '12px 16px',
+    borderRadius: 16,
     backgroundColor: COLORS.panelStrong,
-    color: COLORS.text,
-    font: 'inherit',
-    fontSize: 13,
-    lineHeight: 1.4,
-    outline: 'none'
-}) as unknown as React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>>;
-
-// System turns own a centered column wrapper (like UserTurn/AssistantTurn) so
-// the bubble can sit together with its turn chrome (copy + edit pair below,
-// inline editor filling the wrapper while editing).
-const SystemTurn = styledComponent('div', {
-    alignSelf: 'center',
-    width: 'min(760px, 86%)',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 4
-});
-
-// System messages remain visible but visually subordinate to user and assistant
-// turns; the bubble fills the SystemTurn wrapper's width.
-const SystemMessage = styledComponent('article', {
-    width: '100%',
-    boxSizing: 'border-box',
-    padding: '8px 12px',
-    borderRadius: 8,
-    backgroundColor: COLORS.panelStrong,
-    color: COLORS.muted,
-    fontSize: 13,
+    color: ({ empty }) => (empty ? COLORS.muted : COLORS.text),
     whiteSpace: 'pre-wrap',
-    overflowWrap: 'anywhere'
+    overflowWrap: 'anywhere',
+    lineHeight: 1.5
 });
 
 // Composer separates the editable input from the message list and exposes a stable
@@ -655,19 +680,30 @@ const Composer = styledComponent('form', {
     backgroundColor: COLORS.panel
 });
 
-// Textarea starts exactly one line high (1.4em line box + 24px vertical padding)
-// and grows through eight rows as newlines add content; the explicit CSS
-// height avoids the browser's default two-row textarea flash before the resize
-// effect runs. Mouse resizing is disabled so the composer height remains
-// controlled by the message content. Keyboard behavior (see the onKeyDown
-// handler at the render site below): on DESKTOP (md+ viewport) Enter submits
-// the message and Shift+Enter inserts a newline; on MOBILE Enter always
-// inserts a newline and the split send button performs submission.
+// Textarea starts EXACTLY one line high and grows through eight rows as
+// newlines add content. The one-row height math is border-aware on purpose:
+// box-sizing is border-box (matching the global box-sizing in index.html and
+// making jsdom agree), so the visible box must hold the 1.4em line + 24px
+// vertical padding + the 2px of vertical borders — shared with
+// resizeMessageInput's inline heights and the send control's min-height, so
+// every state of the input stays level with the button. rows=1 (set at the
+// render site) removes the browser's two-row textarea default, which the
+// resize effect would otherwise MEASURE as the empty box's scrollHeight and
+// lock the field at two rows (the pre-fix bug: a new chat always showed a
+// two-row composer). Mouse resizing is disabled so the composer height
+// remains controlled by the message content. min-width:0 lets this flex item
+// yield space to the split send control on narrow (mobile) widths instead of
+// overflowing the composer row. Keyboard behavior (see the onKeyDown handler
+// at the render site below): on DESKTOP (md+ viewport) Enter submits the
+// message and Shift+Enter inserts a newline; on MOBILE Enter always inserts
+// a newline and the split send button performs submission.
 const MessageInput = styledComponent('textarea', {
     flex: 1,
+    minWidth: 0,
     minHeight: 0,
-    height: 'calc(1.4em + 24px)',
-    maxHeight: 'calc(1.4em * 8 + 24px)',
+    boxSizing: 'border-box',
+    height: 'calc(1.4em + 26px)',
+    maxHeight: 'calc(1.4em * 8 + 26px)',
     resize: 'none',
     overflowY: 'auto',
     padding: '12px 14px',
@@ -689,9 +725,17 @@ const SendGroup = styledComponent('div', {
     flexShrink: 0
 });
 
-// Left half of the send control: the submit button whose label is the model name.
+// Left half of the send control: the submit button whose label is the model
+// name. flex-shrink:0 is load-bearing on MOBILE: with the composer row under
+// width pressure this button must never be squeezed to zero width (the
+// reported "only the ^ caret is visible" bug — some mobile engines evaluate
+// a <button> flex item's automatic minimum as 0), so neither half of the
+// split control may shrink; the textarea (min-width:0) yields instead.
+// min-height mirrors the input's one-row border-box height so the control
+// and the single-line composer sit perfectly level.
 const SendButton = styledComponent('button', {
-    minHeight: 42,
+    minHeight: 'calc(1.4em + 26px)',
+    flexShrink: 0,
     padding: '0 16px',
     border: `1px solid ${COLORS.accentStrong}`,
     borderRadius: '8px 0 0 8px',
@@ -705,11 +749,14 @@ const SendButton = styledComponent('button', {
 
 // Right half of the send control: the visible "^" caret. A hairline divider
 // separates it from the model-name half to communicate the split behavior.
+// flex-shrink:0 pairs with the model half: neither half of the split control
+// collapses under mobile width pressure (see SendButton).
 const CaretField = styledComponent('span', {
     position: 'relative',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
     minWidth: 42,
     border: `1px solid ${COLORS.accentStrong}`,
     borderLeft: '1px solid rgba(255, 255, 255, 0.35)',
@@ -751,13 +798,6 @@ const SecondaryButton = styledComponent('button', {
 // across the sidebar's full width.
 const NewChatButton = styledComponent(SecondaryButton, {
     alignSelf: 'flex-start'
-}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
-
-// Destructive delete action for the selected conversation, pinned to the
-// header's far right; the danger outline separates it from neutral chrome.
-const DeleteButton = styledComponent(SecondaryButton, {
-    borderColor: 'rgba(255, 156, 156, 0.45)',
-    color: COLORS.danger
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Small metadata labels keep model/status details available without competing with message text.
@@ -1091,17 +1131,32 @@ const defaultCollapsedIndices = (messages: ChatMessage[]): number[] => {
 const isDesktopViewport = (): boolean =>
     typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 900px)').matches;
 
-// Resize the textarea from its content height while capping the visible editor
-// at eight rows; resetting height first also shrinks the field after deletion.
+// Vertical border thickness of MessageInput (1px top + 1px bottom, matching
+// its authored `border: 1px solid`). The field is box-sizing:border-box but
+// scrollHeight EXCLUDES borders, so this constant is added back onto every
+// measurement: without it a one-row box comes out 2px short, the line
+// overflows the content area, and overflowY:auto delivers a jittery 2px
+// scroll. Kept a constant (not read from computed style) so jsdom — which
+// does not expand the `border` shorthand — computes identical values.
+const MESSAGE_INPUT_VERTICAL_BORDER = 2;
+
+// Resize the textarea from its content height while capping the visible
+// editor at eight rows; resetting height first also shrinks the field after
+// deletion. The input renders `rows={1}` (see the render site) so the
+// transient 'auto' height measured here is the one-row box rather than the
+// two-row browser default — scrollHeight never dips below the frame's own
+// client box, which is exactly how the pre-fix empty composer got locked at
+// two rows. Heights are OUTER (border-box): scrollHeight + borders, floored
+// at the one-row outer height, capped at eight rows outer.
 const resizeMessageInput = (element: HTMLTextAreaElement): void => {
     element.style.height = 'auto';
     const computed = window.getComputedStyle(element);
     const lineHeight = Number.parseFloat(computed.lineHeight) || 22.4;
     const verticalPadding =
         (Number.parseFloat(computed.paddingTop) || 0) + (Number.parseFloat(computed.paddingBottom) || 0);
-    const oneRowHeight = lineHeight + verticalPadding;
-    const maxHeight = lineHeight * 8 + verticalPadding;
-    const contentHeight = Math.max(element.scrollHeight, oneRowHeight);
+    const oneRowHeight = lineHeight + verticalPadding + MESSAGE_INPUT_VERTICAL_BORDER;
+    const maxHeight = lineHeight * 8 + verticalPadding + MESSAGE_INPUT_VERTICAL_BORDER;
+    const contentHeight = Math.max(element.scrollHeight + MESSAGE_INPUT_VERTICAL_BORDER, oneRowHeight);
     element.style.height = `${Math.min(contentHeight, maxHeight)}px`;
 };
 
@@ -1121,11 +1176,18 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // applies when nothing is remembered yet.
     const model = useStateHook('');
     const message = useStateHook('');
-    // Local draft for the system prompt box, shown ONLY while the selected
-    // record lacks a leading system message. On the next send a non-empty draft
-    // is persisted as the leading system message (see submit); cleared on new
-    // chat, on chat switch, on conversation deletion, and after a send.
+    // Local draft for the system prompt turn, shown ONLY while the selected
+    // record lacks a leading system message. While EMPTY the turn's bubble
+    // shows the literal placeholder "no prompt"; a saved non-empty draft is
+    // persisted as the leading system message on the next send (see submit).
+    // Cleared on new chat, on chat switch, on conversation deletion, and
+    // after a completed send.
     const systemPrompt = useStateHook('');
+    // The draft turn's own inline editor (opened by its pen): the open flag
+    // plus the in-editor text, kept separate from `systemPrompt` so Cancel
+    // discards the half-typed edit without touching the saved draft.
+    const editingSystemPrompt = useStateHook(false);
+    const systemPromptDraft = useStateHook('');
     // Indices of currently collapsed message turns. Seeded via
     // defaultCollapsedIndices (ALL turns except the latest assistant reply:
     // user turns fold, system turns fold, older replies fold) whenever a fresh
@@ -1254,6 +1316,29 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         titleDraft('');
     }, [editingTitle, titleDraft]);
 
+    // Close the system prompt DRAFT editor and drop its half-typed text;
+    // shared by chat switching, new chat, deletion, the completed send, and
+    // the editor's own Cancel button. The saved draft (systemPrompt) is NOT
+    // touched here — only the editor chrome.
+    const cancelSystemPromptDraft = useCallback(() => {
+        editingSystemPrompt(false);
+        systemPromptDraft('');
+    }, [editingSystemPrompt, systemPromptDraft]);
+
+    // Open the draft prompt's inline editor seeded with the current draft.
+    const startSystemPromptEdit = useCallback(() => {
+        systemPromptDraft(systemPrompt());
+        editingSystemPrompt(true);
+    }, [editingSystemPrompt, systemPrompt, systemPromptDraft]);
+
+    // Save stays LOCAL: the draft persists as the conversation's leading
+    // system message only on the next send (see submit). A blank save trims
+    // to empty and the turn falls back to the "no prompt" placeholder.
+    const saveSystemPromptDraft = useCallback(() => {
+        systemPrompt(systemPromptDraft().trim());
+        cancelSystemPromptDraft();
+    }, [cancelSystemPromptDraft, systemPrompt, systemPromptDraft]);
+
     // Select a conversation and fetch its full message history; the recorded model
     // applies only when nothing is remembered (a remembered/picked model wins).
     const selectChat = useCallback(async (conversationId: string) => {
@@ -1267,10 +1352,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             sidebarOpen(false);
             cancelEdit();
             cancelTitleEdit();
-            // The system prompt draft belongs to the previous chat's surface,
-            // and turn collapse re-seeds from the freshly loaded record (every
-            // turn folds except its latest assistant reply).
+            // The system prompt draft (and its open editor) belongs to the
+            // previous chat's surface, and turn collapse re-seeds from the
+            // freshly loaded record (every turn folds except its latest
+            // assistant reply).
             systemPrompt('');
+            cancelSystemPromptDraft();
             collapsedTurns(defaultCollapsedIndices(record.messages));
             error('');
         } catch (reason) {
@@ -1278,7 +1365,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             loading(false);
         }
-    }, [applyModelMemory, baseUrl, cancelEdit, cancelTitleEdit, collapsedTurns, error, loading, selected, sidebarOpen, systemPrompt]);
+    }, [applyModelMemory, baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, loading, selected, sidebarOpen, systemPrompt]);
 
     // Reset the surface without creating a server record until the first provider
     // turn completes. The model selection intentionally survives a new chat so the
@@ -1287,41 +1374,47 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const startNewChat = useCallback(() => {
         selected(null);
         message('');
-        // A fresh chat starts the system prompt draft box empty as well, with
-        // no collapsed turns (there is no history to fold yet).
+        // A fresh chat starts the system prompt draft back at its "no prompt"
+        // placeholder (editor closed), with no collapsed turns yet.
         systemPrompt('');
+        cancelSystemPromptDraft();
         collapsedTurns([]);
         error('');
         sidebarOpen(false);
         cancelEdit();
         cancelTitleEdit();
-    }, [cancelEdit, cancelTitleEdit, collapsedTurns, error, message, selected, sidebarOpen, systemPrompt]);
+    }, [cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, message, selected, sidebarOpen, systemPrompt]);
 
-    // Permanently delete the selected conversation (identified DELETE): drop its
-    // summary from the sidebar and return the surface to the empty new-chat
-    // state. The model selection survives, matching startNewChat. Blocked while
-    // a turn is streaming so a late-arriving stream cannot resurrect the chat.
-    const deleteSelectedChat = useCallback(async () => {
-        const conversationId = selected()?.conversationId;
-        if (!conversationId || deleting() || loading()) return;
+    // Permanently delete ONE conversation from its sidebar entry's "x"
+    // (identified DELETE): drop its summary from the list. Only when the
+    // deleted entry IS the open chat does the surface reset to the empty
+    // new-chat state (any other chat stays open and selected). The model
+    // selection survives either way, matching startNewChat. Blocked while a
+    // turn is streaming so a late-arriving stream cannot resurrect the chat.
+    const deleteChat = useCallback(async (conversationId: string) => {
+        if (deleting() || loading()) return;
         deleting(true);
         try {
             await deleteConversation(baseUrl, conversationId);
             chats(chats().filter((chat) => chat.conversationId !== conversationId));
-            selected(null);
-            message('');
-            // Deleting returns to a fresh surface: prompt draft + collapse too.
-            systemPrompt('');
-            collapsedTurns([]);
-            cancelEdit();
-            cancelTitleEdit();
+            if (selected()?.conversationId === conversationId) {
+                selected(null);
+                message('');
+                // Deleting the open chat returns to a fresh surface: prompt
+                // draft placeholder + collapse set reset too.
+                systemPrompt('');
+                cancelSystemPromptDraft();
+                collapsedTurns([]);
+                cancelEdit();
+                cancelTitleEdit();
+            }
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
         } finally {
             deleting(false);
         }
-    }, [baseUrl, cancelEdit, cancelTitleEdit, chats, collapsedTurns, deleting, error, loading, message, selected, systemPrompt]);
+    }, [baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, loading, message, selected, systemPrompt]);
 
     // Open the inline editor for one message, seeded with its current content.
     const startEdit = useCallback((index: number, content: string) => {
@@ -1523,8 +1616,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 result = (await fetchConversation(baseUrl, record.conversationId)).conversation;
             }
             selected(result);
-            // The draft prompt is now persisted (or was never needed) — clear it.
+            // The draft prompt is now persisted (or was never needed) — clear
+            // it and its editor, returning the system turn to the persisted
+            // message's chrome (or the "no prompt" placeholder).
             systemPrompt('');
+            cancelSystemPromptDraft();
             // A fresh record replaced the history (the PUT prepend path can
             // even shift indices), so re-seed turn collapse: the just-finished
             // assistant reply stays expanded, every earlier turn folds.
@@ -1548,7 +1644,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             loading(false);
         }
-    }, [baseUrl, providerUrl, chats, collapsedTurns, error, loading, message, model, pendingUser, selected, streaming, systemPrompt]);
+    }, [baseUrl, providerUrl, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, pendingUser, selected, streaming, systemPrompt]);
 
     // Fold/unfold one message turn. Pure view state: adds the index to the
     // collapsed set or removes it; no network call is ever involved.
@@ -1560,20 +1656,36 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         );
     }, [collapsedTurns]);
 
-    // Build sidebar nodes from the latest compact summaries.
+    // Build sidebar nodes from the latest compact summaries. Every entry is a
+    // ChatEntry positioning context holding TWO sibling controls: the select
+    // button (fills the entry) and the "x" delete control (absolutely pinned
+    // to the entry's top-right corner). The x is NOT nested inside the select
+    // button (nested interactive elements would be invalid HTML — and clicks
+    // would bubble into a chat selection).
     const chatNodes: React.ReactNode[] = [];
     arrayEach(chats(), ({ value: chat }) => {
         chatNodes.push(
-            <ChatButton
-                key={chat.conversationId}
-                type="button"
-                onClick={() => void selectChat(chat.conversationId)}
-                aria-pressed={selected()?.conversationId === chat.conversationId}
-                data-testid={`chat-tab-${chat.conversationId}`}
-            >
-                <strong>{chat.title}</strong>
-                <Metadata>{chat.messageCount} messages · {chat.status}</Metadata>
-            </ChatButton>
+            <ChatEntry key={chat.conversationId} data-testid={`chat-entry-${chat.conversationId}`}>
+                <ChatButton
+                    type="button"
+                    onClick={() => void selectChat(chat.conversationId)}
+                    aria-pressed={selected()?.conversationId === chat.conversationId}
+                    data-testid={`chat-tab-${chat.conversationId}`}
+                >
+                    <strong>{chat.title}</strong>
+                    <Metadata>{chat.messageCount} messages · {chat.status}</Metadata>
+                </ChatButton>
+                <ConversationDeleteButton
+                    type="button"
+                    onClick={() => void deleteChat(chat.conversationId)}
+                    disabled={deleting() || loading()}
+                    aria-label="Delete conversation"
+                    title="Delete conversation"
+                    data-testid={`delete-chat-${chat.conversationId}`}
+                >
+                    <span aria-hidden="true">×</span>
+                </ConversationDeleteButton>
+            </ChatEntry>
         );
     });
 
@@ -1588,9 +1700,15 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const currentMessages = selected()?.messages ?? [];
     // A pending turn (sent but not yet persisted) renders after the stored messages.
     const hasPendingTurn = pendingUser().length > 0;
-    // The draft box yields to the rendered system turn once the record leads
-    // with a persisted system message.
+    // The local-draft system turn yields to the RENDERED system message turn
+    // once the record leads with a persisted system message.
     const hasPersistedSystemPrompt = selected()?.messages[0]?.role === 'system';
+    // While the draft is empty the system turn's bubble is the literal
+    // placeholder "no prompt"; the copy action only exists with real text.
+    const systemPromptEmpty = systemPrompt().trim() === '';
+    // The draft turn's affordances follow the same rules as message turns:
+    // none while a turn streams or a conversation delete is in flight.
+    const canEditSystemPrompt = !loading() && !deleting();
 
     // Options handed to the module-level message renderer; rebuilt every render
     // so the closures always see the latest accessor state.
@@ -1641,16 +1759,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                         <HeaderTitle data-testid="chat-title">Chat Assistant</HeaderTitle>
                     )}
                 </HeaderLead>
-                <HeaderActions>
-                    <DeleteButton
-                        type="button"
-                        onClick={() => void deleteSelectedChat()}
-                        disabled={!selected() || deleting() || loading()}
-                        data-testid="delete-chat-button"
-                    >
-                        {deleting() ? 'Deleting...' : 'Delete'}
-                    </DeleteButton>
-                </HeaderActions>
+                {/* No header actions: conversation deletion lives on each sidebar
+                    entry's "x" (top-right corner of the entry) and the model
+                    picker lives on the split send control in the composer. */}
             </Header>
             <Workspace>
                 {/* Scrim sits before the sidebar so the drawer paints above it. */}
@@ -1668,19 +1779,86 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 </Sidebar>
                 <Conversation>
                     <MessageList data-testid="message-list">
-                        {/* The system prompt DRAFT box leads every chat (even
-                            empty) until the record persists a leading system
-                            message — then that message renders as a regular
-                            (non-deletable) system turn instead. A non-empty
-                            draft is persisted + sent upstream on the next send. */}
+                        {/* The system prompt turn leads every chat — a regular
+                            LEFT-aligned row exactly like the assistant turns.
+                            While the record has NO leading system message this
+                            is the local-draft form: the bubble carries the
+                            saved draft or the literal placeholder "no prompt",
+                            and the ONLY affordance is the edit pen (plus a copy
+                            action once real draft text exists) — NO textarea
+                            renders until the pen opens the same inline editor
+                            every turn uses, and NO delete cross ever (the
+                            system prompt cannot be removed). Once the record
+                            leads with a persisted system message, renderMessages
+                            draws that turn instead and this block disappears. */}
                         {!hasPersistedSystemPrompt && (
-                            <SystemPromptBox
-                                value={systemPrompt()}
-                                onChange={(event) => systemPrompt(event.target.value)}
-                                placeholder="System prompt (optional)"
-                                aria-label="System prompt"
-                                data-testid="system-prompt-input"
-                            />
+                            <SystemTurn data-testid="system-prompt-turn">
+                                <TurnHeaderRow>
+                                    <TurnHeaderLead>
+                                        {/* Plain span, NOT a collapse toggle — a
+                                            local draft has nothing to fold. */}
+                                        <TurnLabelText data-testid="system-prompt-label">system</TurnLabelText>
+                                    </TurnHeaderLead>
+                                </TurnHeaderRow>
+                                {editingSystemPrompt() ? (
+                                    <>
+                                        <EditArea
+                                            value={systemPromptDraft()}
+                                            onChange={(event) => systemPromptDraft(event.target.value)}
+                                            aria-label="System prompt"
+                                            data-testid="system-prompt-input"
+                                            autoFocus
+                                        />
+                                        <EditActions>
+                                            {/* Blank saves are allowed: they
+                                                return the turn to "no prompt". */}
+                                            <SecondaryButton type="button" onClick={saveSystemPromptDraft} data-testid="system-prompt-save">
+                                                Save
+                                            </SecondaryButton>
+                                            <SecondaryButton type="button" onClick={cancelSystemPromptDraft} data-testid="system-prompt-cancel">
+                                                Cancel
+                                            </SecondaryButton>
+                                        </EditActions>
+                                    </>
+                                ) : (
+                                    <>
+                                        <SystemMessage empty={systemPromptEmpty} data-empty={systemPromptEmpty} data-testid="system-prompt-value">
+                                            {systemPromptEmpty ? 'no prompt' : systemPrompt()}
+                                        </SystemMessage>
+                                        {canEditSystemPrompt && (
+                                            <TrailingControls>
+                                                <TurnActionPair>
+                                                    {/* Copy mirrors the per-message
+                                                        action (immediately LEFT of
+                                                        the pen) but exists only
+                                                        when there is real draft
+                                                        text to copy. */}
+                                                    {!systemPromptEmpty && (
+                                                        <TurnIconButton
+                                                            type="button"
+                                                            onClick={() => void copyMessage(systemPrompt())}
+                                                            aria-label="Copy system prompt"
+                                                            title="Copy system prompt"
+                                                            data-testid="copy-system-prompt"
+                                                        >
+                                                            <span aria-hidden="true">⧉</span>
+                                                        </TurnIconButton>
+                                                    )}
+                                                    <TurnIconButton
+                                                        type="button"
+                                                        onClick={startSystemPromptEdit}
+                                                        aria-label="Edit system prompt"
+                                                        title="Edit system prompt"
+                                                        data-testid="edit-system-prompt"
+                                                    >
+                                                        <span aria-hidden="true">✎</span>
+                                                    </TurnIconButton>
+                                                </TurnActionPair>
+                                            </TrailingControls>
+                                        )}
+                                    </>
+                                )}
+                            </SystemTurn>
                         )}
                         {currentMessages.length > 0 || hasPendingTurn ? (
                             <>
@@ -1749,6 +1927,13 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             aria-label="Message the assistant"
                             data-testid="chat-input"
                             disabled={loading()}
+                            // one row by default: the browser's two-row
+                            // textarea default would otherwise survive the
+                            // resize effect's 'auto' measurement and lock the
+                            // empty composer at two rows; combined with the
+                            // border-box one-row height above, the input and
+                            // the split send control stay level
+                            rows={1}
                         />
                         <SendGroup data-testid="send-group">
                             <SendButton
