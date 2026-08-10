@@ -304,6 +304,8 @@ describe('ChatAssistantApp', () => {
         expect(css).toMatch(/\.css-[^{]+\{[^}]*padding:24px;[^}]*\}/);
         expect(css).toMatch(/\.css-[^{]+\{[^}]*padding:16px;[^}]*\}/);
         expect(css).toMatch(/@media \(min-width: 900px\)\{\.css-[^{]+\{[^}]*padding-left:24px;[^}]*padding-right:24px;[^}]*\}\}/);
+        expect(css).toContain('scrollbar-width:none');
+        expect(css).toContain('scrollbar-width:auto');
     });
 
     it('restores the persisted chat history on mount and loads messages on selection', async () => {
@@ -2772,6 +2774,8 @@ describe('ChatAssistantApp', () => {
         // composer sits OUTSIDE it as a sibling and cannot shrink, so the
         // message area stays pinned to the bottom edge.
         const list = screen.getByTestId('message-list');
+        // The scrollbar is hidden through platform-specific chrome rules, while
+        // the underlying scroll container retains its normal overflow behavior.
         expect(window.getComputedStyle(list).overflowY).toBe('auto');
         expect(list.contains(screen.getByTestId('chat-composer'))).toBe(false);
         expect(window.getComputedStyle(screen.getByTestId('chat-composer')).flexShrink).toBe('0');

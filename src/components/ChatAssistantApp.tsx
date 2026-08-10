@@ -391,6 +391,9 @@ const MessageList = styledComponent('div', {
     padding: 24,
     paddingLeft: () => ({ xs: '12px', md: '24px' }),
     paddingRight: () => ({ xs: '12px', md: '24px' }),
+    // The scroll container remains normally scrollable; mobile scrollbar chrome
+    // is suppressed at the render site so the browser cannot reserve a right
+    // gutter, while desktop restores its native scrollbar presentation.
     overflowY: 'auto'
 });
 
@@ -2578,7 +2581,21 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     {chatNodes.length > 0 ? chatNodes : <Metadata data-testid="empty-chat-list">No chats yet.</Metadata>}
                 </Sidebar>
                 <Conversation>
-                    <MessageList data-testid="message-list">
+                    <MessageList
+                        // Hide the platform scrollbar only below md. The element
+                        // remains a real scroll container, so touch, wheel,
+                        // keyboard, and section-jump scrolling continue to work
+                        // without a reserved right gutter.
+                        xs={{
+                            scrollbarWidth: 'none',
+                            '&::-webkit-scrollbar': { display: 'none' }
+                        } as unknown as React.CSSProperties}
+                        md={{
+                            scrollbarWidth: 'auto',
+                            '&::-webkit-scrollbar': { display: 'initial' }
+                        } as unknown as React.CSSProperties}
+                        data-testid="message-list"
+                    >
                         {/* The system prompt turn leads every chat — a regular
                             LEFT-aligned row exactly like the assistant turns.
                             While the record has NO leading system message this
