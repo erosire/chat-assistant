@@ -168,7 +168,8 @@ import {
     ChevronUpIcon,
     CloseIcon,
     CopyIcon,
-    MenuIcon
+    MenuIcon,
+    SwitchIcon
 } from '../icons';
 
 // Palette is local to this distribution so the component has no dependency on a larger theme package.
@@ -603,6 +604,17 @@ const TurnHeaderLead = styledComponent<{ alignRight?: boolean }>('div', {
     gap: 2
 });
 
+// The attribution label and reversible role control share one horizontal line.
+// Keeping the switch outside TurnLabel avoids invalid nested buttons while still
+// placing the icon immediately beside the model/speaker name in every expanded
+// and collapsed persisted user/assistant turn.
+const TurnLabelLine = styledComponent('div', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0
+});
+
 // Top-left attribution label of a persisted turn: the producing model's
 // stripped name for assistant turns, the literal speaker ("user" / "system"
 // for now) otherwise. The label IS the collapse toggle — clicking it folds or
@@ -991,6 +1003,9 @@ type MessageListOptions = {
     // Escape/abandon: close without persisting; the keyed remount reverts the DOM.
     onEditCancel: () => void;
     onMessageDelete: (index: number) => void;
+    // Replaces a persisted user role with assistant or assistant with user;
+    // the storage PUT rewrites the complete history.
+    onMessageRoleSwitch: (index: number) => void;
     // Copies a message's raw text to the system clipboard (client-side only).
     onMessageCopy: (content: string) => void;
     // Indices of currently collapsed turns (the fresh-record default seeds
@@ -1116,6 +1131,22 @@ const placeCaretAtOffset = (element: HTMLElement, charOffset: number): void => {
     selection?.addRange(range);
 };
 
+// Swap only user and assistant roles. Assistant attribution is storage metadata,
+// not user-message content, so converting assistant → user drops the old model;
+// converting user → assistant records the currently selected model so the new
+// assistant turn displays the same producing-model label as streamed replies.
+// System prompts are intentionally immutable through this control and are returned
+// unchanged as a defensive guard for callers outside the rendered button.
+export const switchMessageRole = (message: ChatMessage, assistantModel: string): ChatMessage => {
+    if (message.role === 'system') return message;
+    if (message.role === 'assistant') return { role: 'user', content: message.content };
+    return {
+        role: 'assistant',
+        content: message.content,
+        ...(assistantModel ? { model: assistantModel } : {})
+    };
+};
+
 // Convert an API record into message nodes while keeping rendering logic
 // role-specific and explicit. User and assistant turns are freely editable
 // (clicking the expanded bubble's WORDS turns it into the inline editor) and
@@ -1186,6 +1217,23 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 <CopyIcon size={14} />
             </TurnIconButton>
         ) : null;
+        // The role switch remains beside the attribution label even while a turn
+        // is collapsed, because the label is the visible handle in that state.
+        // During another inline edit it stays rendered but disabled/greyed, while
+        // streaming or deletion hides it with the rest of the edit chrome.
+        const roleSwitchControl = options.canEdit && message.role !== 'system' ? (
+            <TurnIconButton
+                type="button"
+                greyed={controlsGreyed}
+                disabled={controlsGreyed}
+                onClick={() => options.onMessageRoleSwitch(index)}
+                aria-label={`Switch ${message.role} message to ${message.role === 'user' ? 'assistant' : 'user'}`}
+                title={`Switch ${message.role} message to ${message.role === 'user' ? 'assistant' : 'user'}`}
+                data-testid={`switch-message-${index}`}
+            >
+                <SwitchIcon size={14} />
+            </TurnIconButton>
+        ) : null;
         // Smart inline editing: clicking the expanded bubble's WORDS turns the
         // bubble ITSELF into the editor (contentEditable — no textarea, no
         // separate input field), restoring the caret onto the CLICKED WORD via
@@ -1229,27 +1277,34 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         const headerRow = (
             <TurnHeaderRow>
                 <TurnHeaderLead alignRight={alignRight}>
-                    <TurnLabel
-                        type="button"
-                        greyed={editing}
-                        disabled={editing}
-                        onClick={() => options.onToggleTurnCollapse(index)}
-                        aria-expanded={!collapsed}
-                        aria-label={collapsed ? 'Expand message' : 'Collapse message'}
-                        title={collapsed ? 'Expand message' : 'Collapse message'}
-                        data-testid={`collapse-message-${index}`}
-                    >
-                        {/* `message-model-N` keeps the producing-model assertion
-                            hook at the assistant turn's top-left (the former
-                            caption position is gone); other roles get `message-label-N`. */}
-                        <TurnLabelText
-                            data-testid={message.role === 'assistant' && message.model !== undefined
-                                ? `message-model-${index}`
-                                : `message-label-${index}`}
+                    <TurnLabelLine>
+                        {/* User turns are right-aligned, so placing the switch
+                            before the label keeps the icon on the label's LEFT;
+                            assistant turns place it after the model name below. */}
+                        {alignRight && roleSwitchControl}
+                        <TurnLabel
+                            type="button"
+                            greyed={editing}
+                            disabled={editing}
+                            onClick={() => options.onToggleTurnCollapse(index)}
+                            aria-expanded={!collapsed}
+                            aria-label={collapsed ? 'Expand message' : 'Collapse message'}
+                            title={collapsed ? 'Expand message' : 'Collapse message'}
+                            data-testid={`collapse-message-${index}`}
                         >
-                            {speakerLabel}
-                        </TurnLabelText>
-                    </TurnLabel>
+                            {/* `message-model-N` keeps the producing-model assertion
+                                hook at the assistant turn's top-left (the former
+                                caption position is gone); other roles get `message-label-N`. */}
+                            <TurnLabelText
+                                data-testid={message.role === 'assistant' && message.model !== undefined
+                                    ? `message-model-${index}`
+                                    : `message-label-${index}`}
+                            >
+                                {speakerLabel}
+                            </TurnLabelText>
+                        </TurnLabel>
+                        {!alignRight && roleSwitchControl}
+                    </TurnLabelLine>
                     {collapsed && (
                         // The collapsed "message" is this preview line BELOW the
                         // label: clicking it expands the turn again (there is no
@@ -2096,6 +2151,35 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [baseUrl, cancelEdit, chats, collapsedTurns, error, savingEdit, selected]);
 
+    // Toggle one persisted turn between user and assistant and rewrite the full
+    // history through the identified PUT. Converting to assistant stamps the
+    // currently selected model for visible attribution; converting to user drops
+    // assistant-only model metadata. The canonical response re-seeds collapse
+    // defaults because the latest assistant index may change after the swap.
+    const switchMessage = useCallback(async (index: number) => {
+        const record = selected();
+        if (!record || loading() || deleting() || savingEdit()) return;
+        const existing = record.messages[index];
+        if (!existing || existing.role === 'system') return;
+        savingEdit(true);
+        try {
+            const messages = record.messages.map((candidate, candidateIndex) =>
+                candidateIndex === index ? switchMessageRole(candidate, model()) : candidate
+            );
+            const result = (await replaceConversationMessages(baseUrl, record.conversationId, { messages })).conversation;
+            if (selected()?.conversationId === record.conversationId) selected(result);
+            const summary = summaryFromRecord(result);
+            chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
+            cancelEdit();
+            collapsedTurns(defaultCollapsedIndices(result.messages));
+            error('');
+        } catch (reason) {
+            error(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            savingEdit(false);
+        }
+    }, [baseUrl, cancelEdit, chats, collapsedTurns, deleting, error, loading, model, savingEdit, selected]);
+
     // Copy any message's raw text to the system clipboard (the per-turn copy
     // action in the controls row under the bubble). The async Clipboard API is
     // preferred; the
@@ -2384,6 +2468,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         onEditCommit: (index, text) => void commitEdit(index, text),
         onEditCancel: cancelEdit,
         onMessageDelete: (index) => void deleteMessage(index),
+        onMessageRoleSwitch: (index) => void switchMessage(index),
         onMessageCopy: (content) => void copyMessage(content),
         collapsedTurns: collapsedTurns(),
         onToggleTurnCollapse: toggleTurnCollapse,

@@ -13,7 +13,8 @@ import {
     CloseIcon,
     CopyIcon,
     EditIcon,
-    MenuIcon
+    MenuIcon,
+    SwitchIcon
 } from '.';
 
 // The full family as [name, Component, exact inner SVG markup] rows so the
@@ -30,7 +31,8 @@ const family: ReadonlyArray<readonly [string, ComponentType<{ size?: number }>, 
     ],
     ['chevron-right', ChevronRightIcon, '<path d="M9 6l6 6-6 6"></path>'],
     ['chevron-down', ChevronDownIcon, '<path d="M6 9l6 6 6-6"></path>'],
-    ['chevron-up', ChevronUpIcon, '<path d="M6 15l6-6 6 6"></path>']
+    ['chevron-up', ChevronUpIcon, '<path d="M6 15l6-6 6 6"></path>'],
+    ['switch', SwitchIcon, '<path d="M4 7h16l-3-3"></path><path d="M20 17H4l3 3"></path>']
 ];
 
 describe('icons', () => {

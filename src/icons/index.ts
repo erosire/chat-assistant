@@ -9,3 +9,4 @@ export { CopyIcon } from './CopyIcon';
 export { ChevronRightIcon } from './ChevronRightIcon';
 export { ChevronDownIcon } from './ChevronDownIcon';
 export { ChevronUpIcon } from './ChevronUpIcon';
+export { SwitchIcon } from './SwitchIcon';

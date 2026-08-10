@@ -2057,10 +2057,10 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('message-preview-1')).toBeNull();
         expect(screen.getByTestId('message-turn-1').querySelector('article')?.textContent).toBe('Hello from the assistant');
 
-        // The collapsed view STACKS: the label sits on its OWN line with the
-        // preview BELOW it (never inline). The lead is a COLUMN whose two
-        // children are [label toggle, preview], and the whole stack keeps the
-        // turn's side: the USER stack is RIGHT-aligned. Alignment + the
+        // The collapsed view STACKS: the label row (label toggle + reversible
+        // role switch) sits on its OWN line with the preview BELOW it (never
+        // inline). The lead is a COLUMN whose children are [label row, preview],
+        // and the whole stack keeps the turn's side: the USER stack is RIGHT-aligned. Alignment + the
         // 50%-only-when-expanded width floor are DYNAMIC declarations (they
         // live in each element's own Emotion class under @media (min-width:
         // 0px)), so they are read from the sheet by class, not getComputedStyle.
@@ -2071,17 +2071,26 @@ describe('ChatAssistantApp', () => {
             const cls = screen.getByTestId(testid).className;
             return new RegExp(`@media \\(min-width: 0px\\)\\{\\.${cls}\\{[^}]*${property}:([^;]+);[^}]*\\}\\}`).exec(css)?.[1] ?? null;
         };
-        const userLead = screen.getByTestId('collapse-message-0').parentElement as HTMLElement;
+        const userLabelLine = screen.getByTestId('collapse-message-0').parentElement as HTMLElement;
+        const userLead = userLabelLine.parentElement as HTMLElement;
         expect(window.getComputedStyle(userLead).flexDirection).toBe('column');
-        expect(userLead.firstElementChild).toBe(screen.getByTestId('collapse-message-0'));
+        expect(window.getComputedStyle(userLabelLine).flexDirection).toBe('row');
+        // Right-aligned user labels read from right to left: the switch is the
+        // first inline control, immediately to the LEFT of the user name.
+        expect(userLabelLine.firstElementChild).toBe(screen.getByTestId('switch-message-0'));
+        expect(userLabelLine.lastElementChild).toBe(screen.getByTestId('collapse-message-0'));
+        expect(userLead.firstElementChild).toBe(userLabelLine);
         expect(userLead.lastElementChild).toBe(screen.getByTestId('message-preview-0'));
         // The LEAD (the toggle's parent column) keeps the user stack right-aligned.
         expect(new RegExp(`@media \\(min-width: 0px\\)\\{\\.${userLead.className}\\{[^}]*align-items:flex-end;[^}]*\\}\\}`).test(css)).toBe(true);
         // The user preview's text hugs the right edge as well.
         expect(mediaStyle('message-preview-0', 'text-align')).toBe('right');
         // The ASSISTANT stack mirrors left: same column, left alignment.
-        const assistantLead = screen.getByTestId('collapse-message-1').parentElement as HTMLElement;
+        const assistantLabelLine = screen.getByTestId('collapse-message-1').parentElement as HTMLElement;
+        const assistantLead = assistantLabelLine.parentElement as HTMLElement;
         expect(window.getComputedStyle(assistantLead).flexDirection).toBe('column');
+        expect(window.getComputedStyle(assistantLabelLine).flexDirection).toBe('row');
+        expect(assistantLabelLine.lastElementChild).toBe(screen.getByTestId('switch-message-1'));
         expect(new RegExp(`@media \\(min-width: 0px\\)\\{\\.${assistantLead.className}\\{[^}]*align-items:flex-start;[^}]*\\}\\}`).test(css)).toBe(true);
         // Width floor: ONLY the expanded turn carries min-width:50%; the
         // collapsed one stays compact (min-width:auto).
@@ -2143,6 +2152,59 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(assistantToggle);
         expect(assistantToggle.getAttribute('aria-expanded')).toBe('false');
         expect(assistantToggle.querySelector('span[aria-hidden="true"]')).toBeNull();
+    });
+
+    it('switches user and assistant roles in either direction through the complete-history PUT', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+
+        // The role control sits beside the visible user label even though the
+        // user bubble is collapsed by default, and it uses the shared SVG icon.
+        const userSwitch = screen.getByTestId('switch-message-0');
+        expect(userSwitch.getAttribute('aria-label')).toBe('Switch user message to assistant');
+        expect(userSwitch.querySelector('svg[data-icon="switch"]')).not.toBeNull();
+        expect(screen.getByTestId('switch-message-1').getAttribute('aria-label')).toBe('Switch assistant message to user');
+
+        // User → assistant adopts the currently selected model (the model that
+        // produced the first send), making the forged turn visibly attributable.
+        fireEvent.click(userSwitch);
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(7));
+        expect((fetch as any).mock.calls[6]).toEqual([
+            `${BASE_URL}/conversation-1`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    messages: [
+                        { role: 'assistant', content: 'Hello assistant', model: DEFAULT_MODEL },
+                        { role: 'assistant', content: 'Hello from the assistant', model: ALT_MODEL }
+                    ]
+                })
+            }
+        ]);
+        expect(screen.getByTestId('message-model-0').textContent).toBe('test-model');
+        expect(screen.queryByTestId('message-label-0')).toBeNull();
+
+        // Assistant → user removes assistant-only model attribution and returns
+        // the same message to the user-labelled state with another PUT.
+        fireEvent.click(screen.getByTestId('switch-message-0'));
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(8));
+        expect((fetch as any).mock.calls[7]).toEqual([
+            `${BASE_URL}/conversation-1`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    messages: [
+                        { role: 'user', content: 'Hello assistant' },
+                        { role: 'assistant', content: 'Hello from the assistant', model: ALT_MODEL }
+                    ]
+                })
+            }
+        ]);
+        expect(screen.getByTestId('message-label-0').textContent).toBe('user');
+        expect(screen.queryByTestId('message-model-0')).toBeNull();
     });
 
     it('expands a collapsed turn by clicking its preview line (the visible collapsed message)', async () => {
