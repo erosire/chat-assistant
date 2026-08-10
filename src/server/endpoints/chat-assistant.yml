@@ -8,6 +8,17 @@ servers:
     description: Local development server
 paths:
   /v1/chat-assistant/conversation:
+    get:
+      operationId: listConversations
+      summary: List conversations
+      description: Returns every persisted conversation as a compact summary ordered by most recent activity so a reloaded client can restore its chat history; message bodies stay behind the identified resource GET.
+      responses:
+        '200':
+          description: Conversation summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationListResponse'
     post:
       operationId: createConversation
       summary: Create a conversation
@@ -74,6 +85,35 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation identifier was not found.
+    put:
+      operationId: replaceConversationMessages
+      summary: Replace the complete message history of a conversation
+      description: Persists the supplied (edited) message list verbatim, recomputing messageCount and updatedAt, re-deriving the title from the new first user turn, and dropping stale per-turn usage counters. Returned record is the full updated conversation so callers can re-sync without a follow-up GET. Backs the edit-history flow; the replaced history is exactly what the next provider turn receives.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationPutRequest'
+      responses:
+        '200':
+          description: Updated conversation record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        '400':
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation identifier was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       operationId: deleteConversation
       summary: Delete a conversation
@@ -104,6 +144,20 @@ components:
         usage:
           $ref: '#/components/schemas/TokenUsage'
       description: Supply message for a normal turn or messages for an explicit history. model records which provider model produced the appended turns; usage carries its token counters.
+    ConversationPutRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        model:
+          type: string
+        title:
+          type: string
+          description: Explicit conversation label; wins over the derived first-line title (header rename flow).
+      description: Full replacement history for the edit-history flow; an empty array wipes the conversation without deleting it.
     TokenUsage:
       type: object
       properties:
@@ -119,6 +173,9 @@ components:
           enum: [system, user, assistant]
         content:
           type: string
+        model:
+          type: string
+          description: Optional per-message attribution recording which provider model produced this (assistant) message.
     ConversationRecord:
       type: object
       required: [conversationId, title, model, status, messageCount, messages, createdAt, updatedAt]
@@ -142,6 +199,26 @@ components:
       required: [conversationId]
       properties:
         conversationId: { type: string }
+    ConversationSummary:
+      type: object
+      required: [conversationId, title, model, status, messageCount, createdAt, updatedAt]
+      properties:
+        conversationId: { type: string }
+        title: { type: string }
+        model: { type: string }
+        status: { type: string, enum: [complete, error] }
+        messageCount: { type: integer }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+      description: Compact history-list entry without message bodies.
+    ConversationListResponse:
+      type: object
+      required: [conversations]
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationSummary'
     ConversationResponse:
       type: object
       required: [conversationId, conversation]

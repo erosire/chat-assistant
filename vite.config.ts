@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 
 // The UI uses origin-relative API URLs (DEFAULT_PROVIDER_URL = '/providers/private/v1'
 // and DEFAULT_CHAT_ASSISTANT_URL = '/v1/chat-assistant/conversation' in src/api).
-// During `vite dev` those paths would resolve against this dev server (port 8001),
+// During `vite dev` those paths would resolve against this dev server (port 4500),
 // which serves no API routes, so the model catalog request 404s and the dropdown
 // reports "No models available". Proxying both prefixes to the local service
 // (chat-assistant.yml server: http://127.0.0.1:5000) keeps the relative defaults
@@ -17,7 +17,7 @@ export default defineConfig({
     plugins: [react()],
     base: './',
     server: {
-        port: 8001,
+        port: 4500,
         proxy: {
             // Runtime provider endpoints: /providers/private/v1/models and
             // /providers/private/v1/chat/completions (runtime/endpoint/provider).

@@ -6,13 +6,16 @@ export {
     createConversation,
     deleteConversation,
     fetchConversation,
+    listConversations,
     DEFAULT_CHAT_ASSISTANT_URL
 } from './api';
 export type {
     ChatMessage,
     ConversationDeleteResponse,
     ConversationGetResponse,
+    ConversationListResponse,
     ConversationPostRequest,
     ConversationPostResponse,
-    ConversationRecord
+    ConversationRecord,
+    ConversationSummary
 } from './api';

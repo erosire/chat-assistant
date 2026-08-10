@@ -1,19 +1,23 @@
 // Small disk-backed store for the assistant's conversations.
 //
-// The store follows the same injected-root convention as story-generator:
-// service.start({ root }) supplies a storage boundary, while tests can provide
-// an in-memory store through handler variables. jsonTable supplies keyed CRUD;
-// this module only adds the durable JSON file around it.
+// Storage layout: ONE FOLDER PER CHAT, named by the chat's uuid conversationId,
+// holding a single conversation.json document with the complete record:
+//   <root>/chat-assistant/<conversationId>/conversation.json
+// The former single chats.json table file was dropped with the old database (the
+// API moved to this logic): the per-folder layout keeps every chat independently
+// inspectable and deletable, and each read parses its own file, so returned
+// records are always fresh detached copies with shared-no-mutation guarantees.
 import fs from 'node:fs';
 import path from 'node:path';
-import { jsonTable } from '@presource/core';
+import { isObject, isString } from '@presource/core';
 import type { ConversationRecord } from '../../../api';
 
-// Storage is kept beside other distribution-owned data and never exposed by a route.
+// Storage root is kept beside other distribution-owned data and never exposed by a route.
 export const CHAT_ASSISTANT_DATABASE_DIR = 'chat-assistant';
-const CHAT_FILE_NAME = 'chats.json';
+// Document inside each per-chat folder carrying that chat's complete record.
+const CONVERSATION_FILE_NAME = 'conversation.json';
 
-// Store contract used by handlers and deterministic tests.
+// Store contract used by handlers and deterministic tests; unchanged by the layout move.
 export type ChatStore = {
     list: () => ConversationRecord[];
     get: (conversationId: string) => ConversationRecord | null;
@@ -21,68 +25,59 @@ export type ChatStore = {
     delete: (conversationId: string) => boolean;
 };
 
-// Empty disk shape is explicit so corrupted or first-run files have the same schema.
-type ChatMemory = {
-    schema: { name: string; id: 'conversationId' };
-    database: ConversationRecord[];
-};
+// Minimal structural guard so crashed writes or foreign folders are skipped
+// instead of poisoning handlers: an id string plus a messages array must exist.
+const isConversationRecord = (value: unknown): value is ConversationRecord =>
+    isObject(value) && isString(value.conversationId) && Array.isArray(value.messages);
 
-// Read only valid persisted records; malformed files are treated as an empty database.
-const readMemory = (filePath: string): ChatMemory => {
-    if (!fs.existsSync(filePath)) {
-        return { schema: { name: 'chat-assistant', id: 'conversationId' }, database: [] };
-    }
-
+// Read one chat folder's document; missing files, malformed JSON, and structural
+// mismatches all degrade to "no such conversation".
+const readRecord = (folderPath: string): ConversationRecord | null => {
+    const filePath = path.join(folderPath, CONVERSATION_FILE_NAME);
+    if (!fs.existsSync(filePath)) return null;
     try {
-        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<ChatMemory>;
-        if (parsed.schema?.id === 'conversationId' && Array.isArray(parsed.database)) {
-            return {
-                schema: { name: 'chat-assistant', id: 'conversationId' },
-                database: parsed.database as ConversationRecord[]
-            };
-        }
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+        return isConversationRecord(parsed) ? parsed : null;
     } catch {
-        // Corrupt local state should not prevent the assistant service from starting.
+        return null;
     }
-
-    return { schema: { name: 'chat-assistant', id: 'conversationId' }, database: [] };
 };
 
-// Create a store for one storage root. The file is loaded once per request so a
-// separately running service process observes writes made by another request.
+// Create a store for one storage root. Every operation touches only the target
+// chat's own folder, so request-scoped stores always observe each other's writes.
 export const createChatStore = (root: string): ChatStore => {
     const directory = path.join(root, CHAT_ASSISTANT_DATABASE_DIR);
-    const filePath = path.join(directory, CHAT_FILE_NAME);
-    const table = jsonTable<ConversationRecord>({
-        name: 'chat-assistant',
-        key: 'conversationId',
-        memory: readMemory(filePath)
-    });
-
-    // Persist the complete table after each upsert, creating the parent directory on first use.
-    const persist = () => {
-        fs.mkdirSync(directory, { recursive: true });
-        fs.writeFileSync(filePath, JSON.stringify(table.memory(), null, 2), 'utf8');
-    };
+    const folderFor = (conversationId: string) => path.join(directory, conversationId);
 
     return {
-        // Return copies so callers cannot mutate table entries without going through upsert.
-        list: () => table.memory().database.map((record) => ({ ...record, messages: [...record.messages] })),
-        get: (conversationId) => {
-            const record = table.get(conversationId);
-            return record ? { ...record, messages: [...record.messages] } : null;
+        // List scans chat FOLDERS (not a table file): entries that are not
+        // directories, or whose document is missing/malformed, are skipped.
+        list: () => {
+            if (!fs.existsSync(directory)) return [];
+            const records: ConversationRecord[] = [];
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+                if (!entry.isDirectory()) continue;
+                const record = readRecord(path.join(directory, entry.name));
+                if (record) records.push(record);
+            }
+            return records;
         },
+        get: (conversationId) => readRecord(folderFor(conversationId)),
         upsert: (record) => {
-            const saved = table.add({ ...record, messages: [...record.messages] });
-            persist();
-            return { ...saved, messages: [...saved.messages] };
+            const folder = folderFor(record.conversationId);
+            fs.mkdirSync(folder, { recursive: true });
+            fs.writeFileSync(path.join(folder, CONVERSATION_FILE_NAME), JSON.stringify(record, null, 2), 'utf8');
+            // Detached copy so callers cannot alias the just-persisted object.
+            return { ...record, messages: [...record.messages] };
         },
-        // Delete only persists when the identifier exists, keeping a missing DELETE
-        // request distinguishable from a successful removal.
+        // Removing the folder removes everything the chat owns. Only an existing
+        // conversation document counts as removable, keeping a missing DELETE
+        // distinguishable from a successful removal (404 vs 200 at the handler).
         delete: (conversationId) => {
-            const deleted = table.delete(conversationId);
-            if (deleted) persist();
-            return deleted;
+            const folder = folderFor(conversationId);
+            if (!fs.existsSync(path.join(folder, CONVERSATION_FILE_NAME))) return false;
+            fs.rmSync(folder, { recursive: true, force: true });
+            return true;
         }
     };
 };

@@ -23,10 +23,26 @@ export type ProviderModelsResponse = {
     data: ProviderModel[];
 };
 
-// Minimal assistant reply extracted from the non-streaming chat completion.
+// Minimal assistant reply assembled from the streamed chat completion.
 export type ProviderChatCompletion = {
     content: string;
     usage?: ConversationRecord['usage'];
+};
+
+// One SSE `data:` frame of an OpenAI-compatible chat.completion.chunk as relayed by
+// runtime/endpoint/provider/private/chat-completion/private-chat-completion.ts
+// (`data: {json}\n\n` per chunk, `data: [DONE]\n\n` terminator). GPT clients add a
+// `reasoning_content` extension delta (ignored here) and a final usage chunk;
+// Makora/Modal pass raw SDK chunks through without a usage chunk.
+type ProviderStreamChunk = {
+    choices?: Array<{
+        delta?: { role?: unknown; content?: unknown };
+        finish_reason?: string | null;
+    }>;
+    usage?: ConversationRecord['usage'];
+    // Mid-stream failures arrive as a plain data frame from the server's catch-all
+    // (`data: {"error":{"message":"...","type":"stream_error"}}`, no trailing [DONE]).
+    error?: { message?: unknown; type?: string };
 };
 
 // Convert a base URL into one stable form without changing an absolute or relative origin.
@@ -59,31 +75,84 @@ export async function fetchProviderModels(baseUrl: string): Promise<ProviderMode
     return data.data;
 }
 
-// POST {provider}/chat/completions with the complete conversation history. The
-// provider injects credentials itself (key rotation lives in the private model
-// clients), so no Authorization header is ever set from the browser.
-export async function createProviderChatCompletion(
+// Outgoing history is mapped to plain {role, content} messages: ChatMessage may
+// carry storage-only metadata (the per-message `model` attribution used to mark
+// which model produced each response — see chat-assistant.ts), and strict
+// OpenAI-compatible providers reject unknown fields on messages.
+const toProviderMessages = (messages: ChatMessage[]): Array<Pick<ChatMessage, 'role' | 'content'>> =>
+    messages.map(({ role, content }) => ({ role, content }));
+
+// POST {provider}/chat/completions with stream: true and the complete conversation
+// history. The provider injects credentials itself (key rotation lives in the
+// private model clients), so no Authorization header is ever set from the browser.
+// `onSnapshot` receives the ACCUMULATED assistant text after every content delta so
+// the caller can render live progress. Resolves at [DONE]/connection-close with the
+// full content plus usage when the final chunk provided it. Errors: non-2xx rejects
+// before streaming ("Model 'x' not found", failover 500); a mid-stream {"error":...}
+// frame rejects with its message.
+export async function streamProviderChatCompletion(
     baseUrl: string,
     model: string,
-    messages: ChatMessage[]
+    messages: ChatMessage[],
+    onSnapshot: (content: string) => void
 ): Promise<ProviderChatCompletion> {
     const response = await fetch(`${normalizeBaseUrl(baseUrl)}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, stream: false, messages })
+        body: JSON.stringify({ model, stream: true, messages: toProviderMessages(messages) })
     });
     if (!response.ok) {
         throw new Error(await errorMessage(response, 'Provider chat completion failed'));
     }
-
-    const data = (await response.json()) as {
-        choices?: Array<{ message?: { content?: unknown } }>;
-        usage?: ConversationRecord['usage'];
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!isString(content) || content.length === 0) {
-        throw new Error('Provider chat completion returned no text content');
+    if (!response.body) {
+        throw new Error('Provider chat completion returned no stream body');
     }
 
-    return { content, ...(data.usage ? { usage: data.usage } : {}) };
+    // Reader loop mirrors the readSSEResponse pattern in
+    // packages/agentic/harness/simple/modules/simple-client.ts: decode incrementally,
+    // split on newlines, and keep the partial tail so frames split across network
+    // chunks are reassembled before parsing.
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let content = '';
+    let usage: ConversationRecord['usage'] | undefined;
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const raw of lines) {
+                const line = raw.trim();
+                // The producer emits only `data:` frames; blank separators are skipped.
+                if (!line.startsWith('data:')) continue;
+                const data = line.slice('data:'.length).trim();
+                if (data.length === 0 || data === '[DONE]') continue;
+                const parsed = JSON.parse(data) as ProviderStreamChunk;
+                // Server catch-all: stream aborted after it started (start.ts:234-243).
+                if (parsed.error) {
+                    const message = parsed.error.message;
+                    throw new Error(isString(message) && message.length > 0 ? message : 'Provider stream terminated');
+                }
+                const delta = parsed.choices?.[0]?.delta;
+                if (delta && isString(delta.content) && delta.content.length > 0) {
+                    content += delta.content;
+                    onSnapshot(content);
+                }
+                // GPT clients append a final empty-delta chunk carrying the turn's usage.
+                if (parsed.usage) usage = parsed.usage;
+            }
+        }
+    } catch (reason) {
+        // Abandon the SSE body so the connection is not left dangling on failures.
+        await reader.cancel().catch(() => undefined);
+        throw reason;
+    }
+
+    if (content.length === 0) {
+        throw new Error('Provider chat completion returned no text content');
+    }
+    return { content, ...(usage ? { usage } : {}) };
 }

@@ -1,14 +1,20 @@
 // Client for the two conversation resources exposed by the service.
-// The collection accepts POST for creation, while the identified resource accepts
-// GET, POST, and DELETE; no collection GET or query-string identifier is used.
-// This API is pure chat storage: model traffic goes through ./provider.ts against
+// The collection accepts GET (history list) and POST (creation), while the
+// identified resource accepts GET, POST (append), PUT (history replacement for
+// the edit-history flow), and DELETE; no query-string identifier is used. This
+// API is pure chat storage: model traffic goes through ./provider.ts against
 // the runtime provider endpoints, and only completed turns are persisted here.
 export const DEFAULT_CHAT_ASSISTANT_URL = '/v1/chat-assistant/conversation';
 
 // The only message roles accepted by the server and rendered by the UI.
+// `model` is optional per-message attribution: the UI records the provider model
+// that produced an assistant turn so each response can mark its origin (see the
+// AssistantTurn caption in components/ChatAssistantApp.tsx). The provider client
+// strips the field before sending history upstream.
 export type ChatMessage = {
     role: 'system' | 'user' | 'assistant';
     content: string;
+    model?: string;
 };
 
 // Complete conversation returned by GET and persisted by both POST operations.
@@ -49,11 +55,36 @@ export type ConversationPostResponse = {
     conversationId: string;
 };
 
+// History-replacement request used by the edit-history flow: the UI sends the
+// complete (edited) message list and the server persists it verbatim, deriving
+// messageCount/updatedAt/title from it. Supports the same optional model field
+// so the record-level model stays accurate after edits, and an optional explicit
+// title so the header rename flow can pin a custom label (it wins over the
+// derived first-line title).
+export type ConversationPutRequest = {
+    messages: ChatMessage[];
+    model?: string;
+    title?: string;
+};
+
 // GET wraps the persisted record so the response remains extensible without
 // changing the identifier returned by POST.
 export type ConversationGetResponse = {
     conversationId: string;
     conversation: ConversationRecord;
+};
+
+// Compact history-list entry returned by the collection GET. Message bodies are
+// deliberately excluded so restoring the chat history stays cheap; the full
+// record for one entry is read through the identified GET.
+export type ConversationSummary = Pick<
+    ConversationRecord,
+    'conversationId' | 'title' | 'model' | 'status' | 'messageCount' | 'createdAt' | 'updatedAt'
+>;
+
+// Collection GET wraps the summary list so the response remains extensible.
+export type ConversationListResponse = {
+    conversations: ConversationSummary[];
 };
 
 // DELETE reports the removed identifier after the record has been deleted.
@@ -95,6 +126,22 @@ export async function fetchConversation(
     return data as ConversationGetResponse;
 }
 
+// Read every persisted conversation as a compact summary from the collection
+// resource; the server orders the list by most recent activity (updatedAt
+// descending). The UI calls this on mount so the chat history survives a reload.
+export async function listConversations(baseUrl: string): Promise<ConversationListResponse> {
+    const response = await fetch(normalizeBaseUrl(baseUrl), { method: 'GET' });
+    if (!response.ok) {
+        throw new Error(await errorMessage(response, 'Failed to list conversations'));
+    }
+
+    const data = (await response.json()) as Partial<ConversationListResponse>;
+    if (!Array.isArray(data.conversations)) {
+        throw new Error('Conversation list response did not include a conversations list');
+    }
+    return data as ConversationListResponse;
+}
+
 // Create a conversation and return its identifier for the follow-up GET request.
 export async function createConversation(
     baseUrl: string,
@@ -132,6 +179,33 @@ export async function addToConversation(
     }
 
     return (await response.json()) as ConversationPostResponse;
+}
+
+// Replace the complete message history of an existing conversation (edit flow).
+// Unlike POST (append) this returns the full updated record so the caller can
+// re-sync its local selection without a follow-up GET.
+export async function replaceConversationMessages(
+    baseUrl: string,
+    conversationId: string,
+    request: ConversationPutRequest
+): Promise<ConversationGetResponse> {
+    const response = await fetch(
+        `${normalizeBaseUrl(baseUrl)}/${encodeURIComponent(conversationId)}`,
+        {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        }
+    );
+    if (!response.ok) {
+        throw new Error(await errorMessage(response, 'Failed to replace conversation messages'));
+    }
+
+    const data = (await response.json()) as Partial<ConversationGetResponse>;
+    if (!data.conversation || typeof data.conversationId !== 'string') {
+        throw new Error('Conversation response did not include a conversation record');
+    }
+    return data as ConversationGetResponse;
 }
 
 // Permanently remove a conversation through the identified resource.

@@ -4,11 +4,15 @@ export {
     chatAssistantCreate,
     chatAssistantDelete,
     chatAssistantGet,
+    chatAssistantList,
     chatAssistantPost,
+    chatAssistantPut,
     conversationCreate,
     conversationDelete,
     conversationGet,
-    conversationPost
+    conversationList,
+    conversationPost,
+    conversationPut
 } from './chat-assistant';
 export { createChatStore } from './chat-store';
 export type { ChatStore } from './chat-store';

@@ -7,7 +7,9 @@ import {
     conversationCreate,
     conversationDelete,
     conversationGet,
-    conversationPost
+    conversationList,
+    conversationPost,
+    conversationPut
 } from './chat-assistant';
 import type { ChatStore } from './chat-store';
 
@@ -82,6 +84,65 @@ describe('conversation service handlers', () => {
             createdAt: '2026-08-06T00:00:00.000Z',
             updatedAt: '2026-08-06T00:00:00.000Z'
         });
+    });
+
+    it('lists persisted conversations as summaries ordered by most recent activity', async () => {
+        // Older and newer records interleave creation order with activity order so
+        // the updatedAt-descending sort is what the assertion actually verifies.
+        const olderConversation: ConversationRecord = {
+            conversationId: 'conversation-old',
+            title: 'Old question',
+            model: 'test-model',
+            status: 'complete',
+            messageCount: 1,
+            messages: [{ role: 'user', content: 'Old question' }],
+            createdAt: '2026-08-05T00:00:00.000Z',
+            updatedAt: '2026-08-05T00:00:01.000Z'
+        };
+        const store = memoryStore([olderConversation, existingConversation]);
+
+        const result = await conversationList(
+            context,
+            { path: {}, query: {}, body: {} },
+            variables(store)
+        );
+
+        // Summaries exclude message bodies; the recently updated record leads.
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversations: [
+                    {
+                        conversationId: 'conversation-1',
+                        title: 'First question',
+                        model: 'test-model',
+                        status: 'complete',
+                        messageCount: 2,
+                        createdAt: '2026-08-06T00:00:00.000Z',
+                        updatedAt: '2026-08-06T00:00:01.000Z'
+                    },
+                    {
+                        conversationId: 'conversation-old',
+                        title: 'Old question',
+                        model: 'test-model',
+                        status: 'complete',
+                        messageCount: 1,
+                        createdAt: '2026-08-05T00:00:00.000Z',
+                        updatedAt: '2026-08-05T00:00:01.000Z'
+                    }
+                ]
+            }
+        });
+    });
+
+    it('returns an empty conversation list when nothing is stored', async () => {
+        const result = await conversationList(
+            context,
+            { path: {}, query: {}, body: {} },
+            variables(memoryStore())
+        );
+
+        expect(result).toEqual({ status: 200, response: { conversations: [] } });
     });
 
     it('gets an identified conversation from the path parameter', async () => {
@@ -178,6 +239,67 @@ describe('conversation service handlers', () => {
         });
     });
 
+    it('persists the per-message model attribution of an appended assistant turn', async () => {
+        // The UI marks which model produced each response by carrying `model` on
+        // the assistant message itself; the store must keep it verbatim.
+        vi.setSystemTime(new Date('2026-08-06T00:00:10.000Z'));
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: {
+                    messages: [
+                        { role: 'user', content: 'Follow up' },
+                        { role: 'assistant', content: 'Attributed reply', model: 'qwen/makora-pro' }
+                    ],
+                    model: 'qwen/makora-pro'
+                }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    model: 'qwen/makora-pro',
+                    messageCount: 4,
+                    messages: [
+                        { role: 'user', content: 'First question' },
+                        { role: 'assistant', content: 'First answer' },
+                        { role: 'user', content: 'Follow up' },
+                        { role: 'assistant', content: 'Attributed reply', model: 'qwen/makora-pro' }
+                    ],
+                    updatedAt: '2026-08-06T00:00:10.000Z'
+                }
+            }
+        });
+    });
+
+    it('rejects a blank per-message model attribution', async () => {
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: {
+                    messages: [{ role: 'assistant', content: 'Reply', model: '  ' }, { role: 'user', content: 'Question' }]
+                }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({ status: 400, response: { error: 'messages must be an array of valid chat messages' } });
+        expect(store.get('conversation-1')).toEqual(existingConversation);
+    });
+
     it('derives the title from the first stored user turn on an empty conversation', async () => {
         vi.setSystemTime(new Date('2026-08-06T00:00:00.000Z'));
         const store = memoryStore();
@@ -211,6 +333,285 @@ describe('conversation service handlers', () => {
                     messages: [{ role: 'user', content: 'What is the meaning of life?' }],
                     createdAt: '2026-08-06T00:00:00.000Z',
                     updatedAt: '2026-08-06T00:00:05.000Z'
+                }
+            }
+        });
+    });
+
+    it('replaces the complete history through PUT and recomputes metadata', async () => {
+        // The edit-history flow: the whole edited list lands verbatim, messageCount
+        // and updatedAt follow, and the title is re-derived from the new first
+        // user turn. Per-message attribution survives the replacement.
+        vi.setSystemTime(new Date('2026-08-06T00:00:20.000Z'));
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPut(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: {
+                    messages: [
+                        { role: 'user', content: 'Rewritten question' },
+                        { role: 'assistant', content: 'Rewritten answer', model: 'qwen/makora-pro' }
+                    ]
+                }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    title: 'Rewritten question',
+                    messageCount: 2,
+                    messages: [
+                        { role: 'user', content: 'Rewritten question' },
+                        { role: 'assistant', content: 'Rewritten answer', model: 'qwen/makora-pro' }
+                    ],
+                    updatedAt: '2026-08-06T00:00:20.000Z'
+                }
+            }
+        });
+        expect(store.get('conversation-1')?.messages).toEqual([
+            { role: 'user', content: 'Rewritten question' },
+            { role: 'assistant', content: 'Rewritten answer', model: 'qwen/makora-pro' }
+        ]);
+    });
+
+    it('drops stale usage counters when the history is replaced', async () => {
+        // Usage describes the last appended turn; after a rewrite it no longer
+        // matches anything, so the replacement must not carry it forward.
+        vi.setSystemTime(new Date('2026-08-06T00:00:20.000Z'));
+        const withUsage: ConversationRecord = {
+            ...existingConversation,
+            usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 }
+        };
+        const store = memoryStore([withUsage]);
+
+        const result = await conversationPut(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: { messages: [{ role: 'user', content: 'Only question now' }] }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    title: 'Only question now',
+                    messageCount: 1,
+                    messages: [{ role: 'user', content: 'Only question now' }],
+                    updatedAt: '2026-08-06T00:00:20.000Z'
+                    // No usage key: the replacement clears the counters.
+                }
+            }
+        });
+    });
+
+    it('keeps the recorded title and model when a replacement has no user turn and no model body', async () => {
+        vi.setSystemTime(new Date('2026-08-06T00:00:20.000Z'));
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPut(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: { messages: [{ role: 'assistant', content: 'Only answer' }] }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    messageCount: 1,
+                    messages: [{ role: 'assistant', content: 'Only answer' }],
+                    updatedAt: '2026-08-06T00:00:20.000Z'
+                }
+            }
+        });
+    });
+
+    it('wipes the history when the replacement is an empty array', async () => {
+        vi.setSystemTime(new Date('2026-08-06T00:00:20.000Z'));
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPut(
+            context,
+            { path: { conversation_id: 'conversation-1' }, query: {}, body: { messages: [] } },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    messageCount: 0,
+                    messages: [],
+                    updatedAt: '2026-08-06T00:00:20.000Z'
+                }
+            }
+        });
+    });
+
+    it('rejects a replacement request without a valid messages array', async () => {
+        const store = memoryStore([existingConversation]);
+        const parameters = { path: { conversation_id: 'conversation-1' }, query: {}, body: {} };
+
+        expect(await conversationPut(context, parameters, variables(store))).toEqual({
+            status: 400,
+            response: { error: 'messages must be an array of valid chat messages' }
+        });
+        expect(
+            await conversationPut(
+                context,
+                { path: { conversation_id: 'conversation-1' }, query: {}, body: { messages: [{ role: 'user', content: '' }] } },
+                variables(store)
+            )
+        ).toEqual({ status: 400, response: { error: 'messages must be an array of valid chat messages' } });
+        expect(store.get('conversation-1')).toEqual(existingConversation);
+    });
+
+    it('returns not found for a missing conversation on PUT', async () => {
+        const result = await conversationPut(
+            context,
+            { path: { conversation_id: 'missing' }, query: {}, body: { messages: [] } },
+            variables(memoryStore())
+        );
+
+        expect(result).toEqual({ status: 404, response: { error: "Conversation 'missing' not found" } });
+    });
+
+    it('derives the title from the trimmed first line of a multi-line first user turn', async () => {
+        // Titles are conversation labels: only the first line of the first user
+        // message applies. The message body itself keeps every line.
+        vi.setSystemTime(new Date('2026-08-06T00:00:00.000Z'));
+        const store = memoryStore();
+        await conversationCreate(
+            context,
+            { path: {}, query: {}, body: {} },
+            variables(store, () => 'conversation-created')
+        );
+
+        const result = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-created' },
+                query: {},
+                body: { message: '  First line of the question  \nSecond line with more detail' }
+            },
+            variables(store)
+        );
+
+        // Outer whitespace vanishes via content trimming; the title keeps only
+        // the (trimmed) first line.
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-created',
+                conversation: {
+                    conversationId: 'conversation-created',
+                    title: 'First line of the question',
+                    model: 'openai/gpt-5.6-sol',
+                    status: 'complete',
+                    messageCount: 1,
+                    messages: [{ role: 'user', content: 'First line of the question  \nSecond line with more detail' }],
+                    createdAt: '2026-08-06T00:00:00.000Z',
+                    updatedAt: '2026-08-06T00:00:00.000Z'
+                }
+            }
+        });
+    });
+
+    it('applies an explicit title from the PUT body (header rename flow)', async () => {
+        // The header rename sends the unchanged history round-trip plus the new
+        // label; the explicit title wins over first-line derivation.
+        vi.setSystemTime(new Date('2026-08-06T00:00:20.000Z'));
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPut(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: {
+                    messages: existingConversation.messages,
+                    title: '  My custom title  '
+                }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    title: 'My custom title',
+                    updatedAt: '2026-08-06T00:00:20.000Z'
+                }
+            }
+        });
+    });
+
+    it('rejects a blank title in the PUT body', async () => {
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPut(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: { messages: [{ role: 'user', content: 'Question' }], title: '   ' }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({ status: 400, response: { error: 'title must be a non-empty string' } });
+        expect(store.get('conversation-1')).toEqual(existingConversation);
+    });
+
+    it('re-derives the title from the first line when a PUT rewrites the first user turn', async () => {
+        vi.setSystemTime(new Date('2026-08-06T00:00:20.000Z'));
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPut(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: { messages: [{ role: 'user', content: 'Rewritten heading\nand the details on a second line' }] }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    title: 'Rewritten heading',
+                    messageCount: 1,
+                    messages: [{ role: 'user', content: 'Rewritten heading\nand the details on a second line' }],
+                    updatedAt: '2026-08-06T00:00:20.000Z'
                 }
             }
         });
