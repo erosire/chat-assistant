@@ -1559,7 +1559,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // a fresh click cancels the running flight before retargeting, and the
     // unmount cleanup below cancels a pending frame so it never writes to a
     // detached list. Also read by the bottom-follow effect below: while a
-    // flight owns scrollTop, NOTHING else may write it.
+    // flight owns scrollTop, NOTHING else may write it. The handle's function
+    // identity is STABLE across renders by @presource/react contract
+    // (reference.ts creates the accessor once per component lifetime) — the
+    // [listJump] deps below depend on that stability (see the cleanup effect).
     const listJump = useReferenceHook<number | null>(null);
     // Ref snapshot of the bottom-follow effect's OWN dep tuple from the
     // previous run, used to classify WHICH trigger family a commit belongs
@@ -1880,6 +1883,15 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     }, [listJump, syncStickyControls]);
 
     // Never let a pending jump frame write to a detached list on unmount.
+    // The [listJump] dep MUST hold a stable identity across renders or this
+    // cleanup re-runs on EVERY re-render and cancels the flight mid-animation:
+    // that was the "^ goes partially, second click completes" glitch — the
+    // up-click's first frame detached listAtBottom, the scroll event's
+    // syncStickyControls flipped it (a state update → re-render), the fresh
+    // listJump identity re-fired this effect, and the cleanup killed the rAF
+    // at ~25% of the distance. useReferenceHook now guarantees a create-once
+    // accessor (packages/presource/react/src/hooks/local/reference.ts), so
+    // this effect mounts/unmounts only.
     useEffect(() => () => {
         if (listJump() !== null) cancelAnimationFrame(listJump()!);
     }, [listJump]);

@@ -2525,6 +2525,66 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
+    it('completes an up-jump from the bottom edge through the mid-flight at-bottom state flip (the partial-landing regression)', async () => {
+        // REGRESSION for the reported glitch "down chevron reaches the
+        // bottom, then up chevron goes only PARTIALLY and needs a second
+        // click": starting from the list's bottom edge, the up flight's first
+        // frame detaches the bottom edge, the browser's scroll event runs
+        // syncStickyControls, and its listAtBottom flip (state update →
+        // RE-RENDER) used to re-fire the unmount-cleanup effect — whose dep
+        // [listJump] held a PER-RENDER identity — and cancelAnimationFrame'd
+        // the flight at ~25% of the distance. The @presource/react state-hook
+        // handles are now identity-stable (reference.ts/state.ts create the
+        // accessor once per component lifetime), so the cleanup only runs at
+        // unmount and one click lands EXACTLY.
+        renderApp();
+        await waitForModelSelection();
+
+        const list = screen.getByTestId('message-list');
+        // Same live-rect spy as the section-chevron test above: viewport-y =
+        // list-rect-top + content-y − LIVE scrollTop, list rect fixed at
+        // top 100/height 400 (the clientHeight stub). Only turn-1 needs a
+        // real rect — it is both the flight target and, after the send, the
+        // chat's last content (its bottom dock IS the scroll range end).
+        const rectOf = (bottom: number, height: number) => ({ x: 0, y: bottom - height, top: bottom - height, left: 0, right: 100, width: 100, bottom, height, toJSON: () => ({}) }) as DOMRect;
+        vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+            const id = this.getAttribute?.('data-testid') ?? '';
+            if (id === 'message-list') return rectOf(500, 400);
+            if (id === 'message-turn-1') return rectOf(100 + 616 + 560 - list.scrollTop, 560);
+            return rectOf(0, 0);
+        });
+        await sendFirstTurn();
+
+        // Long-chat geometry AFTER the send (same order as the chevron test):
+        // 1200px of content behind a 400px scrollport.
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 1200 });
+        Object.defineProperty(list, 'clientHeight', { configurable: true, value: 400 });
+
+        // The user's exact sequence: turn-1's "v" lands the list on its REAL
+        // bottom edge (1176 + 24 − 400 = 800 = the scroll range end), so the
+        // list is at-bottom by measurement, not by assumption.
+        fireEvent.click(screen.getByTestId('turn-jump-bottom-1'));
+        await waitFor(() => expect(list.scrollTop).toBe(800));
+
+        // Then "^" on the same turn: the true dock target is EXACTLY
+        // 616 − 24 = 592.
+        fireEvent.click(screen.getByTestId('turn-jump-top-1'));
+        // Sequence the mid-flight scroll pass: once the first frame moved the
+        // list off the bottom edge, a real browser has already dispatched a
+        // scroll event — fire it by hand (jsdom never dispatches scroll for
+        // programmatic scrollTop writes). syncStickyControls flips
+        // listAtBottom(false) → state update → re-render at THIS instant: the
+        // exact moment the stale-identity cleanup used to kill the flight.
+        await waitFor(() => expect(list.scrollTop).not.toBe(800));
+        fireEvent.scroll(list);
+        // ONE click, EXACT landing — a cancelled flight would freeze at its
+        // mid position and time this wait out.
+        await waitFor(() => expect(list.scrollTop).toBe(592));
+
+        // Still pure view state: the same six send-flow calls.
+        expect((fetch as any).mock.calls).toHaveLength(6);
+    });
+
     it('keeps a manual scroll-up position through stream chunks and the completion swap (follow re-engages at the bottom)', async () => {
         // Controlled-stream variant of the default routes (identical to the
         // auto-scroll test's) so the send record flow still makes its six
