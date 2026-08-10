@@ -458,19 +458,6 @@ describe('ChatAssistantApp', () => {
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBe(DEFAULT_MODEL);
     });
 
-    it('refreshes the history list and the selected conversation', async () => {
-        renderApp();
-        await waitForModelSelection();
-        await sendFirstTurn();
-
-        fireEvent.click(screen.getByTestId('refresh-chats-button'));
-
-        // Refresh first reloads the collection list, then re-reads the selected record.
-        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(8));
-        expect((fetch as any).mock.calls[6]).toEqual([BASE_URL, { method: 'GET' }]);
-        expect((fetch as any).mock.calls[7]).toEqual([`${BASE_URL}/conversation-1`, { method: 'GET' }]);
-    });
-
     it('sends the entire history to the newly selected model regardless of prior turns', async () => {
         renderApp();
         await waitForModelSelection();
@@ -680,6 +667,33 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(screen.getByTestId('sidebar-scrim'));
         expect(toggle.getAttribute('aria-expanded')).toBe('false');
         expect(sidebar.getAttribute('data-open')).toBe('false');
+    });
+
+    it('layers the open drawer ABOVE its scrim with valid z-index values (mobile taps keep landing on menu items)', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-toggle'));
+        expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('true');
+
+        // Read Emotion's injected stylesheet directly (jsdom cannot compute
+        // stacking contexts). REGRESSION: the sidebar's z-index once came from
+        // a FUNCTION breakpoint map ({xs: 20}); styleStructure converts every
+        // number inside such maps to rem — browsers dropped the invalid
+        // "z-index:10rem", the scrim (z-index:10) painted ABOVE the drawer,
+        // and every mobile tap closed the menu without selecting anything.
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        // The drawer must carry a VALID z-index 20 (Emotion serializes
+        // declarations without a space after the colon: "z-index:20").
+        const sidebarRule = new RegExp(`\\.css-[^{]+\\{[^}]*z-index:\\s*20[^}]*\\}`, 'm').exec(css);
+        expect(sidebarRule?.[0]).toContain('z-index:20');
+        // ...and no z-index anywhere may be expressed in rem (the corruption).
+        expect(css).not.toMatch(/z-index:\s*[\d.]+rem/);
+        // The scrim stays strictly BELOW the drawer: z-index 10 < 20.
+        expect(css).toMatch(/z-index:\s*10\b/);
+        // Both layers exist in the DOM with the drawer rendered after the scrim.
+        expect(screen.getByTestId('chat-sidebar').compareDocumentPosition(screen.getByTestId('sidebar-scrim')) & 2).toBe(2);
     });
 
     it('closes the mobile sidebar drawer when a chat is selected', async () => {
@@ -1421,6 +1435,96 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('message-turn-3').querySelector('article')?.textContent).toBe('Second answer');
         expect(screen.getByTestId('edit-message-3')).toBeDefined();
         expect(screen.getByTestId('message-model-3').textContent).toBe('zeta-model');
+    });
+
+    it('auto-scrolls the message list to the bottom on typing, on send, and while the reply streams', async () => {
+        // Controlled-stream variant of the default routes so intermediate
+        // scroll positions between frames can be asserted.
+        const stream = controlledStream();
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
+            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(200, { conversations: [] }));
+            }
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'POST') return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+            if (init?.method === 'GET') {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+
+        const list = screen.getByTestId('message-list');
+        // jsdom's scrollHeight is 0: stub it per phase so each auto-scroll
+        // effect pins scrollTop to an exact, distinguishable bottom.
+        // Typing in the composer (which grows the field and squeezes the list)
+        // already follows the list's bottom.
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 1200 });
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
+        await waitFor(() => expect(list.scrollTop).toBe(1200));
+
+        // Sending raises the pending user bubble + streaming surface; every
+        // streamed token re-scrolls to the (growing) bottom.
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect(screen.getByTestId('pending-user-message')).toBeDefined());
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 2400 });
+        await act(async () => stream.push(completionFrames[0]));
+        await waitFor(() => expect(list.scrollTop).toBe(2400));
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 3600 });
+        await act(async () => stream.push(completionFrames[1]));
+        await waitFor(() => expect(list.scrollTop).toBe(3600));
+
+        // Completion loads the canonical record: the follow still pins the bottom.
+        await act(async () => {
+            stream.push(completionFrames[2]);
+            stream.push(completionFrames[3]);
+            stream.close();
+        });
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
+        expect(list.scrollTop).toBe(3600);
+
+        // Auto-scrolling is pure view state: only the six send-flow calls ran.
+        expect((fetch as any).mock.calls).toHaveLength(6);
+    });
+
+    it('locks the app frame to the viewport: pinned header, scrolling message list, pinned composer', async () => {
+        renderApp();
+        await waitForModelSelection();
+
+        // The app frame is a viewport-locked flex column: it fills the root
+        // height exactly and never produces a window scrollbar itself.
+        const page = screen.getByTestId('chat-assistant');
+        const pageStyle = window.getComputedStyle(page);
+        expect(pageStyle.height).toBe('100%');
+        expect(pageStyle.display).toBe('flex');
+        expect(pageStyle.flexDirection).toBe('column');
+        expect(pageStyle.overflow).toBe('hidden');
+
+        // The header is pinned to the frame's top edge: it cannot shrink away
+        // (and the page itself never scrolls, so it stays stuck on top).
+        expect(window.getComputedStyle(page.querySelector('header')!).flexShrink).toBe('0');
+
+        // The ONLY scrolling surface in the middle is the message list — the
+        // composer sits OUTSIDE it as a sibling and cannot shrink, so the
+        // message area stays pinned to the bottom edge.
+        const list = screen.getByTestId('message-list');
+        expect(window.getComputedStyle(list).overflowY).toBe('auto');
+        expect(list.contains(screen.getByTestId('chat-composer'))).toBe(false);
+        expect(window.getComputedStyle(screen.getByTestId('chat-composer')).flexShrink).toBe('0');
+
+        // Sending fills the list far beyond the viewport: the composer remains
+        // outside the scroll region and the frame still refuses to scroll.
+        await sendFirstTurn();
+        expect(list.contains(screen.getByTestId('chat-composer'))).toBe(false);
+        expect(window.getComputedStyle(page).overflow).toBe('hidden');
+        // The fixed bottom chrome strip between list and composer (the
+        // selected chat's model metadata) also resists shrinking.
+        expect(window.getComputedStyle(screen.getByTestId('chat-model')).flexShrink).toBe('0');
     });
 
     it('stacks the rename dialog actions on mobile and rows them on desktop', async () => {

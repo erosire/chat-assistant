@@ -56,6 +56,12 @@
 // inserts a newline so the on-screen keyboard's return key only grows the
 // draft — submission stays on the split send button. The sidebar is a
 // static column on md+ screens and a toggleable drawer below the md breakpoint.
+// The message list ALWAYS follows the conversation bottom: typing in the
+// composer (the field grows and squeezes the list), the sent message's
+// pending bubble, every streamed token of the reply, and every fresh record
+// (chat selection, completed turn, edited history) re-pin the list's scroll
+// position to its end — the list is the page's only scrolling surface (see
+// the viewport-locked Page).
 import React, { useCallback, useEffect } from 'react';
 import { arrayEach, isString } from '@presource/core';
 import { styledComponent, useStateHook } from '@presource/react';
@@ -90,22 +96,33 @@ const COLORS = {
     danger: '#ff9c9c'
 } as const;
 
-// Full-viewport application frame.
+// Full-viewport application frame, LOCKED to the viewport: exactly the root's
+// 100% height (index.html sets html/body/#root to height:100%) with the page's
+// own overflow hidden, so the WINDOW never shows a scrollbar. The column then
+// splits the viewport height into three regions: the header pinned to the top
+// edge (flexShrink:0), the workspace filling the middle (flex:1 minHeight:0)
+// where only INNER regions scroll (the sidebar column and the message list),
+// and — inside the conversation column — the composer pinned to the bottom
+// edge (flexShrink:0).
 const Page = styledComponent('main', {
-    minHeight: '100%',
+    height: '100%',
     width: '100%',
     display: 'flex',
     flexDirection: 'column',
+    overflow: 'hidden',
     backgroundColor: COLORS.page,
     color: COLORS.text
 });
 
 // Header keeps the product name and the explicit actions visible on every screen
-// size. Padding collapses on narrow (xs) screens; the breakpoint map form is the
+// size. flexShrink:0 pins it to the app frame's TOP edge: the viewport-locked
+// page never scrolls (see Page), so the header sticks on top permanently.
+// Padding collapses on narrow (xs) screens; the breakpoint map form is the
 // documented styledComponent responsive mechanism (values under md apply from
 // 900px up — see styleMedia in @presource/react).
 const Header = styledComponent('header', {
     minHeight: 64,
+    flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -237,9 +254,9 @@ const DialogActions = styledComponent('div', {
     gap: 8
 });
 
-// Header actions (refresh + delete) stay grouped on the header's right side;
-// "New chat" lives in the sidebar and the model picker lives on the split send
-// control in the composer instead.
+// Header actions (just the conversation delete) stay grouped on the header's
+// right side; "New chat" lives in the sidebar and the model picker lives on
+// the split send control in the composer instead.
 const HeaderActions = styledComponent('div', {
     display: 'flex',
     alignItems: 'center',
@@ -261,6 +278,15 @@ const Workspace = styledComponent('div', {
 // requirement): below md it is a fixed left drawer whose `open` prop slides it
 // in/out via transform; at md+ it is a static grid column and `open` is ignored
 // (transform:none + position:static always win inside the media query).
+// CRITICAL — zIndex MUST stay a STATIC number: FUNCTION values (breakpoint
+// maps) pass through styleStructure (packages/presource/react/.../styled/
+// utility/structure.ts), which converts EVERY number inside the map to rem —
+// {xs: 20} becomes z-index:10rem, an INVALID value browsers silently drop.
+// The drawer then painted at stack level 0 UNDER the scrim (z-index:10), so
+// on mobile every tap inside the open drawer landed on the scrim and merely
+// closed the menu — nothing was selectable. The static 20 is valid CSS, keeps
+// the drawer above the scrim (10) and under dialogs (40), and is ignored on
+// md+ where position:static makes z-index inapplicable anyway.
 const Sidebar = styledComponent<{ open: boolean }>('aside', {
     minHeight: 0,
     display: 'flex',
@@ -275,7 +301,7 @@ const Sidebar = styledComponent<{ open: boolean }>('aside', {
     bottom: () => ({ xs: 0, md: 'auto' }),
     left: 0,
     width: () => ({ xs: 'min(280px, 85vw)', md: 'auto' }),
-    zIndex: () => ({ xs: 20, md: 'auto' }),
+    zIndex: 20,
     transform: ({ open }) => ({ xs: open ? 'translateX(0)' : 'translateX(-105%)', md: 'none' }),
     transition: 'transform 160ms ease'
 });
@@ -614,10 +640,14 @@ const SystemMessage = styledComponent('article', {
 });
 
 // Composer separates the editable input from the message list and exposes a stable
-// test hook. align-items: flex-start keeps the send control pinned to the top of
-// the composer row even when the textarea grows to multiple lines.
+// test hook. flexShrink:0 pins it to the conversation column's BOTTOM edge: it
+// never shrinks or scrolls away while the message list above absorbs all the
+// overflow as the column's only scrolling surface. align-items: flex-start
+// keeps the send control pinned to the top of the composer row even when the
+// textarea grows to multiple lines.
 const Composer = styledComponent('form', {
     display: 'flex',
+    flexShrink: 0,
     alignItems: 'flex-start',
     gap: 12,
     padding: 16,
@@ -724,7 +754,7 @@ const NewChatButton = styledComponent(SecondaryButton, {
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Destructive delete action for the selected conversation, pinned to the
-// header's far right; the danger outline separates it from the neutral refresh.
+// header's far right; the danger outline separates it from neutral chrome.
 const DeleteButton = styledComponent(SecondaryButton, {
     borderColor: 'rgba(255, 156, 156, 0.45)',
     color: COLORS.danger
@@ -737,14 +767,20 @@ const Metadata = styledComponent('span', {
     lineHeight: 1.3
 });
 
-// Model metadata receives its own layout component so the JSX contains no inline style object.
+// Model metadata receives its own layout component so the JSX contains no
+// inline style object. flexShrink:0 keeps the one-line strip from being
+// squeezed between the message list and the pinned composer.
 const ModelMetadata = styledComponent(Metadata, {
     display: 'block',
+    flexShrink: 0,
     padding: '0 24px 8px'
 });
 
-// Error banner is explicit and non-modal so a failed provider request leaves the conversation usable.
+// Error banner is explicit and non-modal so a failed provider request leaves
+// the conversation usable. flexShrink:0: like the composer strip, it belongs
+// to the fixed bottom chrome and must not shrink under list pressure.
 const ErrorBanner = styledComponent('div', {
+    flexShrink: 0,
     margin: '0 24px 12px',
     padding: '10px 12px',
     border: '1px solid rgba(255, 156, 156, 0.45)',
@@ -1097,7 +1133,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // chat switch / deletion. Session-level UI state, never persisted.
     const collapsedTurns = useStateHook<number[]>([]);
     const loading = useStateHook(false);
-    const refreshing = useStateHook(false);
     // True while the selected conversation's identified DELETE is in flight.
     const deleting = useStateHook(false);
     const error = useStateHook('');
@@ -1169,8 +1204,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         return () => {
             cancelled = true;
         };
-        // Mount-only effect: the history list is refreshed explicitly via Refresh
-        // and after each completed turn; chats/error are stable state-hook handles.
+        // Mount-only effect: the history list is re-synced after each completed
+        // turn (submit updates the summaries); chats/error are stable state-hook
+        // handles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [baseUrl]);
 
@@ -1181,6 +1217,20 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         if (input) resizeMessageInput(input);
     }, [message()]);
 
+    // Follow the conversation bottom: typing (the growing composer squeezes
+    // the list upward), the sent message's pending bubble, every streamed
+    // token, and any fresh record (chat selection, completed turn, edited or
+    // shortened history) all re-pin the message list — the page's only
+    // scrolling surface — to its end so the latest turn stays in view.
+    // scrollTop/scrollHeight are plain settable properties everywhere
+    // (jsdom included: scrollHeight is 0 there, so tests stub it).
+    useEffect(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
+        if (list) list.scrollTop = list.scrollHeight;
+        // Deps read accessor state: draft text, pending bubble, stream, record.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [message(), pendingUser(), streaming(), selected()]);
+
     // Inherit a conversation's recorded model ONLY when the browser has not
     // remembered one yet; the inherited model then becomes the remembered one.
     const applyModelMemory = useCallback((recordModel: string) => {
@@ -1189,27 +1239,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             rememberModel(recordModel);
         }
     }, [model]);
-
-    // Refresh reloads the whole history list from the collection GET and re-reads
-    // the selected conversation through the identified GET; the list fetch runs
-    // even with nothing selected so a stale sidebar always recovers.
-    const refresh = useCallback(async () => {
-        refreshing(true);
-        try {
-            chats((await listConversations(baseUrl)).conversations);
-            const conversationId = selected()?.conversationId;
-            if (conversationId) {
-                const record = (await fetchConversation(baseUrl, conversationId)).conversation;
-                selected(record);
-                applyModelMemory(record.model);
-            }
-            error('');
-        } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
-        } finally {
-            refreshing(false);
-        }
-    }, [applyModelMemory, baseUrl, chats, error, refreshing, selected]);
 
     // Abandon any half-finished inline edit; shared by chat switching, new chat,
     // deletion, and the editor's own Cancel button.
@@ -1613,9 +1642,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     )}
                 </HeaderLead>
                 <HeaderActions>
-                    <SecondaryButton type="button" onClick={() => void refresh()} disabled={refreshing()} data-testid="refresh-chats-button">
-                        {refreshing() ? 'Refreshing...' : 'Refresh'}
-                    </SecondaryButton>
                     <DeleteButton
                         type="button"
                         onClick={() => void deleteSelectedChat()}
