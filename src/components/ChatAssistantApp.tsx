@@ -122,7 +122,17 @@
 // pending bubble, every streamed token of the reply, and every fresh record
 // (chat selection, completed turn, edited history) re-pin the list's scroll
 // position to its end — the list is the page's only scrolling surface (see
-// the viewport-locked Page).
+// the viewport-locked Page). A circular EDGE-JUMP control floats at the FAR
+// LEFT of that message panel (the surface whose turns carry the clone/copy
+// and exit/delete chrome): while the content overflows, a DOWN chevron (the
+// requested "V") fast-animates the list to its very bottom, and AT the
+// bottom the same button is the UP chevron (the requested "^") flying back
+// to the very top — fixed 200ms ease-out, distance-independent (see
+// jumpListEdge). The button rides the ListViewport overlay, NOT the list
+// itself (an absolutely positioned child of the scroller would scroll away).
+// ALL control icons in this file come from the shared stroke-based SVG icon
+// family in src/icons (menu, close, edit, copy, chevrons) — unicode text
+// glyphs were retired because their rendering depended on the system font.
 import React, { useCallback, useEffect } from 'react';
 import { arrayEach, isString } from '@presource/core';
 import { styledComponent, useReferenceHook, useStateHook } from '@presource/react';
@@ -141,6 +151,18 @@ import {
     type ConversationRecord,
     type ConversationSummary
 } from '../api';
+// Shared stroke-based SVG icon family (src/icons): every glyph below was
+// formerly a unicode text character whose rendering depended on the system
+// font — the SVG set draws identically everywhere at any size.
+import {
+    ChevronDownIcon,
+    ChevronRightIcon,
+    ChevronUpIcon,
+    CloseIcon,
+    CopyIcon,
+    EditIcon,
+    MenuIcon
+} from '../icons';
 
 // Palette is local to this distribution so the component has no dependency on a larger theme package.
 const COLORS = {
@@ -354,6 +376,56 @@ const MessageList = styledComponent('div', {
     padding: 24,
     overflowY: 'auto'
 });
+
+// Positioning context of the message surface: takes over the list's exact
+// flex slot in the conversation column (flex:1 + minHeight:0, so the OUTER
+// geometry is identical to when the list was the direct child) purely so the
+// edge-jump button can be absolutely positioned against the VIEWPORT of the
+// message panel. Mounting the button inside MessageList itself is impossible:
+// absolutely positioned children of a scroll container live in the scrolled
+// CONTENT and ride the scroll — the button must stay glued to the panel.
+const ListViewport = styledComponent('div', {
+    flex: 1,
+    minHeight: 0,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    position: 'relative'
+});
+
+// The edge-jump control: one circular icon button pinned to the FAR LEFT of
+// the message panel — the surface whose turns carry the clone/copy and
+// exit/delete chrome — 12px in from the left edge and 16px above the
+// composer's top border (the list's bottom padding keeps the lowest strip
+// out of its way). While the list overflows it shows the DOWN chevron (the
+// requested "V" shape, ChevronDownIcon); at the bottom it flips to the UP
+// chevron (the requested "^", ChevronUpIcon) — both from the shared
+// stroke-based family in src/icons, so the flip state is pixel-consistent.
+// Clicking drives jumpListEdge's fixed-200ms ease-out flight to the far
+// edge. zIndex 6 lifts it above the transparent bottom-sticky copy/edit
+// strips (position:sticky stacking contexts with auto z-index), whose icons
+// sit on the strip's RIGHT end, so no overlap.
+const ScrollJumpButton = styledComponent('button', {
+    position: 'absolute',
+    left: 12,
+    bottom: 16,
+    zIndex: 6,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 32,
+    height: 32,
+    padding: 0,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: '50%',
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    cursor: 'pointer',
+    font: 'inherit',
+    fontWeight: 700,
+    fontSize: 14,
+    lineHeight: 1
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Empty conversation state explains the one required action without inventing a fake assistant response.
 const EmptyState = styledComponent('div', {
@@ -620,8 +692,8 @@ const TurnPreview = styledComponent<{ alignRight?: boolean }>('span', {
 });
 
 // The per-message delete control (x icon in the row above the bubble).
-// The glyph stays plain text (U+00D7 MULTIPLICATION SIGN — text presentation,
-// not emoji) with the accessible label on the button itself.
+// The icon is the shared CloseIcon SVG (src/icons); the icon itself is
+// aria-hidden, the accessible label lives on the button.
 // The `greyed` prop (paired with native disabled at the render site) keeps
 // the cross RENDERED but dimmed + inert while an inline edit runs anywhere —
 // turn chrome never disappears mid-edit, it only fades. opacity/cursor are
@@ -646,7 +718,7 @@ const MessageDeleteButton = styledComponent<{ greyed?: boolean }>('button', {
     lineHeight: 1
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { greyed?: boolean }>;
 
-// The per-conversation delete control: the SAME "x" glyph treatment as the
+// The per-conversation delete control: the SAME CloseIcon treatment as the
 // per-message delete, absolutely pinned to the top-right corner of a sidebar
 // conversation entry (ChatEntry is its positioning context). It is a SIBLING
 // of the select button inside the entry — not nested in it — so clicking the
@@ -658,9 +730,9 @@ const ConversationDeleteButton = styledComponent(MessageDeleteButton, {
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Icon-only affordance for the per-message edit action (the pen) — and for
-// the copy action paired beside it. The glyph stays plain text (U+270E LOWER
-// RIGHT PENCIL — text presentation, not emoji) with the accessible label on
-// the button itself.
+// the copy action paired beside it. Both render icons from the shared
+// stroke-based family (src/icons: EditIcon/CopyIcon); the svg is aria-hidden,
+// the accessible label lives on the button.
 // The `greyed` prop (paired with native disabled at the render site) keeps
 // the pen/copy icons RENDERED but dimmed + inert while an inline edit runs
 // anywhere: one edit at a time, but the icons never disappear mid-edit —
@@ -810,10 +882,11 @@ const ComposerField = styledComponent('div', {
     width: '100%'
 });
 
-// The send button: a circular ">" arrow pinned INSIDE the input box at its
-// bottom-right corner (position:absolute inside ComposerField), rendered ONLY
-// while the composer has focus. border-radius:50% identifies this rule
-// uniquely in Emotion's sheet (asserted by the tests).
+// The send button: a circular button hosting the right chevron (the authored
+// ">" arrow — ChevronRightIcon, not a paper plane) pinned INSIDE the input
+// box at its bottom-right corner (position:absolute inside ComposerField),
+// rendered ONLY while the composer has focus. border-radius:50% identifies
+// this rule uniquely in Emotion's sheet (asserted by the tests).
 const SendButton = styledComponent('button', {
     position: 'absolute',
     right: 8,
@@ -1115,7 +1188,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 title="Edit message"
                 data-testid={`edit-message-${index}`}
             >
-                <span aria-hidden="true">✎</span>
+                <EditIcon size={14} />
             </TurnIconButton>
         ) : null;
         // The delete cross sits on the RIGHT of the header row above the bubble;
@@ -1130,12 +1203,13 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 title="Delete message"
                 data-testid={`delete-message-${index}`}
             >
-                <span aria-hidden="true">×</span>
+                <CloseIcon size={14} />
             </MessageDeleteButton>
         ) : null;
         // Copying writes ANY message's raw text to the clipboard and never
-        // touches storage. Visibility mirrors the edit pen. The glyph is
-        // U+29C9 TWO JOINED SQUARES — plain text, not emoji.
+        // touches storage. Visibility mirrors the edit pen. The icon is the
+        // shared CopyIcon (two overlapping squares — the "clone" glyph of the
+        // turn chrome).
         const copyControl = !collapsed && options.canEdit ? (
             <TurnIconButton
                 type="button"
@@ -1146,7 +1220,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 title="Copy message"
                 data-testid={`copy-message-${index}`}
             >
-                <span aria-hidden="true">⧉</span>
+                <CopyIcon size={14} />
             </TurnIconButton>
         ) : null;
         // Smart inline editing: clicking the expanded bubble's WORDS turns the
@@ -1354,6 +1428,19 @@ const defaultCollapsedIndices = (messages: ChatMessage[]): number[] => {
 // equality must not flicker the floating mode on and off across a 0.5px line.
 const CONTROLS_FLOAT_EPSILON = 0.5;
 
+// Edge tolerance for the edge-jump control's bottom-edge detection: scrollTop
+// + clientHeight within 1px of scrollHeight already counts as "at the bottom"
+// (fractional scroll geometry and browser clamping must not strand the arrow
+// in the wrong direction one subpixel above the edge). The same constant
+// floors the "can this list scroll at all" check (scrollable only when the
+// content exceeds the scrollport by more than the epsilon).
+const LIST_EDGE_EPSILON = 1;
+
+// Fixed animation budget (ms) for the edge jump. "Fast" per the control's
+// contract: a FIXED duration rather than distance-proportional scrolling, so
+// a 500-turn chat reaches its far edge exactly as quickly as a 5-turn one.
+const JUMP_SCROLL_DURATION = 200;
+
 // Pure sticky-gate predicate for a turn's copy/edit strip — the anti-"black
 // line across the x" rule. The strip may FLOAT (position:sticky, pinned to
 // the list's visible bottom edge) only while BOTH hold:
@@ -1452,6 +1539,19 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // the system prompt draft turn's sentinel index. Starts empty = every
     // strip anchored at its natural slot under its bubble.
     const stickyTurns = useStateHook<number[]>([]);
+    // Edge-jump control geometry, measured in the SAME sync pass as the
+    // strips (syncStickyControls): listScrollable gates the button's very
+    // existence (nothing to jump while the content fits its scrollport);
+    // listAtBottom picks the icon direction — at the bottom the button is
+    // the UP chevron targeting the top, anywhere else the DOWN chevron
+    // targeting the bottom. An empty/unloaded list counts as "at bottom".
+    const listScrollable = useStateHook(false);
+    const listAtBottom = useStateHook(true);
+    // Ref-backed (write-without-render) rAF handle of an in-flight edge jump:
+    // a fresh click cancels the running flight before retargeting, and the
+    // unmount cleanup below cancels a pending frame so it never writes to a
+    // detached list.
+    const listJump = useReferenceHook<number | null>(null);
     const loading = useStateHook(false);
     // True while the selected conversation's identified DELETE is in flight.
     const deleting = useStateHook(false);
@@ -1566,6 +1666,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // Sticky-gate measurement: decide PER TURN whether its copy/edit strip
     // may float (position:sticky) or must stay anchored (position:static) —
     // the rule itself is the exported pure predicate controlsShouldFloat.
+    // The same pass also feeds the edge-jump control: listScrollable decides
+    // whether the button exists at all (content exceeds the scrollport) and
+    // listAtBottom picks its icon direction (down chevron toward the bottom,
+    // up chevron toward the top). Both writes are guarded by equality so this
+    // scroll-position listener can never re-render itself into a loop.
     // Measured inputs: the pin line is the list's bottom PADDING edge (sticky
     // offsets resolve against the scrollport's padding box — a measured
     // pinned strip sits flush against it, hence the padding subtraction);
@@ -1582,6 +1687,16 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const syncStickyControls = useCallback(() => {
         const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
         if (!list) return;
+        // Edge-jump geometry: read BEFORE anything else touches scrollTop.
+        // atBottom uses the epsilon so fractional geometry and the browser's
+        // scroll clamping (scrollTop can never exceed scrollHeight -
+        // clientHeight) cannot strand the arrow direction; scrollable needs
+        // REAL overflow beyond the tolerance (a list that fits its scrollport
+        // offers nothing to jump to, so the button stays unmounted).
+        const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - LIST_EDGE_EPSILON;
+        if (atBottom !== listAtBottom()) listAtBottom(atBottom);
+        const scrollable = list.scrollHeight > list.clientHeight + LIST_EDGE_EPSILON;
+        if (scrollable !== listScrollable()) listScrollable(scrollable);
         const listRect = list.getBoundingClientRect();
         const pinBottom = listRect.bottom - (Number.parseFloat(window.getComputedStyle(list).paddingBottom) || 0);
         const next: number[] = [];
@@ -1608,7 +1723,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // gate can never re-render itself into a loop.
         next.sort((a, b) => a - b);
         if (next.join(',') !== stickyTurns().join(',')) stickyTurns(next);
-    }, [stickyTurns]);
+    }, [listAtBottom, listScrollable, stickyTurns]);
 
     // Scroll + resize drive the gate: mount-only listener attach (the message
     // list element is permanent — it renders on every surface, empty chats
@@ -1636,6 +1751,64 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // Deps read accessor state; syncStickyControls is a stable useCallback.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [message(), pendingUser(), streaming(), selected(), collapsedTurns(), loading(), deleting(), syncStickyControls]);
+
+    // The edge-jump control's click action (the far-left chevron button in
+    // the ListViewport overlay). Direction derives from the LIVE bottom edge:
+    // listAtBottom true → fly to the top (scrollTop 0), otherwise fly to the
+    // bottom (scrollHeight - clientHeight — the browser's own clamp target,
+    // so the landing disambiguates no fractional residue). The animation is
+    // a fixed JUMP_SCROLL_DURATION ease-out cubic (fast launch, soft landing)
+    // driven by rAF: FAST per requirement and distance-INDEPENDENT — a long
+    // chat never crawls proportionally. Frames write scrollTop directly; on
+    // arrival the exact edge is pinned (easing residue must not leave the
+    // auto-pin seeing an off-bottom list) and syncStickyControls runs so the
+    // icon flip and the sticky strips settle even in environments that do
+    // not dispatch scroll events for programmatic scrollTop writes (jsdom).
+    // Environments without rAF (and zero-travel clicks) jump INSTANTLY.
+    const jumpListEdge = useCallback(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
+        if (!list) return;
+        // A fresh click cancels the in-flight flight before retargeting.
+        if (listJump() !== null) cancelAnimationFrame(listJump()!);
+        const targetTop = listAtBottom() ? 0 : list.scrollHeight - list.clientHeight;
+        const startTop = list.scrollTop;
+        if (targetTop === startTop || typeof requestAnimationFrame !== 'function') {
+            list.scrollTop = targetTop;
+            listJump(null);
+            syncStickyControls();
+            return;
+        }
+        const distance = targetTop - startTop;
+        // Clock discipline: the flight is measured on the rAF timeline ALONE
+        // — the first frame's own timestamp is the t0. Mixing clocks here
+        // (performance.now() vs the rAF callback's `now`) breaks the easing
+        // catastrophically wherever the two epochs differ (jsdom's rAF clock
+        // starts near 0 while Node's performance clock is deep into the
+        // process lifetime: progress went hugely negative, the cubic eased
+        // past -98× the distance, and the list "jumped" to scrollTop -78900).
+        // The [0, 1] clamp on BOTH ends is the second belt: an early/late
+        // frame can never overshoot the edge.
+        let startTime: number | undefined;
+        const step = (now: number) => {
+            if (startTime === undefined) startTime = now;
+            const progress = Math.min(Math.max((now - startTime) / JUMP_SCROLL_DURATION, 0), 1);
+            // Ease-out cubic: 1 - (1 - p)^3.
+            list.scrollTop = startTop + distance * (1 - Math.pow(1 - progress, 3));
+            if (progress < 1) {
+                listJump(requestAnimationFrame(step));
+            } else {
+                list.scrollTop = targetTop;
+                listJump(null);
+                syncStickyControls();
+            }
+        };
+        listJump(requestAnimationFrame(step));
+    }, [listAtBottom, listJump, syncStickyControls]);
+
+    // Never let a pending jump frame write to a detached list on unmount.
+    useEffect(() => () => {
+        if (listJump() !== null) cancelAnimationFrame(listJump()!);
+    }, [listJump]);
 
     // Focus the surface that just became the inline HTML editor (a message
     // bubble, the system prompt draft bubble, or the header title). The node
@@ -2094,7 +2267,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     title="Delete conversation"
                     data-testid={`delete-chat-${chat.conversationId}`}
                 >
-                    <span aria-hidden="true">×</span>
+                    <CloseIcon size={14} />
                 </ConversationDeleteButton>
             </ChatEntry>
         );
@@ -2151,7 +2324,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                         aria-label="Toggle conversations"
                         data-testid="sidebar-toggle"
                     >
-                        <span aria-hidden="true">☰</span>
+                        <MenuIcon size={16} />
                     </SidebarToggle>
                     {/* The header title is the SELECTED chat's title; the product
                         name is the new-chat fallback (non-interactive). Clicking
@@ -2217,6 +2390,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     {chatNodes.length > 0 ? chatNodes : <Metadata data-testid="empty-chat-list">No chats yet.</Metadata>}
                 </Sidebar>
                 <Conversation>
+                    {/* The viewport overlay owns the edge-jump button's
+                        positioning context (see ListViewport); the list keeps
+                        the identical flex slot it held as a direct child. */}
+                    <ListViewport>
                     <MessageList data-testid="message-list">
                         {/* The system prompt turn leads every chat — a regular
                             LEFT-aligned row exactly like the assistant turns.
@@ -2323,7 +2500,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                                     title="Copy system prompt"
                                                     data-testid="copy-system-prompt"
                                                 >
-                                                    <span aria-hidden="true">⧉</span>
+                                                    <CopyIcon size={14} />
                                                 </TurnIconButton>
                                             )}
                                             <TurnIconButton
@@ -2335,7 +2512,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                                 title="Edit system prompt"
                                                 data-testid="edit-system-prompt"
                                             >
-                                                <span aria-hidden="true">✎</span>
+                                                <EditIcon size={14} />
                                             </TurnIconButton>
                                         </TurnActionPair>
                                     </TrailingControls>
@@ -2378,6 +2555,28 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             </EmptyState>
                         )}
                     </MessageList>
+                    {/* Edge-jump control: rendered ONLY while the list's
+                        content actually overflows (listScrollable) — a list
+                        that fits its scrollport has no far edge to jump to.
+                        Icon direction derives from listAtBottom: the DOWN
+                        chevron (the requested "V") targets the bottom, and at
+                        the bottom the same button flips to the UP chevron
+                        (the requested "^") targeting the top — both drawn
+                        from the shared stroke family so the flip is
+                        pixel-consistent. Clicking runs jumpListEdge's
+                        fixed-200ms ease-out flight. */}
+                    {listScrollable() && (
+                        <ScrollJumpButton
+                            type="button"
+                            onClick={jumpListEdge}
+                            aria-label={listAtBottom() ? 'Scroll to top' : 'Scroll to bottom'}
+                            title={listAtBottom() ? 'Scroll to top' : 'Scroll to bottom'}
+                            data-testid="scroll-jump-button"
+                        >
+                            {listAtBottom() ? <ChevronUpIcon size={16} /> : <ChevronDownIcon size={16} />}
+                        </ScrollJumpButton>
+                    )}
+                    </ListViewport>
                     {error() && <ErrorBanner data-testid="chat-error">{error()}</ErrorBanner>}
                     {/* No "Model: ..." strip: the selected model is the text
                         above the input, and each assistant turn's top-left
@@ -2463,10 +2662,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                     disabled={loading() || !chosenModel || !isString(message()) || !message().trim()}
                                     aria-label="Send message"
                                     title="Send message"
-                                    data-testid="send-chat-button"
-                                >
-                                    <span aria-hidden="true">&gt;</span>
-                                </SendButton>
+                            data-testid="send-chat-button"
+                        >
+                            <ChevronRightIcon size={16} />
+                        </SendButton>
                             )}
                         </ComposerField>
                     </Composer>

@@ -1,6 +1,8 @@
 // Public barrel for the distribution package.
 export { App } from './App';
 export { ChatAssistantApp } from './components';
+// Shared stroke-based SVG icon family, exported for reuse by embedders.
+export * from './icons';
 export {
     addToConversation,
     createConversation,

@@ -53,7 +53,13 @@
 // button is a circular ">" arrow EMBEDDED in the input at its bottom-right —
 // rendered ONLY while the composer has focus (focus-within, including the
 // arrow and the model select). The input's right padding keeps text clear of
-// the arrow. The rename dialog's actions
+// the arrow. While the message list overflows, a circular EDGE-JUMP control
+// floats at the panel's far left (over the ListViewport, not the scroller):
+// a DOWN chevron (the requested "V") fast-animates to the list's bottom (fixed 200ms
+// ease-out), flips to an UP chevron (the requested "^") AT the bottom and
+// flies back to the top; it vanishes when the content fits its scrollport.
+// All control icons render as stroke SVGs from src/icons — the old unicode
+// text glyphs are retired. The rename dialog's actions
 // stack full-width on mobile and sit in a right-aligned row on desktop.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -341,8 +347,10 @@ describe('ChatAssistantApp', () => {
         fireEvent.change(select, { target: { value: ALT_MODEL } });
         expect(screen.getByTestId('model-label').textContent).toBe('zeta-model');
 
-        // The send button carries no model name anymore: it is the ">" arrow.
-        expect(screen.getByTestId('send-chat-button').textContent).toBe('>');
+        // The send button carries no model name anymore: it is the right
+        // chevron (the authored ">" identity drawn as an SVG icon).
+        expect(screen.getByTestId('send-chat-button').querySelector('svg[data-icon="chevron-right"]')).not.toBeNull();
+        expect(screen.getByTestId('send-chat-button').textContent).toBe('');
     });
 
     it('remembers the explicitly chosen model across remounts', async () => {
@@ -769,8 +777,9 @@ describe('ChatAssistantApp', () => {
         expect(entry.contains(remove)).toBe(true);
         expect(tab.nextElementSibling).toBe(remove);
         expect(remove.tagName).toBe('BUTTON');
-        // The glyph is the plain-text multiplication cross.
-        expect(remove.querySelector('span[aria-hidden="true"]')?.textContent).toBe('×');
+        // The control renders the shared CloseIcon SVG (the old plain-text
+        // multiplication cross was retired with the src/icons family).
+        expect(remove.querySelector('svg[data-icon="close"]')).not.toBeNull();
 
         // Placement: the entry is exactly the positioning context (the CSS rule
         // is the single bare declaration) and the x pins absolute top-right;
@@ -2415,6 +2424,64 @@ describe('ChatAssistantApp', () => {
         expect(list.scrollTop).toBe(3600);
 
         // Auto-scrolling is pure view state: only the six send-flow calls ran.
+        expect((fetch as any).mock.calls).toHaveLength(6);
+    });
+
+    it('fast-animates the message list to its far edge from the far-left down/up chevron control that flips at the bottom', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+
+        const list = screen.getByTestId('message-list');
+        // The control stays UNMOUNTED while nothing can scroll — jsdom's
+        // geometry is all-0, so scrollHeight never exceeds clientHeight.
+        expect(screen.queryByTestId('scroll-jump-button')).toBeNull();
+
+        // Long-chat geometry: 1200px of content behind a 400px scrollport.
+        // The stubs land AFTER the first turn persisted, so the auto-pin
+        // effect already wrote scrollTop = scrollHeight = 0: the list sits
+        // at the TOP of this long chat.
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 1200 });
+        Object.defineProperty(list, 'clientHeight', { configurable: true, value: 400 });
+        fireEvent.scroll(list);
+
+        // The control floats at the FAR LEFT of the message panel (the
+        // surface whose turns carry the clone/exit chrome): absolute over the
+        // ListViewport, 12px in from the left edge, 16px above the list's
+        // bottom edge.
+        const jump = await screen.findByTestId('scroll-jump-button');
+        const jumpStyle = window.getComputedStyle(jump);
+        expect(jumpStyle.position).toBe('absolute');
+        expect(jumpStyle.left).toBe('12px');
+        expect(jumpStyle.bottom).toBe('16px');
+
+        // At the top the control is the DOWN chevron (the requested "V")
+        // targeting the bottom. Clicking runs the fixed-200ms ease-out
+        // flight to the exact bottom edge 1200 - 400 = 800 (rAF runs under
+        // vitest's pretendToBeVisual jsdom; the wait covers the full
+        // animation window deterministically).
+        expect(list.scrollTop).toBe(0);
+        expect(jump.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
+        expect(jump.querySelector('svg[data-icon="chevron-up"]')).toBeNull();
+        expect(jump.getAttribute('aria-label')).toBe('Scroll to bottom');
+        fireEvent.click(jump);
+        await waitFor(() => expect(list.scrollTop).toBe(800));
+
+        // AT the bottom the SAME button flips to the UP chevron (the
+        // requested "^") targeting the top...
+        await waitFor(() => expect(jump.querySelector('svg[data-icon="chevron-up"]')).not.toBeNull());
+        expect(jump.querySelector('svg[data-icon="chevron-down"]')).toBeNull();
+        expect(jump.getAttribute('aria-label')).toBe('Scroll to top');
+
+        // ...and clicking it flies back to the very top and flips back.
+        fireEvent.click(jump);
+        await waitFor(() => expect(list.scrollTop).toBe(0));
+        await waitFor(() => expect(jump.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull());
+        expect(jump.querySelector('svg[data-icon="chevron-up"]')).toBeNull();
+        expect(jump.getAttribute('aria-label')).toBe('Scroll to bottom');
+
+        // Pure view state: the six send-flow calls only — jumping never
+        // touches the network.
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
