@@ -39,6 +39,13 @@
 // bubble's DOM text commits through the whole-history PUT; blank text just
 // restores the original) and ESCAPE cancels (a keyed bubble remount reverts
 // the DOM — React reconciliation cannot reset a mutated contentEditable node).
+// While ANY turn is being edited NO turn chrome disappears: the header row —
+// the producing-model/speaker label — stays rendered (only the edited turn's
+// collapse toggle greys out + disables, so folding cannot unmount the live
+// editor), and EVERY turn's edit pen, copy, and delete icons (the system
+// prompt draft's pen/copy included) stay rendered but greyed out + natively
+// disabled — one edit at a time, visible. Streaming and conversation deletion
+// still hide those icons entirely.
 // Messages remain individually deletable (x icon);
 // next to the edit pen EVERY turn also carries a copy action (two-squares
 // icon) that writes the raw message text to the system clipboard without
@@ -492,7 +499,16 @@ const TurnHeaderLead = styledComponent<{ alignRight?: boolean }>('div', {
 // unfolds the turn, and NO chevron glyph ever accompanies it. Typography
 // lives on the inner TurnLabelText so in-flight turns (which cannot collapse
 // yet) can render the identical label as a plain span.
-const TurnLabel = styledComponent('button', {
+// The `greyed` prop dims the label + removes its pointer hint while its OWN
+// turn is being edited (paired with the native disabled attribute at the
+// render site): the producing-model name MUST stay visible mid-edit, but
+// folding must not unmount the live editor. opacity/cursor are dynamic, so
+// styledComponent serializes them under @media (min-width: 0px).
+// CRITICAL: opacity is returned as a STRING — a number would pass through
+// styleStructure ((value*8)/16 → rem) and come out as the invalid
+// `opacity:0.2rem`, silently dropped by browsers (same trap as Sidebar's
+// static zIndex — see its comment).
+const TurnLabel = styledComponent<{ greyed?: boolean }>('button', {
     display: 'inline-flex',
     alignItems: 'center',
     minWidth: 0,
@@ -500,9 +516,10 @@ const TurnLabel = styledComponent('button', {
     border: 'none',
     borderRadius: 4,
     backgroundColor: 'transparent',
-    cursor: 'pointer',
+    opacity: ({ greyed }) => (greyed ? '0.4' : '1'),
+    cursor: ({ greyed }) => (greyed ? 'default' : 'pointer'),
     font: 'inherit'
-}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { greyed?: boolean }>;
 
 // Shared typography of the turn label: used inside TurnLabel for persisted
 // turns and rendered bare for the in-flight pending/streaming turns.
@@ -537,7 +554,13 @@ const TurnPreview = styledComponent<{ alignRight?: boolean }>('span', {
 // The per-message delete control (x icon in the row above the bubble).
 // The glyph stays plain text (U+00D7 MULTIPLICATION SIGN — text presentation,
 // not emoji) with the accessible label on the button itself.
-const MessageDeleteButton = styledComponent('button', {
+// The `greyed` prop (paired with native disabled at the render site) keeps
+// the cross RENDERED but dimmed + inert while an inline edit runs anywhere —
+// turn chrome never disappears mid-edit, it only fades. opacity/cursor are
+// dynamic → serialized under @media (min-width: 0px) by styledComponent.
+// opacity stays a STRING: a number would pass through styleStructure's
+// number→rem conversion and yield the invalid `opacity:...rem` (see TurnLabel).
+const MessageDeleteButton = styledComponent<{ greyed?: boolean }>('button', {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -548,11 +571,12 @@ const MessageDeleteButton = styledComponent('button', {
     borderRadius: 4,
     backgroundColor: 'transparent',
     color: COLORS.muted,
-    cursor: 'pointer',
+    opacity: ({ greyed }) => (greyed ? '0.4' : '1'),
+    cursor: ({ greyed }) => (greyed ? 'default' : 'pointer'),
     font: 'inherit',
     fontSize: 13,
     lineHeight: 1
-}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { greyed?: boolean }>;
 
 // The per-conversation delete control: the SAME "x" glyph treatment as the
 // per-message delete, absolutely pinned to the top-right corner of a sidebar
@@ -565,10 +589,18 @@ const ConversationDeleteButton = styledComponent(MessageDeleteButton, {
     right: 6
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
-// Icon-only affordance for the per-message edit action (the pen). The glyph
-// stays plain text (U+270E LOWER RIGHT PENCIL — text presentation, not emoji)
-// with the accessible label on the button itself.
-const TurnIconButton = styledComponent('button', {
+// Icon-only affordance for the per-message edit action (the pen) — and for
+// the copy action paired beside it. The glyph stays plain text (U+270E LOWER
+// RIGHT PENCIL — text presentation, not emoji) with the accessible label on
+// the button itself.
+// The `greyed` prop (paired with native disabled at the render site) keeps
+// the pen/copy icons RENDERED but dimmed + inert while an inline edit runs
+// anywhere: one edit at a time, but the icons never disappear mid-edit —
+// they grey out instead. opacity/cursor are dynamic → serialized under
+// @media (min-width: 0px) by styledComponent.
+// opacity stays a STRING: a number would pass through styleStructure's
+// number→rem conversion and yield the invalid `opacity:...rem` (see TurnLabel).
+const TurnIconButton = styledComponent<{ greyed?: boolean }>('button', {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -579,11 +611,12 @@ const TurnIconButton = styledComponent('button', {
     borderRadius: 4,
     backgroundColor: 'transparent',
     color: COLORS.muted,
-    cursor: 'pointer',
+    opacity: ({ greyed }) => (greyed ? '0.4' : '1'),
+    cursor: ({ greyed }) => (greyed ? 'default' : 'pointer'),
     font: 'inherit',
     fontSize: 13,
     lineHeight: 1
-}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { greyed?: boolean }>;
 
 // The system prompt row leads every chat — whether the record leads with a
 // persisted system message or the system prompt only exists as a local draft.
@@ -980,6 +1013,12 @@ const placeCaretAtOffset = (element: HTMLElement, charOffset: number): void => {
 // IS the collapse toggle — no chevron glyph ever renders. Collapsed turns hide
 // the bubble AND its edit/copy/delete controls, showing the label plus a
 // one-line first-line preview instead; clicking the preview expands the turn.
+// While ANY turn is being edited NO chrome disappears: every turn's header row
+// (the model/speaker label) stays rendered — its collapse toggle merely greys
+// out + disables on the EDITED turn so folding cannot unmount the live editor —
+// and every turn's pen/copy/delete icons stay rendered but greyed out +
+// natively disabled (one edit at a time). Streaming and conversation deletion
+// (canEdit === false) still hide the icons entirely, exactly as before.
 const renderMessages = (messages: ChatMessage[], options: MessageListOptions): React.ReactNode[] => {
     const nodes: React.ReactNode[] = [];
     arrayEach(messages, ({ index, value: message }) => {
@@ -987,12 +1026,18 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         const editing = options.editingIndex === index;
         const collapsed = options.collapsedTurns.includes(index);
         // The pen (edit, controls row under the bubble), the copy action beside
-        // it, and the delete cross appear only while idle AND expanded: one
-        // edit at a time, none during streaming/conversation deletion, and none
-        // while the turn is collapsed (its bubble is hidden).
-        const editControl = !collapsed && options.canEdit && options.editingIndex === null ? (
+        // it, and the delete cross appear on every idle, EXPANDED turn: none
+        // during streaming/conversation deletion (canEdit), none while the turn
+        // is collapsed (its bubble is hidden). While ANY turn is being edited
+        // they all STAY RENDERED but greyed out + natively disabled
+        // (controlsGreyed): one edit at a time, but no icon ever disappears
+        // mid-edit — it only fades.
+        const controlsGreyed = options.editingIndex !== null;
+        const editControl = !collapsed && options.canEdit ? (
             <TurnIconButton
                 type="button"
+                greyed={controlsGreyed}
+                disabled={controlsGreyed}
                 onClick={() => options.onEditStart(index, null)}
                 aria-label="Edit message"
                 title="Edit message"
@@ -1003,9 +1048,11 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         ) : null;
         // The delete cross sits on the RIGHT of the header row above the bubble;
         // SYSTEM messages are the one non-deletable turn: edit + copy still apply.
-        const deleteControl = !collapsed && options.canEdit && options.editingIndex === null && message.role !== 'system' ? (
+        const deleteControl = !collapsed && options.canEdit && message.role !== 'system' ? (
             <MessageDeleteButton
                 type="button"
+                greyed={controlsGreyed}
+                disabled={controlsGreyed}
                 onClick={() => options.onMessageDelete(index)}
                 aria-label="Delete message"
                 title="Delete message"
@@ -1017,9 +1064,11 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         // Copying writes ANY message's raw text to the clipboard and never
         // touches storage. Visibility mirrors the edit pen. The glyph is
         // U+29C9 TWO JOINED SQUARES — plain text, not emoji.
-        const copyControl = !collapsed && options.canEdit && options.editingIndex === null ? (
+        const copyControl = !collapsed && options.canEdit ? (
             <TurnIconButton
                 type="button"
+                greyed={controlsGreyed}
+                disabled={controlsGreyed}
                 onClick={() => options.onMessageCopy(message.content)}
                 aria-label="Copy message"
                 title="Copy message"
@@ -1061,16 +1110,20 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         // preview STACKED BELOW it while collapsed — label line over preview
         // line, never inline) on the turn's side (user turns right-aligned),
         // delete cross on the row's right. The label itself is the collapse
-        // toggle — collapsing is pure view state — and renders except while
-        // this turn is being edited (the bubble then IS the editor, and the
-        // toggle must not compete with the text caret).
+        // toggle — collapsing is pure view state. The row renders ALWAYS —
+        // even while this turn is being edited — so the producing-model name
+        // never disappears mid-edit; on the EDITED turn only the toggle greys
+        // out + disables (folding would unmount the live editor bubble), which
+        // also keeps the toggle from competing with the text caret.
         // No chevron glyph ever renders beside it.
         const alignRight = message.role === 'user';
-        const headerRow = !editing ? (
+        const headerRow = (
             <TurnHeaderRow>
                 <TurnHeaderLead alignRight={alignRight}>
                     <TurnLabel
                         type="button"
+                        greyed={editing}
+                        disabled={editing}
                         onClick={() => options.onToggleTurnCollapse(index)}
                         aria-expanded={!collapsed}
                         aria-label={collapsed ? 'Expand message' : 'Collapse message'}
@@ -1104,7 +1157,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 </TurnHeaderLead>
                 {deleteControl}
             </TurnHeaderRow>
-        ) : null;
+        );
         // The bubble itself IS the inline HTML editor while its turn is being
         // edited: contentEditable + focused, BLUR commits the DOM text through
         // the whole-history PUT (via onEditCommit → commitEdit), ESCAPE cancels.
@@ -1141,11 +1194,15 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             </BubbleComponent>
         );
         if (message.role === 'user') {
+            // The controls row renders while the turn is expanded and idle —
+            // INCLUDING while it (or another turn) is being edited: the
+            // greyed-out + disabled pen/copy pair stays visible under the
+            // editor bubble instead of disappearing.
             nodes.push(
                 <UserTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {headerRow}
                     {bubble}
-                    {!editing && editControl !== null && (
+                    {editControl !== null && (
                         <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
                 </UserTurn>
@@ -1159,7 +1216,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 <AssistantTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {headerRow}
                     {bubble}
-                    {!editing && editControl !== null && (
+                    {editControl !== null && (
                         <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
                 </AssistantTurn>
@@ -1174,7 +1231,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 <SystemTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {headerRow}
                     {bubble}
-                    {!editing && editControl !== null && (
+                    {editControl !== null && (
                         <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
                 </SystemTurn>
@@ -2015,58 +2072,66 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                         {systemPrompt()}
                                     </SystemMessage>
                                 ) : (
-                                    <>
-                                        {/* Click the WORDS to edit directly
-                                            (the bubble becomes contentEditable,
-                                            exactly like every turn's pen) —
-                                            works even on the "no prompt"
-                                            placeholder. Inert while a turn
-                                            streams or a delete runs. */}
-                                        <SystemMessage
-                                            key="view"
-                                            empty={systemPromptEmpty}
-                                            editable={canEditSystemPrompt}
-                                            onClick={(event) => {
-                                                if (canEditSystemPrompt) startSystemPromptEdit(textOffsetFromPoint(event.clientX, event.clientY, event.currentTarget));
-                                            }}
-                                            title={canEditSystemPrompt ? 'Click to edit' : undefined}
-                                            data-empty={systemPromptEmpty}
-                                            data-testid="system-prompt-value"
-                                        >
-                                            {systemPromptEmpty ? 'no prompt' : systemPrompt()}
-                                        </SystemMessage>
-                                        {canEditSystemPrompt && (
-                                            <TrailingControls>
-                                                <TurnActionPair>
-                                                    {/* Copy mirrors the per-message
-                                                        action (immediately LEFT of
-                                                        the pen) but exists only
-                                                        when there is real draft
-                                                        text to copy. */}
-                                                    {!systemPromptEmpty && (
-                                                        <TurnIconButton
-                                                            type="button"
-                                                            onClick={() => void copyMessage(systemPrompt())}
-                                                            aria-label="Copy system prompt"
-                                                            title="Copy system prompt"
-                                                            data-testid="copy-system-prompt"
-                                                        >
-                                                            <span aria-hidden="true">⧉</span>
-                                                        </TurnIconButton>
-                                                    )}
-                                                    <TurnIconButton
-                                                        type="button"
-                                                        onClick={() => startSystemPromptEdit(null)}
-                                                        aria-label="Edit system prompt"
-                                                        title="Edit system prompt"
-                                                        data-testid="edit-system-prompt"
-                                                    >
-                                                        <span aria-hidden="true">✎</span>
-                                                    </TurnIconButton>
-                                                </TurnActionPair>
-                                            </TrailingControls>
-                                        )}
-                                    </>
+                                    // Click the WORDS to edit directly (the
+                                    // bubble becomes contentEditable, exactly
+                                    // like every turn's pen) — works even on
+                                    // the "no prompt" placeholder. Inert while
+                                    // a turn streams or a delete runs.
+                                    <SystemMessage
+                                        key="view"
+                                        empty={systemPromptEmpty}
+                                        editable={canEditSystemPrompt}
+                                        onClick={(event) => {
+                                            if (canEditSystemPrompt) startSystemPromptEdit(textOffsetFromPoint(event.clientX, event.clientY, event.currentTarget));
+                                        }}
+                                        title={canEditSystemPrompt ? 'Click to edit' : undefined}
+                                        data-empty={systemPromptEmpty}
+                                        data-testid="system-prompt-value"
+                                    >
+                                        {systemPromptEmpty ? 'no prompt' : systemPrompt()}
+                                    </SystemMessage>
+                                )}
+                                {/* The draft turn's copy + pen pair mirrors the
+                                    message-turn rule: it STAYS RENDERED while
+                                    the draft's own editor is open, greyed out +
+                                    disabled instead of disappearing (the
+                                    producing-chrome-never-disappears rule).
+                                    Copy still exists only when there is real
+                                    saved draft text. */}
+                                {canEditSystemPrompt && (
+                                    <TrailingControls>
+                                        <TurnActionPair>
+                                            {/* Copy mirrors the per-message
+                                                action (immediately LEFT of
+                                                the pen) but exists only
+                                                when there is real draft
+                                                text to copy. */}
+                                            {!systemPromptEmpty && (
+                                                <TurnIconButton
+                                                    type="button"
+                                                    greyed={editingSystemPrompt()}
+                                                    disabled={editingSystemPrompt()}
+                                                    onClick={() => void copyMessage(systemPrompt())}
+                                                    aria-label="Copy system prompt"
+                                                    title="Copy system prompt"
+                                                    data-testid="copy-system-prompt"
+                                                >
+                                                    <span aria-hidden="true">⧉</span>
+                                                </TurnIconButton>
+                                            )}
+                                            <TurnIconButton
+                                                type="button"
+                                                greyed={editingSystemPrompt()}
+                                                disabled={editingSystemPrompt()}
+                                                onClick={() => startSystemPromptEdit(null)}
+                                                aria-label="Edit system prompt"
+                                                title="Edit system prompt"
+                                                data-testid="edit-system-prompt"
+                                            >
+                                                <span aria-hidden="true">✎</span>
+                                            </TurnIconButton>
+                                        </TurnActionPair>
+                                    </TrailingControls>
                                 )}
                             </SystemTurn>
                         )}

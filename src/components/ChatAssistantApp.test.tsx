@@ -943,16 +943,17 @@ describe('ChatAssistantApp', () => {
 
         // The pen turns the BUBBLE ITSELF into the inline HTML editor — no
         // textarea, no input field: the same testid now marks a contentEditable
-        // article seeded with the current message text, and EVERY turn's
-        // affordances hide while the edit runs.
+        // article seeded with the current message text. NO chrome disappears:
+        // EVERY turn's pens STAY RENDERED but greyed out + disabled while the
+        // edit runs (one edit at a time).
         fireEvent.click(screen.getByTestId('edit-message-0'));
         const bubble = screen.getByTestId('message-content-0');
         expect(bubble.tagName).toBe('ARTICLE');
         expect(bubble.getAttribute('contenteditable')).toBe('true');
         expect(bubble.getAttribute('role')).toBe('textbox');
         expect(bubble.textContent).toBe('Hello assistant');
-        expect(screen.queryByTestId('edit-message-0')).toBeNull();
-        expect(screen.queryByTestId('edit-message-1')).toBeNull();
+        expect((screen.getByTestId('edit-message-0') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByTestId('edit-message-1') as HTMLButtonElement).disabled).toBe(true);
 
         // Edit the words IN PLACE (jsdom cannot type into contentEditable, so
         // the DOM text is set directly — exactly what the browser produces).
@@ -1044,6 +1045,86 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByText('Rewritten answer')).toBeDefined();
         // The top-left model label still marks the rewritten response.
         expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+    });
+
+    it('keeps the producing-model label and every icon rendered — greyed out + disabled — while a turn is edited', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+
+        // Expand the collapsed USER turn first so BOTH turns expose their full
+        // chrome (pen, copy, delete cross, label toggle) before the edit opens.
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+
+        // Reader for an element's DYNAMIC declarations, which styledComponent
+        // serializes under @media (min-width: 0px) — the greyed styling
+        // (opacity + cursor) is dynamic, so it lives in each button's own
+        // Emotion class there (same sheet-reading technique the collapse
+        // stacking test uses).
+        const cssText = () => Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        const mediaStyle = (testid: string, property: string): string | null => {
+            const cls = screen.getByTestId(testid).className;
+            return new RegExp(`@media \\(min-width: 0px\\)\\{\\.${cls}\\{[^}]*${property}:([^;]+);[^}]*\\}\\}`).exec(cssText())?.[1] ?? null;
+        };
+
+        // Idle baseline: all controls enabled, full opacity, pointer cursor.
+        expect((screen.getByTestId('edit-message-1') as HTMLButtonElement).disabled).toBe(false);
+        expect((screen.getByTestId('collapse-message-1') as HTMLButtonElement).disabled).toBe(false);
+        expect(mediaStyle('edit-message-1', 'opacity')).toBe('1');
+        expect(mediaStyle('edit-message-1', 'cursor')).toBe('pointer');
+
+        // Open the assistant turn's inline editor via its pen.
+        fireEvent.click(screen.getByTestId('edit-message-1'));
+        expect(screen.getByTestId('message-content-1').getAttribute('contenteditable')).toBe('true');
+
+        // THE MODEL NAME STAYS: the producing model's attribution label is
+        // still rendered in the edited turn's top-left corner.
+        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+        // The user turn's speaker label stays too.
+        expect(screen.getByTestId('message-label-0').textContent).toBe('user');
+
+        // The EDITED turn's collapse toggle stays rendered but greyed out +
+        // disabled (folding must not unmount the live editor)...
+        const editedToggle = screen.getByTestId('collapse-message-1') as HTMLButtonElement;
+        expect(editedToggle.disabled).toBe(true);
+        expect(mediaStyle('collapse-message-1', 'opacity')).toBe('0.4');
+        expect(mediaStyle('collapse-message-1', 'cursor')).toBe('default');
+        // ...while the OTHER turn's toggle keeps working (it cannot disturb
+        // the edit): enabled, full opacity, pointer cursor.
+        const otherToggle = screen.getByTestId('collapse-message-0') as HTMLButtonElement;
+        expect(otherToggle.disabled).toBe(false);
+        expect(mediaStyle('collapse-message-0', 'opacity')).toBe('1');
+        expect(mediaStyle('collapse-message-0', 'cursor')).toBe('pointer');
+
+        // THE OTHER ICONS STAY, GREYED OUT + DISABLED: the edited turn's own
+        // pen, copy, and delete cross... disabled... greyed out
+        const editedControls = ['edit-message-1', 'copy-message-1', 'delete-message-1'];
+        editedControls.forEach((testid) => {
+            expect((screen.getByTestId(testid) as HTMLButtonElement).disabled).toBe(true);
+            expect(mediaStyle(testid, 'opacity')).toBe('0.4');
+            expect(mediaStyle(testid, 'cursor')).toBe('default');
+        });
+        // ...and equally the OTHER turn's (one edit at a time).
+        const otherControls = ['edit-message-0', 'copy-message-0', 'delete-message-0'];
+        otherControls.forEach((testid) => {
+            expect((screen.getByTestId(testid) as HTMLButtonElement).disabled).toBe(true);
+            expect(mediaStyle(testid, 'opacity')).toBe('0.4');
+            expect(mediaStyle(testid, 'cursor')).toBe('default');
+        });
+
+        // Escape abandons the edit: every control returns to its enabled,
+        // full-opacity, pointer state and the label/toggles stay in place.
+        fireEvent.keyDown(screen.getByTestId('message-content-1'), { key: 'Escape' });
+        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+        ['collapse-message-0', 'collapse-message-1', ...editedControls, ...otherControls].forEach((testid) => {
+            expect((screen.getByTestId(testid) as HTMLButtonElement).disabled).toBe(false);
+            expect(mediaStyle(testid, 'opacity')).toBe('1');
+            expect(mediaStyle(testid, 'cursor')).toBe('pointer');
+        });
+        // Pure view state throughout: still only the 6 send-flow requests ran.
+        expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
     it('performs no request when the bubble is blurred without any change', async () => {
@@ -1240,6 +1321,12 @@ describe('ChatAssistantApp', () => {
         expect(document.activeElement).toBe(bubble);
         expect(bubble.textContent).toBe('');
 
+        // The draft turn's own pen STAYS RENDERED while its editor is open —
+        // greyed out + disabled instead of disappearing (no copy yet: there is
+        // still no saved draft text).
+        expect((screen.getByTestId('edit-system-prompt') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByTestId('copy-system-prompt')).toBeNull();
+
         // Blurring away saves the draft LOCALLY (blank would return the turn
         // to "no prompt") — the record stays untouched until the next send.
         bubble.textContent = 'You are terse.';
@@ -1248,6 +1335,10 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
         expect(screen.getByTestId('system-prompt-value').getAttribute('data-empty')).toBe('false');
         expect((fetch as any).mock.calls).toHaveLength(2);
+        // The editor closed: the pen is enabled again and, with real draft
+        // text now saved, the copy action exists (enabled too).
+        expect((screen.getByTestId('edit-system-prompt') as HTMLButtonElement).disabled).toBe(false);
+        expect((screen.getByTestId('copy-system-prompt') as HTMLButtonElement).disabled).toBe(false);
 
         // Reopening reseeds the saved draft; a blank blur restores "no prompt".
         fireEvent.click(screen.getByTestId('system-prompt-value'));
