@@ -222,7 +222,13 @@ export const conversationPost = asHandlerMethod(async (_, parameters, rawVariabl
     ];
     const conversation = store.upsert({
         ...existing,
-        title: existing.messages.length === 0 ? titleFromMessages(messageResult.messages) : existing.title,
+        // A prompt-only conversation already contains a system turn, but it still
+        // needs its title derived from the first user turn that is appended later.
+        // Checking for a user message rather than an empty history preserves the
+        // title rule for both brand-new and system-prompt-only conversations.
+        title: existing.messages.some((message) => message.role === 'user')
+            ? existing.title
+            : titleFromMessages(messageResult.messages),
         model,
         status: 'complete',
         messages,

@@ -338,6 +338,51 @@ describe('conversation service handlers', () => {
         });
     });
 
+    it('derives the title when the conversation was created with only a system prompt', async () => {
+        vi.setSystemTime(new Date('2026-08-06T00:00:00.000Z'));
+        const store = memoryStore();
+        await conversationCreate(
+            context,
+            {
+                path: {},
+                query: {},
+                body: { model: 'test-model', systemPrompt: 'You are concise.' }
+            },
+            variables(store, () => 'conversation-prompt-only')
+        );
+
+        vi.setSystemTime(new Date('2026-08-06T00:00:05.000Z'));
+        const result = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-prompt-only' },
+                query: {},
+                body: { messages: [{ role: 'user', content: 'First question' }] }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-prompt-only',
+                conversation: {
+                    conversationId: 'conversation-prompt-only',
+                    title: 'First question',
+                    model: 'test-model',
+                    status: 'complete',
+                    messageCount: 2,
+                    messages: [
+                        { role: 'system', content: 'You are concise.' },
+                        { role: 'user', content: 'First question' }
+                    ],
+                    createdAt: '2026-08-06T00:00:00.000Z',
+                    updatedAt: '2026-08-06T00:00:05.000Z'
+                }
+            }
+        });
+    });
+
     it('replaces the complete history through PUT and recomputes metadata', async () => {
         // The edit-history flow: the whole edited list lands verbatim, messageCount
         // and updatedAt follow, and the title is re-derived from the new first

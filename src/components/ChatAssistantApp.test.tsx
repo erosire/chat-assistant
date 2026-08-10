@@ -31,8 +31,8 @@
 // top-left "system" label (plain span: nothing to fold), the literal
 // placeholder "no prompt" in the bubble, and clicking its words opens the
 // same inline editor every turn uses (no copy without text); a saved
-// non-empty draft replaces the placeholder and is persisted as the leading
-// system message on the next send (prepended to the provider history); system
+// non-empty draft replaces the placeholder and is persisted immediately as the
+// leading system message (creating a prompt-only conversation when needed); system
 // turns then render like any turn (same bubble styling as user/assistant,
 // click-to-edit + copy) EXCEPT they cannot be deleted.
 // Every turn carries an attribution label in the top-left corner
@@ -70,6 +70,7 @@
 // stack full-width on mobile and sit in a right-aligned row on desktop.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChatMessage } from '../api';
 import { ChatAssistantApp, controlsShouldFloat } from './ChatAssistantApp';
 
 const BASE_URL = 'http://test.local/v1/chat-assistant/conversation';
@@ -169,7 +170,15 @@ const titleFromMessages = (messages: ReadonlyArray<{ role: string; content: stri
 // PUT echoes the replacement history back in the canonical record: messageCount,
 // updatedAt, and the derived title are recomputed like the real handler does.
 const mockFetch = () =>
-    vi.fn((url: string, init?: RequestInit) => {
+    {
+        // Keep the mocked identified record in sync with prompt saves so a
+        // blur-created prompt is represented by the same leading system message
+        // that the real storage endpoint returns on its follow-up GET.
+        // Null means the fixture's ordinary completed-send response is still
+        // authoritative; a non-null value is reserved for prompt persistence
+        // flows whose returned history must include the new system turn.
+        let storedMessages: ChatMessage[] | null = null;
+        return vi.fn((url: string, init?: RequestInit) => {
         if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
         if (url.endsWith('/chat/completions')) return Promise.resolve(sseResponse(completionFrames));
         // The collection GET check must precede the generic identified GET branch.
@@ -177,11 +186,20 @@ const mockFetch = () =>
             return Promise.resolve(response(200, { conversations: [] }));
         }
         if (init?.method === 'POST' && url.endsWith('/conversation')) {
+            const body = JSON.parse(String(init.body)) as { messages?: ChatMessage[]; systemPrompt?: string };
+            storedMessages = body.systemPrompt
+                ? [{ role: 'system' as const, content: body.systemPrompt }, ...(body.messages ?? [])]
+                : null;
             return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
         }
-        if (init?.method === 'POST') return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+        if (init?.method === 'POST') {
+            const body = JSON.parse(String(init.body)) as { messages?: ChatMessage[] };
+            if (storedMessages !== null) storedMessages = [...storedMessages, ...(body.messages ?? [])];
+            return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+        }
         if (init?.method === 'PUT') {
-            const body = JSON.parse(String(init.body)) as { messages: typeof conversation.messages; title?: string };
+            const body = JSON.parse(String(init.body)) as { messages: ChatMessage[]; title?: string };
+            if (body.messages.some((message) => message.role === 'system')) storedMessages = [...body.messages];
             return Promise.resolve(response(200, {
                 conversationId: conversation.conversationId,
                 conversation: {
@@ -198,10 +216,14 @@ const mockFetch = () =>
             return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
         }
         if (init?.method === 'GET') {
-            return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation }));
+            const persisted = storedMessages !== null
+                ? { ...conversation, messages: storedMessages, messageCount: storedMessages.length }
+                : conversation;
+            return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation: persisted }));
         }
         return Promise.resolve(response(404, { error: 'unexpected request' }));
-    });
+        });
+    };
 
 const renderApp = () =>
     render(<ChatAssistantApp baseUrl={BASE_URL} providerUrl={PROVIDER_URL} />);
@@ -305,7 +327,9 @@ describe('ChatAssistantApp', () => {
         expect(css).toMatch(/\.css-[^{]+\{[^}]*padding:16px;[^}]*\}/);
         expect(css).toMatch(/@media \(min-width: 900px\)\{\.css-[^{]+\{[^}]*padding-left:24px;[^}]*padding-right:24px;[^}]*\}\}/);
         expect(css).toContain('scrollbar-width:none');
-        expect(css).toContain('scrollbar-width:auto');
+        // Desktop receives the same hidden scrollbar chrome, so it cannot
+        // reintroduce the right-side gutter at the md breakpoint.
+        expect(css.match(/scrollbar-width:none/g)?.length).toBe(2);
     });
 
     it('restores the persisted chat history on mount and loads messages on selection', async () => {
@@ -1389,7 +1413,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
     });
 
-    it('opens the system prompt editor by clicking its bubble and saves the draft on blur without touching storage', async () => {
+    it('opens the system prompt editor and persists a new prompt immediately on blur', async () => {
         renderApp();
         await waitForModelSelection();
 
@@ -1408,26 +1432,24 @@ describe('ChatAssistantApp', () => {
         // No copy action yet: there is still no saved draft text.
         expect(screen.queryByTestId('copy-system-prompt')).toBeNull();
 
-        // Blurring away saves the draft LOCALLY (blank would return the turn
-        // to "no prompt") — the record stays untouched until the next send.
+        // Blurring a non-empty prompt persists a prompt-only conversation before
+        // the first user turn, so leaving the page cannot lose the edit.
         bubble.textContent = 'You are terse.';
         fireEvent.blur(bubble, { relatedTarget: null });
-        expect(screen.getByTestId('system-prompt-value').getAttribute('contenteditable')).toBeNull();
-        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
-        expect(screen.getByTestId('system-prompt-value').getAttribute('data-empty')).toBe('false');
-        expect((fetch as any).mock.calls).toHaveLength(2);
-        // The editor closed and, with real draft text now saved, the copy
-        // action exists (enabled).
-        expect((screen.getByTestId('copy-system-prompt') as HTMLButtonElement).disabled).toBe(false);
-
-        // Reopening reseeds the saved draft; a blank blur restores "no prompt".
-        fireEvent.click(screen.getByTestId('system-prompt-value'));
-        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
-        screen.getByTestId('system-prompt-value').textContent = '   ';
-        fireEvent.blur(screen.getByTestId('system-prompt-value'), { relatedTarget: null });
-        expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
-        expect(screen.getByTestId('system-prompt-value').getAttribute('data-empty')).toBe('true');
-        expect((fetch as any).mock.calls).toHaveLength(2);
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(4));
+        expect((fetch as any).mock.calls[2]).toEqual([
+            BASE_URL,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: DEFAULT_MODEL, systemPrompt: 'You are terse.' })
+            }
+        ]);
+        expect((fetch as any).mock.calls[3]).toEqual([`${BASE_URL}/conversation-1`, { method: 'GET' }]);
+        // The canonical record replaces the draft row with a persisted system
+        // turn, whose collapsed preview proves the saved content is still present.
+        expect(screen.queryByTestId('system-prompt-value')).toBeNull();
+        expect(screen.getByTestId('message-preview-0').textContent).toBe('You are terse.');
     });
 
     it('deletes an individual user message through the identified PUT', async () => {
@@ -1776,7 +1798,7 @@ describe('ChatAssistantApp', () => {
         expect(assistantBubble).toContain('box-sizing:border-box');
     });
 
-    it('edits the system prompt draft inline by clicking its bubble, copies the saved draft, and still persists nothing until the next send', async () => {
+    it('edits the system prompt inline, persists it on blur, and copies the saved turn', async () => {
         // Clipboard stub (jsdom has no Clipboard API).
         const writeText = vi.fn((_text: string) => Promise.resolve());
         Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -1792,31 +1814,21 @@ describe('ChatAssistantApp', () => {
         editingBubble.textContent = 'You are terse.';
         fireEvent.blur(editingBubble, { relatedTarget: null });
 
-        // The saved draft replaces the placeholder, the copy action appears,
-        // and the editor closed. NOTHING hit storage.
-        const bubble = screen.getByTestId('system-prompt-value');
-        expect(bubble.textContent).toBe('You are terse.');
-        expect(bubble.getAttribute('data-empty')).toBe('false');
-        expect(bubble.getAttribute('contenteditable')).toBeNull();
-        const copy = screen.getByTestId('copy-system-prompt');
-        expect((fetch as any).mock.calls).toHaveLength(2);
+        // The blur save creates the prompt-only record, and the canonical system
+        // turn replaces the draft row after the POST + GET complete.
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(4));
+        expect(screen.getByTestId('message-preview-0').textContent).toBe('You are terse.');
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+        const copy = screen.getByTestId('copy-message-0');
 
         fireEvent.click(copy);
         await waitFor(() => expect(writeText).toHaveBeenCalledWith('You are terse.'));
-
-        // Reopening reseeds the saved draft; a blank blur-commit restores the
-        // placeholder (and the copy action disappears again).
-        fireEvent.click(screen.getByTestId('system-prompt-value'));
-        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
-        screen.getByTestId('system-prompt-value').textContent = '   ';
-        fireEvent.blur(screen.getByTestId('system-prompt-value'), { relatedTarget: null });
-        expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
-        expect(screen.queryByTestId('copy-system-prompt')).toBeNull();
     });
 
     it('persists a typed system prompt as the leading system message on send and gives it click-to-edit/copy but no delete', async () => {
-        // The identified GET returns the fixture WITH the persisted system
-        // message — it only runs after the append, so no state tracking needed.
+        // The mock tracks the identified record so the prompt-only create GET
+        // returns just the system turn and the later append GET returns the full
+        // conversation, matching the storage service's two-step flow.
         const conversationWithSystem = {
             ...conversation,
             messageCount: 3,
@@ -1825,6 +1837,7 @@ describe('ChatAssistantApp', () => {
                 ...conversation.messages
             ]
         };
+        let persistedMessages: typeof conversationWithSystem.messages = [];
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(sseResponse(completionFrames));
@@ -1832,11 +1845,20 @@ describe('ChatAssistantApp', () => {
                 return Promise.resolve(response(200, { conversations: [] }));
             }
             if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                const body = JSON.parse(String(init.body)) as { systemPrompt?: string };
+                persistedMessages = body.systemPrompt
+                    ? [{ role: 'system' as const, content: body.systemPrompt }]
+                    : [];
                 return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
             }
-            if (init?.method === 'POST') return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+            if (init?.method === 'POST') {
+                const body = JSON.parse(String(init.body)) as { messages: typeof conversationWithSystem.messages };
+                persistedMessages = [...persistedMessages, ...body.messages];
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+            }
             if (init?.method === 'PUT') {
                 const body = JSON.parse(String(init.body)) as { messages: typeof conversationWithSystem.messages };
+                persistedMessages = [...body.messages];
                 return Promise.resolve(response(200, {
                     conversationId: conversation.conversationId,
                     conversation: {
@@ -1849,7 +1871,10 @@ describe('ChatAssistantApp', () => {
                 }));
             }
             if (init?.method === 'GET') {
-                return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation: conversationWithSystem }));
+                const persisted = persistedMessages.length > 0
+                    ? { ...conversationWithSystem, messages: persistedMessages, messageCount: persistedMessages.length }
+                    : conversationWithSystem;
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation: persisted }));
             }
             return Promise.resolve(response(404, { error: 'unexpected request' }));
         }));
@@ -1865,12 +1890,14 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(screen.getByTestId('system-prompt-value'));
         screen.getByTestId('system-prompt-value').textContent = 'You are terse.';
         fireEvent.blur(screen.getByTestId('system-prompt-value'), { relatedTarget: null });
-        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
+        // Sending is intentionally gated until the immediate prompt save returns,
+        // so the provider cannot observe a history without the edited prompt.
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(4));
         fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
         fireEvent.click(screen.getByTestId('send-chat-button'));
         await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
         // The provider history LEADS with the system message...
-        expect((fetch as any).mock.calls[2]).toEqual([
+        expect((fetch as any).mock.calls[4]).toEqual([
             `${PROVIDER_URL}/chat/completions`,
             {
                 method: 'POST',
@@ -1885,10 +1912,10 @@ describe('ChatAssistantApp', () => {
                 })
             }
         ]);
-        // ...and the fresh conversation's append persists it at index 0.
-        expect((fetch as any).mock.calls[4][1].body).toEqual(JSON.stringify({
+        // ...and the existing prompt-only conversation's append adds only the
+        // completed pair because the system turn was already saved on blur.
+        expect((fetch as any).mock.calls[5][1].body).toEqual(JSON.stringify({
             messages: [
-                { role: 'system', content: 'You are terse.' },
                 { role: 'user', content: 'Hello assistant' },
                 { role: 'assistant', content: 'Hello from the assistant', model: DEFAULT_MODEL }
             ],
@@ -1976,8 +2003,8 @@ describe('ChatAssistantApp', () => {
         expect(systemEdit.textContent).toBe('You are terse.');
         systemEdit.textContent = 'You are verbose.';
         fireEvent.blur(systemEdit, { relatedTarget: null });
-        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(7));
-        expect((fetch as any).mock.calls[6]).toEqual([
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(8));
+        expect((fetch as any).mock.calls[7]).toEqual([
             `${BASE_URL}/conversation-1`,
             {
                 method: 'PUT',
@@ -1986,7 +2013,7 @@ describe('ChatAssistantApp', () => {
                     messages: [
                         { role: 'system', content: 'You are verbose.' },
                         { role: 'user', content: 'Hello assistant' },
-                        { role: 'assistant', content: 'Hello from the assistant', model: ALT_MODEL }
+                        { role: 'assistant', content: 'Hello from the assistant', model: DEFAULT_MODEL }
                     ]
                 })
             }
@@ -2010,13 +2037,28 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(screen.getByTestId('system-prompt-value'));
         screen.getByTestId('system-prompt-value').textContent = 'You are terse.';
         fireEvent.blur(screen.getByTestId('system-prompt-value'), { relatedTarget: null });
-        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
+        // The prompt PUT completes before the next send can use this chat.
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(7));
+        expect((fetch as any).mock.calls[6]).toEqual([
+            `${BASE_URL}/conversation-1`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    messages: [
+                        { role: 'system', content: 'You are terse.' },
+                        { role: 'user', content: 'Hello assistant' },
+                        { role: 'assistant', content: 'Hello from the assistant', model: ALT_MODEL }
+                    ]
+                })
+            }
+        ]);
         fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Turn two' } });
         fireEvent.click(screen.getByTestId('send-chat-button'));
 
         // The provider history is system-prepended (attribution stripped upstream).
-        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(8));
-        expect((fetch as any).mock.calls[6]).toEqual([
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(10));
+        expect((fetch as any).mock.calls[7]).toEqual([
             `${PROVIDER_URL}/chat/completions`,
             {
                 method: 'POST',
@@ -2033,28 +2075,27 @@ describe('ChatAssistantApp', () => {
                 })
             }
         ]);
-        // An append POST could only attach to the END, so the prompt joins an
-        // existing chat through a WHOLE-HISTORY PUT with the prompt at index 0.
-        expect((fetch as any).mock.calls[7]).toEqual([
+        // The prompt was already saved on blur, so this send appends only the
+        // newly completed user/assistant pair after the existing system turn.
+        expect((fetch as any).mock.calls[8]).toEqual([
             `${BASE_URL}/conversation-1`,
             {
-                method: 'PUT',
+                method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     messages: [
-                        { role: 'system', content: 'You are terse.' },
-                        { role: 'user', content: 'Hello assistant' },
-                        { role: 'assistant', content: 'Hello from the assistant', model: ALT_MODEL },
                         { role: 'user', content: 'Turn two' },
                         { role: 'assistant', content: 'Hello from the assistant', model: DEFAULT_MODEL }
-                    ]
+                    ],
+                    model: DEFAULT_MODEL,
+                    usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 }
                 })
             }
         ]);
 
-        // The record leads with the system turn; the draft form is gone and the
-        // draft itself was cleared by the send. The fresh record re-seeds the
-        // collapse set: the prepended system turn shows only its preview...
+        // The record leads with the system turn; the draft form is gone because
+        // the prompt was persisted before the send. The fresh record re-seeds
+        // the collapse set: the system turn shows only its preview...
         await waitFor(() => expect(screen.queryByTestId('system-prompt-value')).toBeNull());
         expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('false');
         expect(screen.getByTestId('message-preview-0').textContent).toBe('You are terse.');

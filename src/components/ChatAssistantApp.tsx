@@ -73,12 +73,11 @@
 // EMPTY — showing the literal placeholder "no prompt" (clicking the bubble's
 // words turns the BUBBLE ITSELF into the contentEditable inline editor,
 // saving on blur / cancelling on Escape; no copy action while there is
-// nothing to copy). A saved non-empty draft replaces
-// the placeholder text and is persisted as the leading system message on the
-// next send (prepended to the provider history); after that the system turn
-// behaves like any other persisted turn (same inline editor, same copy
-// action, same bubble styling, full-history PUT rewrites) EXCEPT it cannot
-// be deleted. Assistant (and system) turns span the conversation's FULL
+// nothing to copy). A saved non-empty draft replaces the placeholder text and
+// is persisted immediately as the leading system message (creating the chat if
+// needed); after that the system turn behaves like any other persisted turn
+// (same inline editor, same copy action, same bubble styling, full-history PUT
+// rewrites) EXCEPT it cannot be deleted. Assistant (and system) turns span the conversation's FULL
 // content width (max-width:100%); user turns stay right-aligned under the
 // narrower min(760px, 86%) cap — and every EXPANDED turn wrapper floors at
 // min-width:50% of the list's content width so short bubbles still occupy
@@ -757,13 +756,12 @@ const TurnIconButton = styledComponent<{ greyed?: boolean }>('button', {
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { greyed?: boolean }>;
 
 // The system prompt row leads every chat — whether the record leads with a
-// persisted system message or the system prompt only exists as a local draft.
-// Both forms render as regular turns with identical chrome (top-left "system"
-// label, bubble, click-to-edit inline editor); the draft form's persistence is
-// deferred: a saved non-empty draft is stored locally until the next send
-// persists it as the conversation's leading `system` message (prepended to
-// the provider history AND persisted with the turn — see submit), after which
-// the persisted system turn (editable + copyable, never deletable) takes over.
+// persisted system message or the system prompt is being saved for the first
+// time. Both forms render as regular turns with identical chrome (top-left
+// "system" label, bubble, click-to-edit inline editor); a non-empty blur commit
+// immediately persists the prompt, creating a prompt-only conversation when the
+// surface has not sent its first user turn yet. The persisted system turn
+// (editable + copyable, never deletable) then takes over.
 // System turns share the ASSISTANT turn layout exactly: LEFT-aligned wrapper
 // spanning the list's full content width (no centering, no narrow cap) — the
 // system prompt row reads just like an assistant/user row. Aliasing (instead
@@ -1591,10 +1589,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // applies when nothing is remembered yet.
     const model = useStateHook('');
     const message = useStateHook('');
-    // Local draft for the system prompt turn, shown ONLY while the selected
+    // Local text for the system prompt editor, shown ONLY while the selected
     // record lacks a leading system message. While EMPTY the turn's bubble
-    // shows the literal placeholder "no prompt"; a saved non-empty draft is
-    // persisted as the leading system message on the next send (see submit).
+    // shows the literal placeholder "no prompt"; a non-empty blur commit is
+    // persisted immediately by saveSystemPromptDraft.
     // Cleared on new chat, on chat switch, on conversation deletion, and
     // after a completed send.
     const systemPrompt = useStateHook('');
@@ -1604,6 +1602,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // trimmed text into `systemPrompt` or Escape cancels (the keyed remount
     // reverts the DOM to the saved draft).
     const editingSystemPrompt = useStateHook(false);
+    // Guards the asynchronous prompt PUT/create flow so a second edit or send
+    // cannot race the first persistence request and overwrite its history.
+    const savingSystemPrompt = useStateHook(false);
     // Indices of currently collapsed message turns. Seeded via
     // defaultCollapsedIndices (ALL turns except the latest assistant reply:
     // user turns fold, system turns fold, older replies fold) whenever a fresh
@@ -2032,7 +2033,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     }, [caretOffset, deleting, editingTitle, loading]);
 
     // Stop editing the system prompt draft (Escape, chat switching, new chat,
-    // deletion, completed send). The saved draft (systemPrompt) is NOT touched
+    // deletion, completed send). The saved text (systemPrompt) is NOT touched
     // here — the keyed bubble remount reverts any half-typed DOM text.
     const cancelSystemPromptDraft = useCallback(() => {
         editingSystemPrompt(false);
@@ -2047,16 +2048,64 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         editingSystemPrompt(true);
     }, [caretOffset, editingSystemPrompt]);
 
-    // Commit the draft bubble's BLUR-delivered text. Save stays LOCAL: the
-    // draft persists as the conversation's leading system message only on the
-    // next send (see submit). A blank commit trims to empty and the turn falls
-    // back to the "no prompt" placeholder. The flag guard rejects stale blurs
-    // landing after an Escape-cancel on the same DOM node.
-    const saveSystemPromptDraft = useCallback((rawText: string) => {
+    // Commit the draft bubble's BLUR-delivered text. A blank commit only clears
+    // the local editor. A non-empty commit immediately persists a leading system
+    // message: an existing chat uses whole-history PUT, while a new surface is
+    // created through POST with systemPrompt. The surface/text guards prevent a
+    // late response from resurrecting a chat after navigation during the save.
+    const saveSystemPromptDraft = useCallback(async (rawText: string) => {
         if (!editingSystemPrompt()) return;
-        systemPrompt(rawText.trim());
+        const text = rawText.trim();
+        const record = selected();
+        const originalConversationId = record?.conversationId ?? null;
         editingSystemPrompt(false);
-    }, [editingSystemPrompt, systemPrompt]);
+        systemPrompt(text);
+        if (!text || savingSystemPrompt() || loading() || deleting()) return;
+
+        savingSystemPrompt(true);
+        try {
+            let result: ConversationRecord;
+            if (record) {
+                // The draft UI only renders when the record has no system turn,
+                // so prepend the newly saved prompt without disturbing history.
+                result = (await replaceConversationMessages(baseUrl, record.conversationId, {
+                    messages: [{ role: 'system', content: text }, ...record.messages]
+                })).conversation;
+            } else {
+                // A new-chat prompt must have a server record of its own; otherwise
+                // leaving the page before the first user send loses the edit.
+                const request = model() ? { model: model(), systemPrompt: text } : { systemPrompt: text };
+                const conversationId = (await createConversation(baseUrl, request)).conversationId;
+                result = (await fetchConversation(baseUrl, conversationId)).conversation;
+            }
+
+            // The prompt response may arrive after New chat or another chat pick.
+            // Apply it only when the original surface still owns this draft text;
+            // the sidebar summary is updated regardless so the server write remains
+            // discoverable after the user navigates away.
+            const sameSurface = (selected()?.conversationId ?? null) === originalConversationId
+                && systemPrompt().trim() === text;
+            if (sameSurface) {
+                selected(result);
+                systemPrompt('');
+                collapsedTurns(defaultCollapsedIndices(result.messages));
+                cancelSystemPromptDraft();
+            }
+            const summary = summaryFromRecord(result);
+            const current = chats();
+            chats(current.some((chat) => chat.conversationId === summary.conversationId)
+                ? current.map((chat) => chat.conversationId === summary.conversationId ? summary : chat)
+                : [summary, ...current]);
+            error('');
+        } catch (reason) {
+            // Keep the typed prompt visible for retry when persistence fails, but
+            // never overwrite a different surface's state after navigation.
+            if ((selected()?.conversationId ?? null) === originalConversationId) systemPrompt(text);
+            error(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            savingSystemPrompt(false);
+        }
+    }, [baseUrl, cancelSystemPromptDraft, chats, collapsedTurns, deleting, editingSystemPrompt, error, loading, model, savingSystemPrompt, selected, systemPrompt]);
 
     // Select a conversation and fetch its full message history; the recorded model
     // applies only when nothing is remembered (a remembered/picked model wins).
@@ -2314,9 +2363,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // rendering deltas live, (2) only after the stream completes, persist the
     // finished pair through the storage API (creating the conversation first when
     // needed), (3) GET the canonical record (skipped on the system-prepend PUT
-    // path, which already returns it). The system prompt draft is prepended to
-    // history and persisted ONLY when the record does not already lead with a
-    // system message; an empty draft adds nothing. A failure before or during
+    // path, which already returns it). A prompt is normally persisted by its
+    // blur handler before this flow starts; the system-prefix fallback remains
+    // for a prompt save that failed and is retried together with a user turn.
+    // An empty draft adds nothing. A failure before or during
     // streaming saves nothing and restores the composer text for retry.
     // Invoked from the form's onSubmit (event present: prevent the browser's
     // default GET-reload) AND directly from the composer's desktop Enter key
@@ -2326,7 +2376,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         event?.preventDefault();
         const text = message().trim();
         const chosenModel = model();
-        if (!text || !chosenModel || loading()) return;
+        // A prompt blur save owns the conversation write until it completes;
+        // blocking send prevents a concurrent append from omitting the prompt
+        // or racing the prompt PUT/create response.
+        if (!text || !chosenModel || loading() || savingSystemPrompt()) return;
 
         loading(true);
         error('');
@@ -2416,7 +2469,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             loading(false);
         }
-    }, [baseUrl, providerUrl, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, pendingUser, selected, streaming, systemPrompt]);
+    }, [baseUrl, providerUrl, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, pendingUser, savingSystemPrompt, selected, streaming, systemPrompt]);
 
     // Fold/unfold one message turn. Pure view state: adds the index to the
     // collapsed set or removes it; no network call is ever involved.
@@ -2480,14 +2533,17 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const systemPromptEmpty = systemPrompt().trim() === '';
     // The draft turn's affordances follow the same rules as message turns:
     // none while a turn streams or a conversation delete is in flight.
-    const canEditSystemPrompt = !loading() && !deleting();
+    const canEditSystemPrompt = !loading() && !deleting() && !savingSystemPrompt();
 
     // Options handed to the module-level message renderer; rebuilt every render
     // so the closures always see the latest accessor state.
     const messageOptions: MessageListOptions = {
         editingIndex: editingIndex(),
         // No edit affordances while a turn streams or a delete is in flight.
-        canEdit: !loading() && !deleting(),
+        // A prompt persistence request owns the current history write just like
+        // streaming/deletion; hiding message edit controls prevents concurrent
+        // full-history mutations from racing the prompt save.
+        canEdit: !loading() && !deleting() && !savingSystemPrompt(),
         onEditStart: startEdit,
         onEditCommit: (index, text) => void commitEdit(index, text),
         onEditCancel: cancelEdit,
@@ -2582,17 +2638,17 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 </Sidebar>
                 <Conversation>
                     <MessageList
-                        // Hide the platform scrollbar only below md. The element
-                        // remains a real scroll container, so touch, wheel,
+                        // Hide platform scrollbar chrome at every breakpoint. The
+                        // element remains a real scroll container, so touch, wheel,
                         // keyboard, and section-jump scrolling continue to work
-                        // without a reserved right gutter.
+                        // without a reserved right gutter on mobile or desktop.
                         xs={{
                             scrollbarWidth: 'none',
                             '&::-webkit-scrollbar': { display: 'none' }
                         } as unknown as React.CSSProperties}
                         md={{
-                            scrollbarWidth: 'auto',
-                            '&::-webkit-scrollbar': { display: 'initial' }
+                            scrollbarWidth: 'none',
+                            '&::-webkit-scrollbar': { display: 'none' }
                         } as unknown as React.CSSProperties}
                         data-testid="message-list"
                     >
@@ -2602,9 +2658,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             is the local-draft form: the bubble carries the
                             saved draft or the literal placeholder "no prompt",
                             and clicking its WORDS makes the BUBBLE ITSELF the
-                            inline editor every turn uses (blur saves the
-                            draft locally, Escape cancels); a copy action
-                            appears once real draft text exists, and NO delete
+                             inline editor every turn uses (blur persists the
+                             prompt, Escape cancels); a copy action appears
+                             while the prompt is still represented as a draft,
+                             and NO delete
                             cross ever (the system prompt cannot be removed).
                             Once the record leads with a persisted system
                             message, renderMessages draws that turn instead and
@@ -2620,9 +2677,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 </TurnHeaderRow>
                                 {editingSystemPrompt() ? (
                                     // The bubble IS the editor (contentEditable
-                                    // — no textarea/input): BLUR commits the
-                                    // DOM text locally (blank → "no prompt"),
-                                    // ESCAPE cancels. Keyed 'edit' so the
+                                     // — no textarea/input): BLUR commits the
+                                     // DOM text (blank → "no prompt"), ESCAPE
+                                     // cancels. Keyed 'edit' so the
                                     // remount on exit reverts the DOM. While
                                     // EMPTY the editable surface shows nothing
                                     // (contentEditable has no placeholder);
@@ -2838,7 +2895,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             {composerFocus() && (
                                 <SendButton
                                     type="submit"
-                                    disabled={loading() || !chosenModel || !isString(message()) || !message().trim()}
+                                    disabled={loading() || savingSystemPrompt() || !chosenModel || !isString(message()) || !message().trim()}
                                     aria-label="Send message"
                                     title="Send message"
                             data-testid="send-chat-button"
