@@ -4,7 +4,15 @@
 // the edit-history flow), and DELETE; no query-string identifier is used. This
 // API is pure chat storage: model traffic goes through ./provider.ts against
 // the runtime provider endpoints, and only completed turns are persisted here.
-export const DEFAULT_CHAT_ASSISTANT_URL = '/v1/chat-assistant/conversation';
+
+// Absolute deployment-independent backend origin: relative defaults resolved
+// against the STATIC host (github.io) and 404ed — see ./server-url.ts.
+import { DEFAULT_SERVER_URL } from './server-url';
+
+// Default storage endpoint pinned to the real backend origin (not the static
+// hosting origin) so GitHub Pages deployments reach the LAN server; embedders
+// can still override via the ChatAssistantApp baseUrl prop.
+export const DEFAULT_CHAT_ASSISTANT_URL = `${DEFAULT_SERVER_URL}/v1/chat-assistant/conversation`;
 
 // The only message roles accepted by the server and rendered by the UI.
 // `model` is optional per-message attribution: the UI records the provider model

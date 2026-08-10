@@ -9,7 +9,8 @@ export {
     deleteConversation,
     fetchConversation,
     listConversations,
-    DEFAULT_CHAT_ASSISTANT_URL
+    DEFAULT_CHAT_ASSISTANT_URL,
+    DEFAULT_SERVER_URL
 } from './api';
 export type {
     ChatMessage,

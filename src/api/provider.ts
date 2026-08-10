@@ -5,8 +5,15 @@
 import { isString } from '@presource/core';
 import type { ChatMessage, ConversationRecord } from './chat-assistant';
 
-// Default provider base matches BASE_URL in runtime/endpoint/provider/private/constant.ts.
-export const DEFAULT_PROVIDER_URL = '/providers/private/v1';
+// Absolute deployment-independent backend origin: relative defaults resolved
+// against the STATIC host (github.io) and 404ed — see ./server-url.ts.
+import { DEFAULT_SERVER_URL } from './server-url';
+
+// Default provider base matches BASE_URL in runtime/endpoint/provider/private/constant.ts,
+// pinned to the real backend origin (not the static hosting origin) so GitHub
+// Pages deployments reach the LAN server; embedders can still override via the
+// ChatAssistantApp providerUrl prop.
+export const DEFAULT_PROVIDER_URL = `${DEFAULT_SERVER_URL}/providers/private/v1`;
 
 // One entry of the OpenAI-compatible /models catalog; only `id` is consumed by the UI.
 export type ProviderModel = {

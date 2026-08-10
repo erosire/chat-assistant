@@ -3,28 +3,22 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// The UI uses origin-relative API URLs (DEFAULT_PROVIDER_URL = '/providers/private/v1'
-// and DEFAULT_CHAT_ASSISTANT_URL = '/v1/chat-assistant/conversation' in src/api).
-// During `vite dev` those paths would resolve against this dev server (port 4500),
-// which serves no API routes, so the model catalog request 404s and the dropdown
-// reports "No models available". Proxying both prefixes to the local service
-// (chat-assistant.yml server: http://127.0.0.1:5000) keeps the relative defaults
-// working in dev and in same-origin deployments without any code override.
-const API_TARGET = 'http://localhost:5000';
+// API URL strategy: the UI's defaults are ABSOLUTE (DEFAULT_PROVIDER_URL and
+// DEFAULT_CHAT_ASSISTANT_URL in src/api are built from DEFAULT_SERVER_URL =
+// http://192.168.8.128:5000 in src/api/server-url.ts), so the browser always
+// talks straight to the LAN backend regardless of where the static build is
+// hosted. A previous revision used origin-relative paths with a dev-server
+// proxy to localhost:5000; that proxy was REMOVED because (a) the app no
+// longer issues relative-path requests so nothing would hit it, and (b)
+// origin-relative requests resolve against the STATIC host on GitHub Pages
+// (github.io serves no API routes) and 404 there — the bug this fixes.
 
 // Relative assets keep the build usable from a GitHub Pages repository path.
 export default defineConfig({
     plugins: [react()],
     base: './',
     server: {
-        port: 4500,
-        proxy: {
-            // Runtime provider endpoints: /providers/private/v1/models and
-            // /providers/private/v1/chat/completions (runtime/endpoint/provider).
-            '/providers': { target: API_TARGET, changeOrigin: true },
-            // Conversation storage endpoints owned by this distribution.
-            '/v1/chat-assistant': { target: API_TARGET, changeOrigin: true }
-        }
+        port: 4500
     },
     build: {
         outDir: 'dist'
