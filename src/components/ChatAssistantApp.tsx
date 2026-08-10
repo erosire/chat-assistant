@@ -300,7 +300,11 @@ const Sidebar = styledComponent<{ open: boolean }>('aside', {
     display: 'flex',
     flexDirection: 'column',
     gap: 12,
+    // Keep vertical spacing stable while tightening only the drawer's mobile
+    // horizontal inset so its content does not consume the narrow viewport.
     padding: 16,
+    paddingLeft: () => ({ xs: '12px', md: '16px' }),
+    paddingRight: () => ({ xs: '12px', md: '16px' }),
     borderRight: `1px solid ${COLORS.border}`,
     backgroundColor: COLORS.panel,
     overflowY: 'auto',
@@ -381,7 +385,12 @@ const MessageList = styledComponent('div', {
     display: 'flex',
     flexDirection: 'column',
     gap: 16,
+    // Mobile content uses 12px horizontal gutters instead of the desktop 24px
+    // frame, recovering usable width for bubbles and long assistant replies;
+    // static vertical padding keeps scroll-edge calculations unchanged.
     padding: 24,
+    paddingLeft: () => ({ xs: '12px', md: '24px' }),
+    paddingRight: () => ({ xs: '12px', md: '24px' }),
     overflowY: 'auto'
 });
 
@@ -393,7 +402,11 @@ const EmptyState = styledComponent('div', {
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
+    // Match MessageList's compact mobile gutters so the empty copy does not
+    // receive a second oversized horizontal inset inside the list.
     padding: 24,
+    paddingLeft: () => ({ xs: '12px', md: '24px' }),
+    paddingRight: () => ({ xs: '12px', md: '24px' }),
     color: COLORS.muted,
     textAlign: 'center'
 });
@@ -794,7 +807,11 @@ const Composer = styledComponent('form', {
     alignItems: 'stretch',
     flexShrink: 0,
     gap: 12,
+    // The composer follows the message list's compact mobile gutter while
+    // retaining the established 16px vertical and desktop spacing.
     padding: 16,
+    paddingLeft: () => ({ xs: '12px', md: '16px' }),
+    paddingRight: () => ({ xs: '12px', md: '16px' }),
     borderTop: `1px solid ${COLORS.border}`,
     backgroundColor: COLORS.panel
 });
@@ -936,7 +953,11 @@ const Metadata = styledComponent('span', {
 // to the fixed bottom chrome and must not shrink under list pressure.
 const ErrorBanner = styledComponent('div', {
     flexShrink: 0,
+    // Keep the error surface aligned with the responsive message/composer
+    // gutters instead of leaving a 24px mobile side inset.
     margin: '0 24px 12px',
+    marginLeft: () => ({ xs: '12px', md: '24px' }),
+    marginRight: () => ({ xs: '12px', md: '24px' }),
     padding: '10px 12px',
     border: '1px solid rgba(255, 156, 156, 0.45)',
     borderRadius: 8,

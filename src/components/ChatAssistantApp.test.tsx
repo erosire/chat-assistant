@@ -288,6 +288,24 @@ describe('ChatAssistantApp', () => {
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBeNull();
     });
 
+    it('uses compact horizontal gutters on mobile and preserves desktop spacing', async () => {
+        renderApp();
+        await waitForModelSelection();
+
+        // Responsive values are emitted in the Emotion sheet because jsdom does
+        // not lay out viewport media queries reliably. The xs declarations keep
+        // the message list, empty state, composer, and drawer aligned at 12px
+        // while md restores the desktop spacing. ErrorBanner uses the same
+        // values when an error is rendered, but is absent on this mount.
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        expect(css).toMatch(/@media \(min-width: 0px\)\{\.css-[^{]+\{[^}]*padding-left:12px;[^}]*padding-right:12px;[^}]*\}\}/);
+        expect(css).toMatch(/\.css-[^{]+\{[^}]*padding:24px;[^}]*\}/);
+        expect(css).toMatch(/\.css-[^{]+\{[^}]*padding:16px;[^}]*\}/);
+        expect(css).toMatch(/@media \(min-width: 900px\)\{\.css-[^{]+\{[^}]*padding-left:24px;[^}]*padding-right:24px;[^}]*\}\}/);
+    });
+
     it('restores the persisted chat history on mount and loads messages on selection', async () => {
         // The server holds one completed conversation from a previous session; the
         // collection GET hands its summary to the fresh mount before any send.
