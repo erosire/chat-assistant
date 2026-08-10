@@ -122,22 +122,23 @@
 // pending bubble, every streamed token of the reply, and every fresh record
 // (chat selection, completed turn, edited history) re-pin the list's scroll
 // position to its end — the list is the page's only scrolling surface (see
-// the viewport-locked Page). ONE carve-out keeps a chosen reading position
-// stable: a commit where ONLY the stream chunk changed re-pins ONLY while
-// the list sits at its bottom edge, and no pin lands while an edge-jump
-// flight owns scrollTop — scrolling/jumping away mid-stream therefore
-// STICKS (the old unconditional per-token pin yanked the list back down,
-// which is why the UP chevron could never reach/stay at the top); the
-// follow silently resumes once the user returns to the bottom. A bare
-// EDGE-JUMP chevron (no enclosing circle) floats at the FAR LEFT of that
-// message panel, aligned with the list's own 24px content padding (the
-// surface whose turns carry the clone/copy and exit/delete chrome): while
-// the content overflows, a DOWN chevron (the requested "V") fast-animates
-// the list to its very bottom, and AT the bottom the same button is the UP
-// chevron (the requested "^") flying back to the very top — fixed 200ms
-// ease-out, distance-independent (see jumpListEdge). The button rides the
-// ListViewport overlay, NOT the list itself (an absolutely positioned child
-// of the scroller would scroll away).
+// the viewport-locked Page). TWO carve-outs keep a chosen reading position
+// stable: no pin lands while an edge-jump flight owns scrollTop, and pin
+// triggers OTHER than composer typing / a send / an explicit chat pick /
+// a surface reset re-pin ONLY while the list sits at its bottom edge —
+// mid-stream jumps away thus STICK (the old unconditional per-token pin
+// yanked the list back down: the "random jumps to the bottom" report);
+// the follow silently resumes once the user returns to the bottom.
+// Scroll JUMPS are SECTION-LOCAL: every user/assistant/system turn's own
+// copy/edit panel (the strip under its bubble) carries an up/down chevron
+// pair at its left edge (TurnJumpPair). "^" fast-animates the list until
+// THAT section's top edge docks on the list's top padding line; "v" until
+// THAT section's bottom edge lands on the bottom padding line — fixed
+// 200ms ease-out, distance-independent, re-measured live at arrival in
+// case the section reflowed mid-flight (see jumpTurnEdge). Sections never
+// share a chevron: each panel scrolls the page's only scrollbar relative
+// to its own block. The transient pending/streaming turns render no
+// controls panel, so they carry no chevrons.
 // ALL control icons in this file come from the shared stroke-based SVG icon
 // family in src/icons (menu, close, edit, copy, chevrons) — unicode text
 // glyphs were retired because their rendering depended on the system font.
@@ -385,58 +386,6 @@ const MessageList = styledComponent('div', {
     overflowY: 'auto'
 });
 
-// Positioning context of the message surface: takes over the list's exact
-// flex slot in the conversation column (flex:1 + minHeight:0, so the OUTER
-// geometry is identical to when the list was the direct child) purely so the
-// edge-jump button can be absolutely positioned against the VIEWPORT of the
-// message panel. Mounting the button inside MessageList itself is impossible:
-// absolutely positioned children of a scroll container live in the scrolled
-// CONTENT and ride the scroll — the button must stay glued to the panel.
-const ListViewport = styledComponent('div', {
-    flex: 1,
-    minHeight: 0,
-    minWidth: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    position: 'relative'
-});
-
-// The edge-jump control: ONE BARE chevron — no enclosing circle, border, or
-// filled disc; the button paints no chrome of its own, only the glyph — at
-// the FAR LEFT of the message panel (the surface whose turns carry the
-// clone/copy and exit/delete chrome). BOTH offsets mirror the message
-// list's own content padding (MessageList pads 24px on every side, see
-// above): left:24 lines the glyph up with the content's left padding edge
-// and bottom:24 seats it on the bottom padding line above the composer's
-// top border, so it registers as part of the content block's margin rhythm
-// instead of floating at an arbitrary inset. While the list overflows it
-// shows the DOWN chevron (the requested "V" shape, ChevronDownIcon); at the
-// bottom it flips to the UP chevron (the requested "^", ChevronUpIcon) —
-// both from the shared stroke-based family in src/icons (stroke:
-// currentColor → the glyph inherits `color`, no surface needed), so the
-// flip state is pixel-consistent. Clicking drives jumpListEdge's
-// fixed-200ms ease-out flight to the far edge. The 32x32 transparent box
-// keeps the glyph easily clickable without drawing a disc; zIndex 6 lifts
-// it above the transparent bottom-sticky copy/edit strips
-// (position:sticky stacking contexts with auto z-index), whose icons sit
-// on each strip's RIGHT end, so no overlap.
-const ScrollJumpButton = styledComponent('button', {
-    position: 'absolute',
-    left: 24,
-    bottom: 24,
-    zIndex: 6,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 32,
-    height: 32,
-    padding: 0,
-    border: 'none',
-    backgroundColor: 'transparent',
-    color: COLORS.text,
-    cursor: 'pointer'
-}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
-
 // Empty conversation state explains the one required action without inventing a fake assistant response.
 const EmptyState = styledComponent('div', {
     flex: 1,
@@ -541,6 +490,19 @@ const TurnActionPair = styledComponent('div', {
     display: 'flex',
     alignItems: 'center',
     gap: 6
+});
+
+// Groups the section-local up/down jump chevrons at the row's LEFT edge:
+// every turn's scroll affordances live INSIDE the same panel as its copy +
+// edit pair (the retired design's single global overlay button could never
+// express WHICH section to frame). marginRight:auto is what pushes the
+// copy/edit pair to the right edge — the strip itself stays justifyContent:
+// flex-end (the pinned-strip cascade a test asserts on the Emotion rule).
+const TurnJumpPair = styledComponent('div', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    marginRight: 'auto'
 });
 
 // The control row EVERY turn renders under its bubble: only the copy + edit
@@ -1041,6 +1003,10 @@ type MessageListOptions = {
     // (pinned to the list's bottom edge by the measured sticky gate — see
     // syncStickyControls). The system prompt draft turn participates as -1.
     stickyTurns: number[];
+    // Section-local jump: the strip's up/down chevrons fly the list so THIS
+    // turn's top/bottom edge docks on the list's corresponding padding line.
+    // The wrapper is addressed by testid (message-turn-N / system-prompt-turn).
+    onJumpTurnEdge: (testId: string, toTop: boolean) => void;
 };
 
 // Read the text of a contentEditable bubble while preserving line structure.
@@ -1361,7 +1327,19 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                     {editControl !== null && (
                         // floating = measured sticky gate (component state);
                         // the testid is the gate's per-turn measurement hook.
-                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
+                        // Section-local scroll chevrons sit INSIDE the same
+                        // panel as the copy/edit pair (left edge; the pair
+                        // stays glued right): "^" flies the list so THIS
+                        // turn's top edge docks on the list's top padding
+                        // line, "v" so its bottom edge lands on the bottom
+                        // padding line (see jumpTurnEdge).
+                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}>
+                            <TurnJumpPair>
+                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
+                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
+                            </TurnJumpPair>
+                            <TurnActionPair>{copyControl}{editControl}</TurnActionPair>
+                        </TrailingControls>
                     )}
                 </UserTurn>
             );
@@ -1377,7 +1355,19 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                     {editControl !== null && (
                         // floating = measured sticky gate (component state);
                         // the testid is the gate's per-turn measurement hook.
-                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
+                        // Section-local scroll chevrons sit INSIDE the same
+                        // panel as the copy/edit pair (left edge; the pair
+                        // stays glued right): "^" flies the list so THIS
+                        // turn's top edge docks on the list's top padding
+                        // line, "v" so its bottom edge lands on the bottom
+                        // padding line (see jumpTurnEdge).
+                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}>
+                            <TurnJumpPair>
+                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
+                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
+                            </TurnJumpPair>
+                            <TurnActionPair>{copyControl}{editControl}</TurnActionPair>
+                        </TrailingControls>
                     )}
                 </AssistantTurn>
             );
@@ -1394,7 +1384,19 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                     {editControl !== null && (
                         // floating = measured sticky gate (component state);
                         // the testid is the gate's per-turn measurement hook.
-                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
+                        // Section-local scroll chevrons sit INSIDE the same
+                        // panel as the copy/edit pair (left edge; the pair
+                        // stays glued right): "^" flies the list so THIS
+                        // turn's top edge docks on the list's top padding
+                        // line, "v" so its bottom edge lands on the bottom
+                        // padding line (see jumpTurnEdge).
+                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}>
+                            <TurnJumpPair>
+                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
+                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
+                            </TurnJumpPair>
+                            <TurnActionPair>{copyControl}{editControl}</TurnActionPair>
+                        </TrailingControls>
                     )}
                 </SystemTurn>
             );
@@ -1438,12 +1440,10 @@ const defaultCollapsedIndices = (messages: ChatMessage[]): number[] => {
 // equality must not flicker the floating mode on and off across a 0.5px line.
 const CONTROLS_FLOAT_EPSILON = 0.5;
 
-// Edge tolerance for the edge-jump control's bottom-edge detection: scrollTop
-// + clientHeight within 1px of scrollHeight already counts as "at the bottom"
-// (fractional scroll geometry and browser clamping must not strand the arrow
-// in the wrong direction one subpixel above the edge). The same constant
-// floors the "can this list scroll at all" check (scrollable only when the
-// content exceeds the scrollport by more than the epsilon).
+// Edge tolerance for the bottom-follow gate's edge detection: scrollTop +
+// clientHeight within 1px of scrollHeight already counts as "at the bottom"
+// (fractional scroll geometry and browser clamping must not detach the
+// token follow while the user is one subpixel above the edge).
 const LIST_EDGE_EPSILON = 1;
 
 // Fixed animation budget (ms) for the edge jump. "Fast" per the control's
@@ -1549,13 +1549,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // the system prompt draft turn's sentinel index. Starts empty = every
     // strip anchored at its natural slot under its bubble.
     const stickyTurns = useStateHook<number[]>([]);
-    // Edge-jump control geometry, measured in the SAME sync pass as the
-    // strips (syncStickyControls): listScrollable gates the button's very
-    // existence (nothing to jump while the content fits its scrollport);
-    // listAtBottom picks the icon direction — at the bottom the button is
-    // the UP chevron targeting the top, anywhere else the DOWN chevron
-    // targeting the bottom. An empty/unloaded list counts as "at bottom".
-    const listScrollable = useStateHook(false);
+    // Bottom-edge truth, measured in the SAME sync pass as the strips
+    // (syncStickyControls): listAtBottom gates the bottom-follow effect
+    // (ambient refreshes re-pin ONLY while the list sits at its bottom
+    // edge — see the follow effect). An empty/unloaded list counts as "at
+    // bottom" so a fresh chat's first content pins.
     const listAtBottom = useStateHook(true);
     // Ref-backed (write-without-render) rAF handle of an in-flight edge jump:
     // a fresh click cancels the running flight before retargeting, and the
@@ -1564,15 +1562,21 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // flight owns scrollTop, NOTHING else may write it.
     const listJump = useReferenceHook<number | null>(null);
     // Ref snapshot of the bottom-follow effect's OWN dep tuple from the
-    // previous run: a commit where ONLY the stream chunk moved is a TOKEN
-    // tick — the one trigger family that yields to a user-chosen scroll
-    // position (see the effect). Ref-backed so bookkeeping never re-renders.
+    // previous run, used to classify WHICH trigger family a commit belongs
+    // to (typing / send / explicit navigation / ambient refresh — see the
+    // effect). Ref-backed so bookkeeping never re-renders.
     const followSnapshot = useReferenceHook<{
         draft: string;
         pending: string;
         stream: string;
         record: ConversationRecord | null;
     } | null>(null);
+    // One-shot mark set by selectChat: the NEXT bottom-follow run is an
+    // explicit chat pick, which always pins — opened chats land on their
+    // latest turn regardless of the surface's previous scroll position
+    // (the at-bottom state read at that moment still describes the chat
+    // being LEFT). Consumed (cleared) by the effect's first following run.
+    const selectionPin = useReferenceHook(false);
     const loading = useStateHook(false);
     // True while the selected conversation's identified DELETE is in flight.
     const deleting = useStateHook(false);
@@ -1676,38 +1680,42 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // shortened history) all re-pin the message list — the page's only
     // scrolling surface — to its end so the latest turn stays in view.
     // TWO carve-outs keep a USER-CHOSEN reading position stable against this
-    // force-pin (the reported "^ never reaches/stays at the top" glitch —
-    // the unconditional pin used to win every race):
+    // force-pin (the reported "^ never reaches the top / random jumps to the
+    // bottom" glitches — the unconditional pin used to win every race):
     // 1. IN-FLIGHT JUMP: while an edge-jump flight owns scrollTop (listJump
     //    holds its rAF handle) NOTHING else may write it — a mid-flight pin
     //    would fight the rAF's per-frame positions.
-    // 2. TOKEN TICKS OFF-BOTTOM: a commit where ONLY the streaming chunk
-    //    changed (classified against followSnapshot: draft text, pending
-    //    bubble, and record all identical to the previous run) re-pins ONLY
-    //    while the list sits at its bottom edge — listAtBottom, the very
-    //    accessor that flips the chevron. A mid-stream jump (or plain
-    //    wheel-scroll away) therefore STICKS instead of being yanked back
-    //    down by the next token; the follow silently resumes once the user
-    //    returns to the bottom (the scroll listener refreshes listAtBottom
-    //    through syncStickyControls). Every OTHER trigger (composer typing,
-    //    send, fresh record) keeps the original unconditional pin.
+    // 2. OFF-BOTTOM AMBIENT REFRESHES: trigger families OTHER than an
+    //    explicit user signal re-pin ONLY while the list sits at its bottom
+    //    edge (listAtBottom, refreshed by syncStickyControls' scroll pass).
+    //    Ambient families: streamed tokens AND same-surface record refreshes
+    //    (the completion swap after a streamed turn, edit/delete rewrites,
+    //    the first turn's null→record load). A mid-stream section jump (or
+    //    plain wheel-scroll away) therefore STICKS — no more yank-to-bottom
+    //    at the next token or at stream completion; the follow silently
+    //    resumes once the user returns to the bottom.
+    // EXPLICIT signals keep the ORIGINAL unconditional pin (classified
+    // against followSnapshot): composer TYPING (draft changed), a SEND
+    // (pending bubble appeared), an explicit CHAT PICK (selectChat's
+    // one-shot selectionPin mark — the opened chat lands on its latest turn
+    // even when the surface being left was scrolled up), and a surface
+    // RESET (record cleared by new-chat/delete).
     // The snapshot rewrites on EVERY run — skipped pins included — so the
     // classification never goes stale (StrictMode's double-run reads an
-    // identical tuple: stream differs on neither, so the pin is idempotent).
-    // scrollTop/scrollHeight are plain settable properties everywhere
-    // (jsdom included: scrollHeight is 0 there, so tests stub it).
+    // identical tuple: an idempotent pin). scrollTop/scrollHeight are plain
+    // settable properties everywhere (jsdom included: scrollHeight is 0
+    // there, so tests stub it).
     useEffect(() => {
         const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
         const current = { draft: message(), pending: pendingUser(), stream: streaming(), record: selected() };
+        const explicitSelection = selectionPin();
+        if (explicitSelection) selectionPin(false);
         const previous = followSnapshot();
         followSnapshot(current);
-        const streamTick =
-            previous !== null &&
-            previous.draft === current.draft &&
-            previous.pending === current.pending &&
-            previous.record === current.record &&
-            previous.stream !== current.stream;
-        if (list && listJump() === null && !(streamTick && !listAtBottom())) {
+        const typed = previous !== null && previous.draft !== current.draft;
+        const sent = previous !== null && previous.pending === '' && current.pending !== '';
+        const surfaceReset = previous !== null && previous.record !== current.record && current.record === null;
+        if (list && listJump() === null && (previous === null || explicitSelection || typed || sent || surfaceReset || listAtBottom())) {
             list.scrollTop = list.scrollHeight;
         }
         // Deps read accessor state: draft text, pending bubble, stream, record.
@@ -1717,10 +1725,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // Sticky-gate measurement: decide PER TURN whether its copy/edit strip
     // may float (position:sticky) or must stay anchored (position:static) —
     // the rule itself is the exported pure predicate controlsShouldFloat.
-    // The same pass also feeds the edge-jump control: listScrollable decides
-    // whether the button exists at all (content exceeds the scrollport) and
-    // listAtBottom picks its icon direction (down chevron toward the bottom,
-    // up chevron toward the top). Both writes are guarded by equality so this
+    // The same pass refreshes the bottom-follow gate's edge truth
+    // (listAtBottom). Both writes are guarded by equality so this
     // scroll-position listener can never re-render itself into a loop.
     // Measured inputs: the pin line is the list's bottom PADDING edge (sticky
     // offsets resolve against the scrollport's padding box — a measured
@@ -1738,16 +1744,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const syncStickyControls = useCallback(() => {
         const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
         if (!list) return;
-        // Edge-jump geometry: read BEFORE anything else touches scrollTop.
-        // atBottom uses the epsilon so fractional geometry and the browser's
+        // Bottom-follow gate geometry: read BEFORE anything else touches
+        // scrollTop. The epsilon means fractional geometry and the browser's
         // scroll clamping (scrollTop can never exceed scrollHeight -
-        // clientHeight) cannot strand the arrow direction; scrollable needs
-        // REAL overflow beyond the tolerance (a list that fits its scrollport
-        // offers nothing to jump to, so the button stays unmounted).
+        // clientHeight) cannot detach the token follow one subpixel early.
         const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - LIST_EDGE_EPSILON;
         if (atBottom !== listAtBottom()) listAtBottom(atBottom);
-        const scrollable = list.scrollHeight > list.clientHeight + LIST_EDGE_EPSILON;
-        if (scrollable !== listScrollable()) listScrollable(scrollable);
         const listRect = list.getBoundingClientRect();
         const pinBottom = listRect.bottom - (Number.parseFloat(window.getComputedStyle(list).paddingBottom) || 0);
         const next: number[] = [];
@@ -1774,7 +1776,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // gate can never re-render itself into a loop.
         next.sort((a, b) => a - b);
         if (next.join(',') !== stickyTurns().join(',')) stickyTurns(next);
-    }, [listAtBottom, listScrollable, stickyTurns]);
+    }, [listAtBottom, stickyTurns]);
 
     // Scroll + resize drive the gate: mount-only listener attach (the message
     // list element is permanent — it renders on every surface, empty chats
@@ -1803,26 +1805,45 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [message(), pendingUser(), streaming(), selected(), collapsedTurns(), loading(), deleting(), syncStickyControls]);
 
-    // The edge-jump control's click action (the far-left chevron button in
-    // the ListViewport overlay). Direction derives from the LIVE bottom edge:
-    // listAtBottom true → fly to the top (scrollTop 0), otherwise fly to the
-    // bottom (scrollHeight - clientHeight — the browser's own clamp target,
-    // so the landing disambiguates no fractional residue). The animation is
-    // a fixed JUMP_SCROLL_DURATION ease-out cubic (fast launch, soft landing)
-    // driven by rAF: FAST per requirement and distance-INDEPENDENT — a long
-    // chat never crawls proportionally. Frames write scrollTop directly; on
-    // arrival the exact edge is pinned (easing residue must not leave the
-    // auto-pin seeing an off-bottom list) and syncStickyControls runs so the
-    // icon flip and the sticky strips settle even in environments that do
-    // not dispatch scroll events for programmatic scrollTop writes (jsdom).
+    // A turn chevron's click action: the up/down chevrons live INSIDE each
+    // section's own copy/edit panel (the retired design's ONE global overlay
+    // chevron could never express WHICH section to frame), so each flight is
+    // resolved AGAINST THE CLICKED SECTION's wrapper (looked up by testid):
+    // toTop docks the section's TOP edge on the message list's top padding
+    // line, otherwise its BOTTOM edge lands on the bottom padding line.
+    // Rects are viewport-live: edge − list's rect top + current scrollTop
+    // converts to scroll-content coordinates; the list's own padding
+    // re-centres the edge ON the padding line (a docked section sits exactly
+    // where normal flow content starts); targets clamp to the real travel
+    // range. The animation is the shared fixed JUMP_SCROLL_DURATION ease-out
+    // cubic (fast launch, soft landing) driven by rAF: FAST per requirement
+    // and distance-INDEPENDENT — a tall section never crawls proportionally.
+    // Frames write scrollTop directly. ARRIVAL re-measures the target LIVE:
+    // an inlined editor or a reflowing neighbour can move a section's far
+    // edge DURING the 200ms flight, so a compute-once target would land
+    // short of the real edge. syncStickyControls then runs so the sticky
+    // strips settle even in environments that do not dispatch scroll events
+    // for programmatic scrollTop writes (jsdom).
     // Environments without rAF (and zero-travel clicks) jump INSTANTLY.
-    const jumpListEdge = useCallback(() => {
+    const jumpTurnEdge = useCallback((testId: string, toTop: boolean) => {
         const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
-        if (!list) return;
+        const turn = list?.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+        if (!list || !turn) return;
         // A fresh click cancels the in-flight flight before retargeting.
         if (listJump() !== null) cancelAnimationFrame(listJump()!);
-        const targetTop = listAtBottom() ? 0 : list.scrollHeight - list.clientHeight;
+        // Section-edge measurement (see the block comment).
+        const measureTarget = (): number => {
+            const listTop = list.getBoundingClientRect().top;
+            const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+            if (toTop) {
+                const paddingTop = Number.parseFloat(window.getComputedStyle(list).paddingTop) || 0;
+                return Math.min(maxScroll, Math.max(0, list.scrollTop + turn.getBoundingClientRect().top - listTop - paddingTop));
+            }
+            const paddingBottom = Number.parseFloat(window.getComputedStyle(list).paddingBottom) || 0;
+            return Math.min(maxScroll, Math.max(0, list.scrollTop + turn.getBoundingClientRect().bottom - listTop + paddingBottom - list.clientHeight));
+        };
         const startTop = list.scrollTop;
+        const targetTop = measureTarget();
         if (targetTop === startTop || typeof requestAnimationFrame !== 'function') {
             list.scrollTop = targetTop;
             listJump(null);
@@ -1848,13 +1869,15 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             if (progress < 1) {
                 listJump(requestAnimationFrame(step));
             } else {
-                list.scrollTop = targetTop;
+                // Re-measured LIVE edge (see above): mid-flight reflows can
+                // never strand the landing short of the section's edge.
+                list.scrollTop = measureTarget();
                 listJump(null);
                 syncStickyControls();
             }
         };
         listJump(requestAnimationFrame(step));
-    }, [listAtBottom, listJump, syncStickyControls]);
+    }, [listJump, syncStickyControls]);
 
     // Never let a pending jump frame write to a detached list on unmount.
     useEffect(() => () => {
@@ -1962,6 +1985,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         loading(true);
         try {
             const record = (await fetchConversation(baseUrl, conversationId)).conversation;
+            // Explicit navigation: the bottom-follow effect consumes this
+            // one-shot mark and pins the freshly opened chat to its latest
+            // turn unconditionally (ambient record refreshes can't do that).
+            selectionPin(true);
             selected(record);
             applyModelMemory(record.model);
             // Picking a chat closes the mobile drawer (md+ ignores the drawer
@@ -1982,7 +2009,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             loading(false);
         }
-    }, [applyModelMemory, baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, loading, selected, sidebarOpen, systemPrompt]);
+    }, [applyModelMemory, baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, loading, selected, selectionPin, sidebarOpen, systemPrompt]);
 
     // Reset the surface without creating a server record until the first provider
     // turn completes. The model selection intentionally survives a new chat so the
@@ -2360,7 +2387,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         onToggleTurnCollapse: toggleTurnCollapse,
         // Measured sticky gate: which turns' strips currently float (see
         // syncStickyControls); mirrors collapsedTurns as a per-render list.
-        stickyTurns: stickyTurns()
+        stickyTurns: stickyTurns(),
+        // Section-local scroll chevrons: each turn's own panel drives the flight.
+        onJumpTurnEdge: jumpTurnEdge
     };
 
     return (
@@ -2441,10 +2470,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     {chatNodes.length > 0 ? chatNodes : <Metadata data-testid="empty-chat-list">No chats yet.</Metadata>}
                 </Sidebar>
                 <Conversation>
-                    {/* The viewport overlay owns the edge-jump button's
-                        positioning context (see ListViewport); the list keeps
-                        the identical flex slot it held as a direct child. */}
-                    <ListViewport>
                     <MessageList data-testid="message-list">
                         {/* The system prompt turn leads every chat — a regular
                             LEFT-aligned row exactly like the assistant turns.
@@ -2535,6 +2560,16 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                     // turns; the header label must not be
                                     // covered either).
                                     <TrailingControls floating={stickyTurns().includes(-1)} data-testid="system-prompt-controls">
+                                        {/* The draft system turn is a
+                                            section like any other: its
+                                            chevrons drive the same
+                                            jumpTurnEdge flight against its
+                                            own wrapper (testid key
+                                            "system-prompt-turn"). */}
+                                        <TurnJumpPair>
+                                            <TurnIconButton type="button" onClick={() => jumpTurnEdge('system-prompt-turn', true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid="system-prompt-jump-top"><ChevronUpIcon size={14} /></TurnIconButton>
+                                            <TurnIconButton type="button" onClick={() => jumpTurnEdge('system-prompt-turn', false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid="system-prompt-jump-bottom"><ChevronDownIcon size={14} /></TurnIconButton>
+                                        </TurnJumpPair>
                                         <TurnActionPair>
                                             {/* Copy mirrors the per-message
                                                 action (immediately LEFT of
@@ -2578,7 +2613,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                         {/* In-flight turns carry the same top-left
                                             attribution label as persisted ones (plain
                                             span — they cannot collapse yet), so the
-                                            turn chrome does not jump on completion. */}
+                                            turn chrome does not jump on completion.
+                                            They carry NO controls panel (edit affordances
+                                            are hidden mid-stream), hence no section
+                                            chevrons either. */}
                                         <TurnHeaderRow>
                                             <TurnHeaderLead alignRight>
                                                 <TurnLabelText>user</TurnLabelText>
@@ -2606,28 +2644,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             </EmptyState>
                         )}
                     </MessageList>
-                    {/* Edge-jump control: rendered ONLY while the list's
-                        content actually overflows (listScrollable) — a list
-                        that fits its scrollport has no far edge to jump to.
-                        Icon direction derives from listAtBottom: the DOWN
-                        chevron (the requested "V") targets the bottom, and at
-                        the bottom the same button flips to the UP chevron
-                        (the requested "^") targeting the top — both drawn
-                        from the shared stroke family so the flip is
-                        pixel-consistent. Clicking runs jumpListEdge's
-                        fixed-200ms ease-out flight. */}
-                    {listScrollable() && (
-                        <ScrollJumpButton
-                            type="button"
-                            onClick={jumpListEdge}
-                            aria-label={listAtBottom() ? 'Scroll to top' : 'Scroll to bottom'}
-                            title={listAtBottom() ? 'Scroll to top' : 'Scroll to bottom'}
-                            data-testid="scroll-jump-button"
-                        >
-                            {listAtBottom() ? <ChevronUpIcon size={16} /> : <ChevronDownIcon size={16} />}
-                        </ScrollJumpButton>
-                    )}
-                    </ListViewport>
                     {error() && <ErrorBanner data-testid="chat-error">{error()}</ErrorBanner>}
                     {/* No "Model: ..." strip: the selected model is the text
                         above the input, and each assistant turn's top-left

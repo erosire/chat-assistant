@@ -53,17 +53,18 @@
 // button is a circular ">" arrow EMBEDDED in the input at its bottom-right —
 // rendered ONLY while the composer has focus (focus-within, including the
 // arrow and the model select). The input's right padding keeps text clear of
-// the arrow. While the message list overflows, a bare-chevron EDGE-JUMP
-// control (no enclosing circle) floats at the panel's far left (over the
-// ListViewport, not the scroller), aligned with the list's own 24px content
-// padding: a DOWN chevron (the requested "V") fast-animates to the list's
-// bottom (fixed 200ms ease-out), flips to an UP chevron (the requested "^")
-// AT the bottom and flies back to the top; it vanishes when the content
-// fits its scrollport. The bottom-follow DETACHES while the user reads away
-// from the bottom mid-stream: incoming tokens (and any in-flight jump)
-// never re-pin the list — a jumped position STICKS at the top — while
-// typing, sends, and fresh record loads still pin unconditionally, and the
-// token follow resumes once the user returns to the bottom.
+// the arrow. Scroll JUMPS are SECTION-LOCAL: every user/assistant/system
+// turn's own copy/edit panel (the strip under its bubble — transient
+// pending/streaming turns have none) carries an up/down chevron pair at its
+// left edge: "^" fast-animates the list (fixed 200ms ease-out) until THAT
+// section's top edge docks on the list's top padding line, "v" until THAT
+// section's bottom edge lands on the bottom padding line — re-measured live
+// at arrival so mid-flight reflows can't strand the landing. The
+// bottom-follow DETACHES while the user reads away from the bottom: stream
+// chunks and same-surface record refreshes (stream completion swap
+// included) never re-pin off-bottom — while typing, sends, explicit chat
+// picks, and surface resets still pin unconditionally, and the token follow
+// resumes once the user returns to the bottom.
 // All control icons render as stroke SVGs from src/icons — the old unicode
 // text glyphs are retired. The rename dialog's actions
 // stack full-width on mobile and sit in a right-aligned row on desktop.
@@ -2433,15 +2434,34 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
-    it('fast-animates the message list to its far edge from the far-left down/up chevron control that flips at the bottom', async () => {
+    it('flies the message list to a section\'s own edges from the up/down chevrons in that section\'s copy/edit panel', async () => {
         renderApp();
         await waitForModelSelection();
-        await sendFirstTurn();
 
         const list = screen.getByTestId('message-list');
-        // The control stays UNMOUNTED while nothing can scroll — jsdom's
-        // geometry is all-0, so scrollHeight never exceeds clientHeight.
-        expect(screen.queryByTestId('scroll-jump-button')).toBeNull();
+        // Real-browser geometry for the jump targets: jsdom rects are all 0,
+        // so getBoundingClientRect is spied per testid with rects that track
+        // the LIVE scrollTop exactly like a browser (viewport-y =
+        // list-rect-top + content-y − scrollTop). The list rect is
+        // viewport-FIXED (top 100, height 400 = the clientHeight stub). In
+        // 1200px of content with 24px padding: the system prompt DRAFT turn
+        // occupies content [24,124), the user turn (message-turn-0) sits at
+        // [140,600), the assistant turn (message-turn-1) at [616,1176), and
+        // the 24px bottom padding pads out to 1200.
+        const rectOf = (bottom: number, height: number) => ({ x: 0, y: bottom - height, top: bottom - height, left: 0, right: 100, width: 100, bottom, height, toJSON: () => ({}) }) as DOMRect;
+        const CONTENT: Record<string, { top: number; height: number }> = {
+            'system-prompt-turn': { top: 24, height: 100 },
+            'message-turn-0': { top: 140, height: 460 },
+            'message-turn-1': { top: 616, height: 560 }
+        };
+        vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+            const id = this.getAttribute?.('data-testid') ?? '';
+            if (id === 'message-list') return rectOf(500, 400);
+            const block = CONTENT[id];
+            if (block) return rectOf(100 + block.top + block.height - list.scrollTop, block.height);
+            return rectOf(0, 0);
+        });
+        await sendFirstTurn();
 
         // Long-chat geometry: 1200px of content behind a 400px scrollport.
         // The stubs land AFTER the first turn persisted, so the auto-pin
@@ -2451,50 +2471,61 @@ describe('ChatAssistantApp', () => {
         Object.defineProperty(list, 'clientHeight', { configurable: true, value: 400 });
         fireEvent.scroll(list);
 
-        // The control floats at the FAR LEFT of the message panel (the
-        // surface whose turns carry the clone/exit chrome), aligned with the
-        // list's own 24px content padding: absolute over the ListViewport,
-        // left:24 / bottom:24 — and it paints NO chrome of its own (no
-        // circle): no border, no filled disc, just the glyph.
-        const jump = await screen.findByTestId('scroll-jump-button');
-        const jumpStyle = window.getComputedStyle(jump);
-        expect(jumpStyle.position).toBe('absolute');
-        expect(jumpStyle.left).toBe('24px');
-        expect(jumpStyle.bottom).toBe('24px');
-        expect(jumpStyle.borderStyle).toBe('none');
-        expect(jumpStyle.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+        // The retired GLOBAL overlay control (one chevron for the whole
+        // panel) must not exist anymore: each SECTION owns its chevrons.
+        expect(screen.queryByTestId('scroll-jump-button')).toBeNull();
 
-        // At the top the control is the DOWN chevron (the requested "V")
-        // targeting the bottom. Clicking runs the fixed-200ms ease-out
-        // flight to the exact bottom edge 1200 - 400 = 800 (rAF runs under
-        // vitest's pretendToBeVisual jsdom; the wait covers the full
-        // animation window deterministically).
+        // Every section WITH a controls panel owns an up/down chevron pair
+        // — the expanded assistant turn (1) and the system draft turn render
+        // theirs immediately; the user turn (0) starts COLLAPSED (no panel)
+        // until expanded.
+        const strip1 = screen.getByTestId('turn-controls-1');
+        const top1 = screen.getByTestId('turn-jump-top-1');
+        const bottom1 = screen.getByTestId('turn-jump-bottom-1');
+        // The pair is the panel's FIRST child (left edge), each button
+        // hosting the matching stroke chevron with its own accessible label.
+        expect(strip1.firstElementChild).toBe(top1.parentElement);
+        expect(top1.querySelector('svg[data-icon="chevron-up"]')).not.toBeNull();
+        expect(bottom1.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
+        expect(top1.getAttribute('aria-label')).toBe('Scroll to section top');
+        expect(bottom1.getAttribute('aria-label')).toBe('Scroll to section bottom');
+        expect(screen.getByTestId('system-prompt-jump-top').querySelector('svg[data-icon="chevron-up"]')).not.toBeNull();
+        expect(screen.getByTestId('system-prompt-jump-bottom').parentElement?.parentElement).toBe(screen.getByTestId('system-prompt-controls'));
+        expect(screen.queryByTestId('turn-jump-top-0')).toBeNull();
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+        const top0 = screen.getByTestId('turn-jump-top-0');
+        const bottom0 = screen.getByTestId('turn-jump-bottom-0');
+
+        // From the list's TOP (scrollTop 0), turn-1's "^" flies the list so
+        // THAT SECTION's top edge docks on the top padding line: content-y
+        // 616 − 24 = EXACTLY 592 (rAF runs under vitest's pretendToBeVisual
+        // jsdom; the wait covers the fixed 200ms ease-out window).
         expect(list.scrollTop).toBe(0);
-        expect(jump.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
-        expect(jump.querySelector('svg[data-icon="chevron-up"]')).toBeNull();
-        expect(jump.getAttribute('aria-label')).toBe('Scroll to bottom');
-        fireEvent.click(jump);
-        await waitFor(() => expect(list.scrollTop).toBe(800));
+        fireEvent.click(top1);
+        await waitFor(() => expect(list.scrollTop).toBe(592));
 
-        // AT the bottom the SAME button flips to the UP chevron (the
-        // requested "^") targeting the top...
-        await waitFor(() => expect(jump.querySelector('svg[data-icon="chevron-up"]')).not.toBeNull());
-        expect(jump.querySelector('svg[data-icon="chevron-down"]')).toBeNull();
-        expect(jump.getAttribute('aria-label')).toBe('Scroll to top');
+        // turn-0's "v" then flies so THAT SECTION's bottom edge lands on the
+        // bottom padding line: 600 + 24 − 400 = EXACTLY 224 (measured live
+        // at arrival from the spied rects).
+        fireEvent.click(bottom0);
+        await waitFor(() => expect(list.scrollTop).toBe(224));
 
-        // ...and clicking it flies back to the very top and flips back.
-        fireEvent.click(jump);
+        // The system draft turn participates too: its "v" would want 124 +
+        // 24 − 400 < 0, so the travel range clamps the flight to 0...
+        fireEvent.click(screen.getByTestId('system-prompt-jump-bottom'));
         await waitFor(() => expect(list.scrollTop).toBe(0));
-        await waitFor(() => expect(jump.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull());
-        expect(jump.querySelector('svg[data-icon="chevron-up"]')).toBeNull();
-        expect(jump.getAttribute('aria-label')).toBe('Scroll to bottom');
 
-        // Pure view state: the six send-flow calls only — jumping never
-        // touches the network.
+        // ...and its "^" is a zero-travel click (its top already docks the
+        // padding line): pinned INSTANTLY (still 0).
+        fireEvent.click(screen.getByTestId('system-prompt-jump-top'));
+        expect(list.scrollTop).toBe(0);
+
+        // Pure view state: the six send-flow calls only — section jumps
+        // never touch the network.
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
-    it('keeps an edge jump at the very top while tokens keep streaming (token follow releases only off-bottom)', async () => {
+    it('keeps a manual scroll-up position through stream chunks and the completion swap (follow re-engages at the bottom)', async () => {
         // Controlled-stream variant of the default routes (identical to the
         // auto-scroll test's) so the send record flow still makes its six
         // calls end-to-end, while each chunk's arrival is driven by hand.
@@ -2518,6 +2549,23 @@ describe('ChatAssistantApp', () => {
         await waitForModelSelection();
 
         const list = screen.getByTestId('message-list');
+        // jsdom rects are all 0, so getBoundingClientRect is spied exactly
+        // like the section-chevron test's spy: viewport-y = 100 + content-y
+        // − scrollTop, list rect FIXED at top 100/height 400 (its
+        // clientHeight stub). The transient pending/streaming turns have NO
+        // controls panel (no chevrons), so only the anatomy the post-
+        // completion flight needs is modelled: message-turn-0 at content
+        // [140,340) and message-turn-1 growing with the list to
+        // [356, scrollHeight − 24) — its bottom edge is the DOWN anchor.
+        const rectOf = (bottom: number, height: number) => ({ x: 0, y: bottom - height, top: bottom - height, left: 0, right: 100, width: 100, bottom, height, toJSON: () => ({}) }) as DOMRect;
+        vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+            const id = this.getAttribute?.('data-testid') ?? '';
+            if (id === 'message-list') return rectOf(500, 400);
+            if (id === 'message-turn-0') return rectOf(100 + 340 - list.scrollTop, 200);
+            if (id === 'message-turn-1') return rectOf(100 + list.scrollHeight - 24 - list.scrollTop, list.scrollHeight - 24 - 356);
+            return rectOf(0, 0);
+        });
+
         // Long-chat geometry BEFORE typing: 2000px of content behind a 400px
         // scrollport. The composer-typing pin is unconditional (documented),
         // so typing lands the list exactly at the bottom edge.
@@ -2529,40 +2577,46 @@ describe('ChatAssistantApp', () => {
         await waitFor(() => expect(screen.getByTestId('pending-user-message')).toBeDefined());
 
         // The first chunk still follows: the list WAS at its bottom edge
-        // when it arrived (token ticks pin only at the bottom edge).
+        // when it arrived (ambient ticks pin only at the bottom edge).
         Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 2400 });
         await act(async () => stream.push(completionFrames[0]));
         await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello'));
         expect(list.scrollTop).toBe(2400);
 
-        // THE GLITCH: clicking the UP chevron must fly to the very top AND
-        // STAY there — a later chunk must NOT drag the list back down.
-        const jump = await screen.findByTestId('scroll-jump-button');
-        expect(jump.getAttribute('aria-label')).toBe('Scroll to top');
-        fireEvent.click(jump);
-        await waitFor(() => expect(list.scrollTop).toBe(0));
-        await waitFor(() => expect(jump.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull());
+        // THE GLITCH FIX: a plain wheel-scroll away from the bottom
+        // mid-stream (scrollTop 500 ≙ the user reading an earlier section;
+        // the IN-FLIGHT turns render no panels, hence no chevrons yet)
+        // detaches the follow — the next chunk must NOT drag the list down.
+        list.scrollTop = 500;
+        fireEvent.scroll(list);
         Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 3000 });
         await act(async () => stream.push(completionFrames[1]));
         await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello from the assistant'));
-        // Off-bottom now: the token pin is released — the top position holds
-        // at EXACTLY 0 and the control keeps targeting the bottom.
-        expect(list.scrollTop).toBe(0);
-        expect(jump.getAttribute('aria-label')).toBe('Scroll to bottom');
+        expect(list.scrollTop).toBe(500);
 
-        // A fresh-record pin (the completed turn's canonical GET) is NOT a
-        // token tick: it still force-pins the list to its end (3000 under
-        // the current stub), and the token follow would resume from there.
+        // Stream COMPLETION swaps pending/streaming for the canonical record
+        // — an AMBIENT refresh, not navigation: it must NOT yank the list
+        // down either. The reading position still holds at 500.
         await act(async () => {
             stream.push(completionFrames[2]);
             stream.push(completionFrames[3]);
             stream.close();
         });
         await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
-        expect(list.scrollTop).toBe(3000);
+        expect(screen.queryByTestId('streaming-message')).toBeNull();
+        expect(list.scrollTop).toBe(500);
+
+        // Returning to the conversation tail goes through the freshly
+        // persisted section's OWN panel: turn-1's "v" (its strip renders
+        // once the record lands) flies to THAT section's live-measured
+        // bottom edge on the bottom padding line — (3000 − 24) + 24 − 400 =
+        // EXACTLY 2600, the list's real scroll range end, so the
+        // bottom-follow gate re-engages for whatever streams next.
+        fireEvent.click(await screen.findByTestId('turn-jump-bottom-1'));
+        await waitFor(() => expect(list.scrollTop).toBe(2600));
 
         // Pure view state: the same six send-flow calls as any controlled
-        // send — jumping and follow-detaching never touch the network.
+        // send — section jumps and follow-detaching never touch the network.
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
