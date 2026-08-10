@@ -49,7 +49,18 @@
 // Messages remain individually deletable (x icon);
 // next to the edit pen EVERY turn also carries a copy action (two-squares
 // icon) that writes the raw message text to the system clipboard without
-// touching storage;
+// touching storage. The copy+edit controls row under each bubble is
+// BOTTOM-STICKY within its own turn: while a turn's content extends beyond
+// the message list's bottom scrollport edge the row rides the list's visible
+// bottom edge, following the scroll as a TRANSPARENT floating strip (an
+// opaque surface paints a dark line across the bubble — forbidden); once the
+// turn's end scrolls into view, the row returns to its natural place right
+// under the bubble. The float is GATED on live geometry (see
+// syncStickyControls + controlsShouldFloat): raw CSS sticky otherwise
+// engages even while the whole turn is still below the fold and the
+// containing-block clamp drags the strip to the turn's TOP edge, covering
+// the turn's own delete "x" — the strip must never travel above its natural
+// slot past the turn's header (see TrailingControls);
 // message edits, message deletes, and renames all replace the ENTIRE history
 // through the identified PUT, so the next turn automatically sends the
 // edited/shortened history to the provider. Every turn also carries a copy
@@ -449,8 +460,62 @@ const TurnActionPair = styledComponent('div', {
 
 // The control row EVERY turn renders under its bubble: only the copy + edit
 // pair, pushed to the row's right edge.
-const TrailingControls = styledComponent(TurnControls, {
-    justifyContent: 'flex-end'
+// STICKY-FOLLOW RULE: position:sticky + bottom:0 turns the row into a
+// bottom-pinned strip confined to its OWN turn wrapper. While the turn's
+// content extends BEYOND the message list's bottom scrollport edge (the
+// turn's end is NOT in view), the row sticks to the list's visible bottom
+// edge and rides along with the scroll instead of scrolling away with the
+// message tail. The moment the turn's end scrolls INTO view, the sticky
+// constraint releases and the row drops back to its natural spot directly
+// under the bubble — exactly where it sat before. The containing scrollport
+// is MessageList (overflowY:auto — the page's only scrolling surface, see
+// Page), and sticky confinement keeps the row inside its own turn's box, so
+// it never escapes into a neighbouring message. Turns shorter than the
+// viewport (and any turn whose end is already in view) see NO change: the
+// row never leaves its natural flow position.
+// bottom stays a STATIC number: only 'custom'/function values pass through
+// styleStructure's number→rem conversion — statics serialize as px (the same
+// trap the Sidebar's static zIndex documents).
+// paddingTop cushions the strip ABOVE the buttons: while the strip rides the
+// list's bottom edge over the message text scrolling beneath it, the glyphs
+// no longer sit flush at the strip's top rim against the passing text — and
+// because the strip is bottom-anchored (bottom:0), the padding grows the
+// strip UPWARD while the buttons keep their exact pinned position. In the
+// natural (unstuck) position the same padding widens the air between the
+// bubble and the buttons, so the strip's own geometry never changes between
+// its two states. This overrides the '0 4px' shorthand of the TurnControls
+// base rule: styledComponent composition serializes the derived rule AFTER
+// the base rule in Emotion's sheet, so same-specificity padding-top:8px wins
+// (the same cascade the existing justifyContent flex-end-over-space-between
+// override already relies on).
+// TRANSPARENT BACKGROUND: the strip MUST NOT paint its own surface — an
+// opaque strip rendered as a hard dark line slicing horizontally across the
+// bubble whenever it rode over message text (the "black line across" bug).
+// With no backgroundColor the message content shows straight through around
+// the floating glyphs in both states. Sticky positioning always creates a
+// stacking context, so even transparent the strip's buttons still paint
+// ABOVE the static bubble content they overlap — no z-index needed.
+// THE `position` IS A GATED DYNAMIC PROP — NOT a constant sticky: CSS sticky
+// alone engages whenever the strip's NATURAL slot sits below the scrollport's
+// bottom edge, even while the whole turn is still below the fold; the
+// containing-block clamp then drags the strip to the turn's TOP edge, where
+// it paints over the turn's own header delete "x" (real-browser geometry
+// measured via sticky-probe.mjs). The component measures live rects and only
+// renders `floating` (sticky) while the pinned position would clear the
+// turn's header row — otherwise the strip renders STATIC, locked to its
+// natural slot under the bubble. The two positions serialize as separate
+// Emotion classes under @media (min-width: 0px) — the floating one carries
+// position:sticky, the anchored one position:static (paddingTop keeps the
+// strip's own box identical across the flip so the gate never moves layout).
+// The base cast threads the custom `floating` prop through styledComponent's
+// generic base-parameter check — the same `as unknown as` composition cast
+// ConversationDeleteButton/NewChatButton use on their outputs, applied to the
+// input because the prop type lives on the DERIVED component only.
+const TrailingControls = styledComponent<{ floating?: boolean }>(TurnControls as unknown as React.FC<{ floating?: boolean }>, {
+    justifyContent: 'flex-end',
+    position: ({ floating }) => (floating ? 'sticky' : 'static'),
+    bottom: 0,
+    paddingTop: 8
 });
 
 // Row ABOVE every turn's bubble: the attribution label/collapse toggle (+
@@ -886,6 +951,10 @@ type MessageListOptions = {
     // session-level UI state.
     collapsedTurns: number[];
     onToggleTurnCollapse: (index: number) => void;
+    // Indices of turns whose copy/edit strip is currently in FLOATING mode
+    // (pinned to the list's bottom edge by the measured sticky gate — see
+    // syncStickyControls). The system prompt draft turn participates as -1.
+    stickyTurns: number[];
 };
 
 // Read the text of a contentEditable bubble while preserving line structure.
@@ -1203,7 +1272,9 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                     {headerRow}
                     {bubble}
                     {editControl !== null && (
-                        <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
+                        // floating = measured sticky gate (component state);
+                        // the testid is the gate's per-turn measurement hook.
+                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
                 </UserTurn>
             );
@@ -1217,7 +1288,9 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                     {headerRow}
                     {bubble}
                     {editControl !== null && (
-                        <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
+                        // floating = measured sticky gate (component state);
+                        // the testid is the gate's per-turn measurement hook.
+                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
                 </AssistantTurn>
             );
@@ -1232,7 +1305,9 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                     {headerRow}
                     {bubble}
                     {editControl !== null && (
-                        <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
+                        // floating = measured sticky gate (component state);
+                        // the testid is the gate's per-turn measurement hook.
+                        <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
                 </SystemTurn>
             );
@@ -1270,6 +1345,31 @@ const defaultCollapsedIndices = (messages: ChatMessage[]): number[] => {
     });
     return indices;
 };
+
+// Half-pixel sacrifice to sub-pixel scroll geometry: list/turn rects arrive
+// with fractional coordinates (browser zoom, devicePixelRatio), so boundary
+// equality must not flicker the floating mode on and off across a 0.5px line.
+const CONTROLS_FLOAT_EPSILON = 0.5;
+
+// Pure sticky-gate predicate for a turn's copy/edit strip — the anti-"black
+// line across the x" rule. The strip may FLOAT (position:sticky, pinned to
+// the list's visible bottom edge) only while BOTH hold:
+// - its turn's END is NOT in view: the natural strip slot (flush with the
+//   turn's bottom — the strip is the turn's last child) lies strictly below
+//   the pin line (the list's bottom inner edge);
+// - and the PINNED position would NOT collide with the turn's own header row
+//   (the attribution label + delete "x" area): the pin top (pin line minus
+//   the strip's measured height) stays at or below the header row's bottom.
+//   Without this second clause raw CSS sticky also engages while the whole
+//   turn is BELOW the fold, and the containing-block clamp drags the strip
+//   onto the turn's TOP edge, covering the "x" (geometry verified in real
+//   Chrome via sticky-probe.mjs: turn [520,1324], x [520,542], raw strip
+//   clamped to [520,550] — full overlap). With the gate the strip holds its
+//   natural (invisible, below-fold) slot until scrolling reveals enough turn
+//   that the float clears the header.
+// Exported for the boundary unit tests in ChatAssistantApp.test.tsx.
+export const controlsShouldFloat = (turnBottom: number, headerBottom: number, pinBottom: number, stripHeight: number): boolean =>
+    turnBottom - pinBottom > CONTROLS_FLOAT_EPSILON && pinBottom - stripHeight >= headerBottom - CONTROLS_FLOAT_EPSILON;
 
 // Viewport gate for the composer's Enter-to-send rule: true at/above the md
 // breakpoint (900px, the same threshold the CSS media queries use — see
@@ -1343,6 +1443,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // record loads or replaces the history; resetting accompanies new chat /
     // chat switch / deletion. Session-level UI state, never persisted.
     const collapsedTurns = useStateHook<number[]>([]);
+    // Indices of turns whose copy/edit strip currently FLOATS (pinned to the
+    // message list's visible bottom edge). Measured live by syncStickyControls
+    // (scroll/resize listeners + a post-commit geometry effect below); -1 is
+    // the system prompt draft turn's sentinel index. Starts empty = every
+    // strip anchored at its natural slot under its bubble.
+    const stickyTurns = useStateHook<number[]>([]);
     const loading = useStateHook(false);
     // True while the selected conversation's identified DELETE is in flight.
     const deleting = useStateHook(false);
@@ -1453,6 +1559,80 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // Deps read accessor state: draft text, pending bubble, stream, record.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [message(), pendingUser(), streaming(), selected()]);
+
+    // Sticky-gate measurement: decide PER TURN whether its copy/edit strip
+    // may float (position:sticky) or must stay anchored (position:static) —
+    // the rule itself is the exported pure predicate controlsShouldFloat.
+    // Measured inputs: the pin line is the list's bottom PADDING edge (sticky
+    // offsets resolve against the scrollport's padding box — a measured
+    // pinned strip sits flush against it, hence the padding subtraction);
+    // the strip's natural slot is known from the TURN's bottom edge alone
+    // (the strip is always the turn's last child, flush: turn bottom ==
+    // natural strip bottom), so the verdict never reads the strip's own LIVE
+    // rect — which would be the pinned rect while floating and could
+    // oscillate the gate. Sticky positioning preserves the strip's flow
+    // space, so flipping the mode changes none of the measured inputs: no
+    // feedback loop. The delete "x" needs no own measurement: it lives in
+    // the turn's FIRST child (TurnHeaderRow), whose bottom edge is the gate
+    // boundary. jsdom rects are all 0: turnBottom(0) - pinBottom(0) is never
+    // > epsilon, so every strip deterministically stays anchored there.
+    const syncStickyControls = useCallback(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
+        if (!list) return;
+        const listRect = list.getBoundingClientRect();
+        const pinBottom = listRect.bottom - (Number.parseFloat(window.getComputedStyle(list).paddingBottom) || 0);
+        const next: number[] = [];
+        list.querySelectorAll<HTMLElement>('[data-testid^="turn-controls-"], [data-testid="system-prompt-controls"]').forEach((controls) => {
+            const turn = controls.closest<HTMLElement>('[data-testid^="message-turn-"], [data-testid="system-prompt-turn"]');
+            // The turn's header row (attribution label + delete "x") is always
+            // its FIRST rendered child, so no testid is needed for it.
+            const header = turn?.firstElementChild as HTMLElement | null;
+            if (!turn || !header) return;
+            const floats = controlsShouldFloat(
+                turn.getBoundingClientRect().bottom,
+                header.getBoundingClientRect().bottom,
+                pinBottom,
+                controls.getBoundingClientRect().height
+            );
+            if (floats) {
+                // Turn key comes from the strip's testid (turn-controls-N for
+                // message turns; system-prompt-controls → the -1 sentinel).
+                const testId = controls.getAttribute('data-testid') ?? '';
+                next.push(testId === 'system-prompt-controls' ? -1 : Number(testId.slice('turn-controls-'.length)));
+            }
+        });
+        // Sorted join compare: identical membership writes nothing, so the
+        // gate can never re-render itself into a loop.
+        next.sort((a, b) => a - b);
+        if (next.join(',') !== stickyTurns().join(',')) stickyTurns(next);
+    }, [stickyTurns]);
+
+    // Scroll + resize drive the gate: mount-only listener attach (the message
+    // list element is permanent — it renders on every surface, empty chats
+    // included). Passive: the handler only reads geometry and flips state.
+    useEffect(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
+        list?.addEventListener('scroll', syncStickyControls, { passive: true });
+        window.addEventListener('resize', syncStickyControls);
+        return () => {
+            list?.removeEventListener('scroll', syncStickyControls);
+            window.removeEventListener('resize', syncStickyControls);
+        };
+    }, [syncStickyControls]);
+
+    // Geometry also changes WITHOUT a scroll event: collapse toggles shift
+    // turn heights, streamed tokens grow the live bubble, record loads swap
+    // the whole list, and ingress/egress of the pending turns re-flows the
+    // bottom. Re-measure after every commit touching that dep family (the
+    // same family the scroll-pin effect above tracks, plus the collapse set
+    // plus loading/deleting, which mount/unmount the strips themselves). The
+    // auto-pin's own scroll event also re-triggers the listener above, so
+    // post-pin geometry converges through it.
+    useEffect(() => {
+        syncStickyControls();
+        // Deps read accessor state; syncStickyControls is a stable useCallback.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [message(), pendingUser(), streaming(), selected(), collapsedTurns(), loading(), deleting(), syncStickyControls]);
 
     // Focus the surface that just became the inline HTML editor (a message
     // bubble, the system prompt draft bubble, or the header title). The node
@@ -1936,7 +2116,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         onMessageDelete: (index) => void deleteMessage(index),
         onMessageCopy: (content) => void copyMessage(content),
         collapsedTurns: collapsedTurns(),
-        onToggleTurnCollapse: toggleTurnCollapse
+        onToggleTurnCollapse: toggleTurnCollapse,
+        // Measured sticky gate: which turns' strips currently float (see
+        // syncStickyControls); mirrors collapsedTurns as a per-render list.
+        stickyTurns: stickyTurns()
     };
 
     return (
@@ -2099,7 +2282,14 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                     Copy still exists only when there is real
                                     saved draft text. */}
                                 {canEditSystemPrompt && (
-                                    <TrailingControls>
+                                    // The draft turn joins the same measured
+                                    // sticky gate as message turns — its
+                                    // sentinel index in stickyTurns is -1 (a
+                                    // long saved prompt grows this turn tall
+                                    // enough to float exactly like message
+                                    // turns; the header label must not be
+                                    // covered either).
+                                    <TrailingControls floating={stickyTurns().includes(-1)} data-testid="system-prompt-controls">
                                         <TurnActionPair>
                                             {/* Copy mirrors the per-message
                                                 action (immediately LEFT of

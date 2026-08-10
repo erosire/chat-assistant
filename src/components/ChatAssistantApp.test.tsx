@@ -57,7 +57,7 @@
 // stack full-width on mobile and sit in a right-aligned row on desktop.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatAssistantApp } from './ChatAssistantApp';
+import { ChatAssistantApp, controlsShouldFloat } from './ChatAssistantApp';
 
 const BASE_URL = 'http://test.local/v1/chat-assistant/conversation';
 const PROVIDER_URL = 'http://test.local/providers/private/v1';
@@ -218,7 +218,12 @@ describe('ChatAssistantApp', () => {
         window.localStorage.clear();
         vi.stubGlobal('fetch', mockFetch());
     });
-    afterEach(() => vi.unstubAllGlobals());
+    // restoreAllMocks additionally covers the geometry-spying sticky-gate
+    // test (a leaked getBoundingClientRect mock would poison every later test).
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
 
     it('renders the empty conversation and composer after fetching the model catalog', async () => {
         renderApp();
@@ -1432,6 +1437,155 @@ describe('ChatAssistantApp', () => {
 
         // Copying never touches storage: still the 6 calls of the send flow.
         expect((fetch as any).mock.calls).toHaveLength(6);
+    });
+
+    it('bottom-sticks the copy/edit controls row so it follows the scroll until its turn end is in view', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+
+        // The layout contract lives in Emotion's injected stylesheet: jsdom
+        // cannot evaluate sticky positioning, so the sheet is read directly
+        // (same technique as the send-arrow and sidebar z-index tests).
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        // The SHARED strip rule (identified by the pair's right packing):
+        // bottom:0 anchors the float to the list's visible bottom edge; the
+        // 8px top padding cushions the buttons from the strip's top rim
+        // without moving them (the bottom-anchored strip grows upward); the
+        // strip stays TRANSPARENT — a painted surface appears as a dark
+        // horizontal line slicing across the bubble while riding over the
+        // scrolling message text, so no background-color is allowed.
+        const stripRule = /\.css-[^{]+\{[^}]*justify-content:flex-end;[^}]*\}/.exec(css)?.[0];
+        expect(stripRule).toBeDefined();
+        expect(stripRule).toContain('bottom:0');
+        expect(stripRule).toContain('padding-top:8px');
+        expect(stripRule).not.toContain('background-color');
+        // `position` is the GATED dynamic prop: each rendered variant
+        // serializes as its own Emotion class hoisted under
+        // @media (min-width: 0px) (shape verified in real Chrome:
+        // `.css-x{position:static;}` and
+        // `.css-y{position:-webkit-sticky;position:sticky;}` — the sticky one
+        // carries Emotion's vendor prefix). Emotion creates variant classes
+        // LAZILY per rendered value, so in jsdom — every rect is 0, the
+        // gate's first clause (turnBottom - pinBottom > epsilon) never holds,
+        // no strip ever floats — the sticky variant rule does not exist yet.
+        const staticVariant = /@media \(min-width: 0px\)\{\.(css-[a-z0-9]+)\{position:static;\}\}/.exec(css)?.[1];
+        expect(staticVariant).toBeDefined();
+        expect(/position:(?:-webkit-sticky;position:)?sticky;/.test(css)).toBe(false);
+        // The rendered assistant strip (turn 1 = latest reply, expanded)
+        // carries the anchored variant class, Emotion-composed into a single
+        // class name.
+        const controls = screen.getByTestId('turn-controls-1');
+        expect(controls.className).toContain(staticVariant!);
+
+        // DOM side: the strip is the direct wrapper of the copy+edit action
+        // pair and the turn's LAST child (natural position directly under
+        // the bubble — the gate's natural-slot reference).
+        const copyButton = screen.getByTestId('copy-message-1');
+        const pairRow = copyButton.parentElement?.parentElement;
+        expect(pairRow).toBe(controls);
+        const turn = screen.getByTestId('message-turn-1');
+        expect(turn.lastElementChild).toBe(pairRow);
+        // The gate's measurement hooks: per-turn strip testids, and the
+        // header row is the turn's first child (its bottom edge bounds the
+        // float from above so the strip can never cover the delete "x").
+        expect(turn.firstElementChild?.contains(screen.getByTestId('delete-message-1'))).toBe(true);
+    });
+
+    it('controlsShouldFloat: floats only while the turn end is below the fold AND the pinned strip clears the header/x', () => {
+        // Exact boundary table (turnBottom, headerBottom, pinBottom,
+        // stripHeight). FLOAT while: end strictly >0.5px below the pin line
+        // AND pinTop >= headerBottom - 0.5.
+        // Deep in a tall turn: end far below, pin top far below header.
+        expect(controlsShouldFloat(1000, 50, 400, 30)).toBe(true);
+        // End exactly at the pin line: 400 - 400 = 0 is NOT > 0.5 epsilon.
+        expect(controlsShouldFloat(400, 50, 400, 30)).toBe(false);
+        // End 6px below the pin line: floats (30px strip is inside the 6px
+        // overlap; still floatable — the pinned position moves the strip
+        // up by only 6px).
+        expect(controlsShouldFloat(406, 50, 400, 30)).toBe(true);
+        // THE REPORTED BUG GEOMETRY (real-Chrome measurement): turn bottom
+        // 1324 with pin line 508.6 and strip height 30 — but the header/x
+        // ends at y=542: pinTop 478.6 < 542, so the raw sticky clamp would
+        // sit the strip over the turn's own "x". The gate says NO FLOAT.
+        expect(controlsShouldFloat(1324, 542, 508.6, 30)).toBe(false);
+        // The same tall turn once scrolled further down: header now ends at
+        // 342, pin top 478.6 clears it by >130px — floating engages.
+        expect(controlsShouldFloat(1124, 342, 508.6, 30)).toBe(true);
+        // Epsilon edge on the header clause: pinTop exactly headerBottom-0.5.
+        expect(controlsShouldFloat(1000, 370.5, 400, 30)).toBe(true);
+        // Epsilon edge on the end clause: 0.5px below the line is not enough.
+        expect(controlsShouldFloat(400.5, 50, 400, 30)).toBe(false);
+    });
+
+    it('flips only the eligible turn\'s strip to sticky on scroll, leaving the visible-end turn anchored', async () => {
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+        // Turn 0's "user" starts collapsed; expand it so BOTH turns render
+        // controls with delete "x" buttons and strip testids.
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+
+        // Real-browser geometry is impossible in jsdom (all rects 0 — which
+        // is why the base test asserts the anchored baseline), so the rects
+        // the gate reads are spied per testid. Numbers copy the real-Chrome
+        // probe shapes: pin line 508.6 (list bottom 532.6 - 24px padding);
+        // turn 1 (assistant) extends to 1400 with its header/x ending at
+        // 342 (float: pinTop 478.6 clears 342 and 1400-508.6 >> 0.5); turn 0
+        // ends at 300, entirely above the pin line (no float — its end is
+        // in view); the system draft turn ends at 200 (also anchored).
+        const rectOf = (bottom: number, height: number) => ({ x: 0, y: bottom - height, top: bottom - height, left: 0, right: 100, width: 100, bottom, height, toJSON: () => ({}) }) as DOMRect;
+        const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+            const id = this.getAttribute?.('data-testid') ?? '';
+            const parentId = this.parentElement?.getAttribute?.('data-testid') ?? '';
+            // The pin line: the gate subtracts the list's computed bottom
+            // padding from THIS rect's bottom (532.6 - 24 = 508.6 — jsdom
+            // resolves Emotion's padding on the message list fine, and both
+            // outcomes leave the verdicts below unchanged).
+            if (id === 'message-list') return rectOf(532.6, 100);
+            // The header row has NO testid: identify it via its parent turn.
+            if (id === '' && parentId === 'message-turn-1') return rectOf(342, 22);
+            if (id === '' && parentId === 'message-turn-0') return rectOf(120, 22);
+            if (id === '' && parentId === 'system-prompt-turn') return rectOf(120, 22);
+            if (id === 'message-turn-1') return rectOf(1400, 1000);
+            if (id === 'turn-controls-1') return rectOf(1400, 30);
+            if (id === 'message-turn-0') return rectOf(300, 200);
+            if (id === 'turn-controls-0') return rectOf(300, 30);
+            if (id === 'system-prompt-turn') return rectOf(200, 180);
+            if (id === 'system-prompt-controls') return rectOf(200, 30);
+            return rectOf(0, 0);
+        });
+        try {
+            // The gate re-measures on list scroll events.
+            fireEvent.scroll(screen.getByTestId('message-list'));
+
+            // Emotion creates variant classes lazily: the sticky variant
+            // (vendor-prefixed) only exists in the sheet once the gate lets
+            // one strip float.
+            await waitFor(() => {
+                const sheet = Array.from(document.querySelectorAll('style[data-emotion]'))
+                    .map((tag) => tag.textContent)
+                    .join('\n');
+                const stickyVariant = /@media \(min-width: 0px\)\{\.(css-[a-z0-9]+)\{position:(?:-webkit-sticky;position:)?sticky;\}\}/.exec(sheet)?.[1];
+                expect(stickyVariant).toBeDefined();
+                expect(screen.getByTestId('turn-controls-1').className).toContain(stickyVariant!);
+            });
+            // Exactly one turn floats; the visible-end turn and the draft
+            // turn stay anchored on the static variant.
+            const sheet = Array.from(document.querySelectorAll('style[data-emotion]'))
+                .map((tag) => tag.textContent)
+                .join('\n');
+            const staticVariant = /@media \(min-width: 0px\)\{\.(css-[a-z0-9]+)\{position:static;\}\}/.exec(sheet)?.[1];
+            const stickyVariant = /@media \(min-width: 0px\)\{\.(css-[a-z0-9]+)\{position:(?:-webkit-sticky;position:)?sticky;\}\}/.exec(sheet)?.[1];
+            expect(screen.getByTestId('turn-controls-0').className).toContain(staticVariant!);
+            expect(screen.getByTestId('turn-controls-0').className).not.toContain(stickyVariant!);
+            expect(screen.getByTestId('system-prompt-controls').className).toContain(staticVariant!);
+            expect(screen.getByTestId('system-prompt-controls').className).not.toContain(stickyVariant!);
+        } finally {
+            spy.mockRestore();
+        }
     });
 
     it('leads every chat with the system prompt turn ("no prompt" by default) and an empty draft never persists', async () => {
