@@ -25,12 +25,21 @@
 // resets the surface to the empty new-chat state. The header title mirrors
 // the selected chat's title
 // (derived server-side from the trimmed first line of the first user message)
-// and is renameable by clicking the title itself, which opens a dialog box.
+// and is renameable by clicking the title itself — INLINE: the h1 becomes
+// contentEditable (blur/Enter commits, Escape cancels); no dialog exists.
 // Every assistant response
 // is marked in its TOP-LEFT corner with the model that produced it
 // (per-message attribution persisted via ChatMessage.model). History is freely
-// editable: user and assistant
-// messages offer an inline editor (pen icon) and individual deletion (x icon);
+// editable — SMART INLINE EDITING: there is NO input field. Clicking an
+// expanded turn's WORDS (the bubble itself, hinted by an I-beam cursor) turns
+// the bubble ITSELF into the editor (contentEditable, auto-focused, caret
+// RESTORED ONTO THE CLICKED WORD via the captured click-point offset — see
+// textOffsetFromPoint; pen-triggered edits place the caret at the text end);
+// the pen icon does the same redundantly. The edit SAVES AUTOMATICALLY ON BLUR (the
+// bubble's DOM text commits through the whole-history PUT; blank text just
+// restores the original) and ESCAPE cancels (a keyed bubble remount reverts
+// the DOM — React reconciliation cannot reset a mutated contentEditable node).
+// Messages remain individually deletable (x icon);
 // next to the edit pen EVERY turn also carries a copy action (two-squares
 // icon) that writes the raw message text to the system clipboard without
 // touching storage;
@@ -42,7 +51,8 @@
 // prompt turn: a regular LEFT-aligned message row (same wrapper + bubble
 // styling as the assistant) that sits at the start of the chat even while
 // EMPTY — showing the literal placeholder "no prompt" with only an edit pen
-// (no textarea until the pen opens the same inline editor every turn uses,
+// (clicking the bubble OR the pen turns the BUBBLE ITSELF into the
+// contentEditable inline editor, saving on blur / cancelling on Escape,
 // no copy while there is nothing to copy). A saved non-empty draft replaces
 // the placeholder text and is persisted as the leading system message on the
 // next send (prepended to the provider history); after that the system turn
@@ -94,7 +104,7 @@
 // the viewport-locked Page).
 import React, { useCallback, useEffect } from 'react';
 import { arrayEach, isString } from '@presource/core';
-import { styledComponent, useStateHook } from '@presource/react';
+import { styledComponent, useReferenceHook, useStateHook } from '@presource/react';
 import {
     addToConversation,
     createConversation,
@@ -192,29 +202,14 @@ const SidebarToggle = styledComponent('button', {
     lineHeight: 1
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
-// Header title shows the SELECTED chat's title as plain text only when nothing
-// is selected (new chat): the product-name fallback is not interactive.
-const HeaderTitle = styledComponent('h1', {
+// Header title shows the SELECTED chat's title. With nothing selected (new
+// chat) the product-name fallback is plain non-interactive text. With a chat
+// selected the title ITSELF is the rename affordance — SMART INLINE EDITING
+// exactly like the message bubbles: clicking it turns the h1 CONTENTEDITABLE
+// (the `interactive` I-beam hints it), BLUR commits the rename, ENTER commits
+// (titles are single-line), and ESCAPE cancels; NO dialog, NO input field.
+const HeaderTitle = styledComponent<{ interactive?: boolean }>('h1', {
     margin: 0,
-    fontSize: 20,
-    lineHeight: 1.2,
-    fontWeight: 700,
-    letterSpacing: 0.2,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap'
-});
-
-// With a chat selected the header title IS the edit affordance: clicking it
-// opens the rename dialog, so no separate pen is needed. It visually matches
-// the plain HeaderTitle; only the pointer cursor hints at interactivity.
-const HeaderTitleButton = styledComponent('button', {
-    margin: 0,
-    padding: 0,
-    border: 'none',
-    backgroundColor: 'transparent',
-    color: 'inherit',
-    font: 'inherit',
     fontSize: 20,
     lineHeight: 1.2,
     fontWeight: 700,
@@ -222,66 +217,7 @@ const HeaderTitleButton = styledComponent('button', {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    cursor: 'pointer',
-    textAlign: 'left'
-}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
-
-// Full-screen dimming layer behind the rename dialog; clicking it cancels.
-const DialogScrim = styledComponent('div', {
-    position: 'fixed',
-    inset: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    zIndex: 40
-});
-
-// The rename dialog box: compact centered panel with the input and actions.
-// zIndex 40 lifts it above the mobile sidebar drawer (20) and scrim (10).
-const TitleDialog = styledComponent('div', {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-    width: 'min(420px, 100%)',
-    padding: 16,
-    border: `1px solid ${COLORS.border}`,
-    borderRadius: 10,
-    backgroundColor: COLORS.panel
-});
-
-// Dialog heading stays quiet: this dialog does exactly one thing.
-const DialogHeading = styledComponent('h2', {
-    margin: 0,
-    fontSize: 14,
-    fontWeight: 700,
-    color: COLORS.text
-});
-
-const TitleInput = styledComponent('input', {
-    width: '100%',
-    boxSizing: 'border-box',
-    padding: '8px 10px',
-    border: `1px solid ${COLORS.border}`,
-    borderRadius: 6,
-    backgroundColor: COLORS.page,
-    color: COLORS.text,
-    font: 'inherit',
-    outline: 'none'
-}) as unknown as React.FC<React.InputHTMLAttributes<HTMLInputElement>>;
-
-// Dialog actions right-align in a ROW on desktop (md+) per common dialog
-// convention, but STACK full-width on mobile (xs): narrow screens read better
-// with each button on its own line (stacking is a media-query concern — see
-// styleMedia in @presource/react — so jsdom cannot observe it via
-// getComputedStyle).
-const DialogActions = styledComponent('div', {
-    display: 'flex',
-    flexDirection: () => ({ xs: 'column', md: 'row' }),
-    alignItems: () => ({ xs: 'stretch', md: 'center' }),
-    justifyContent: 'flex-end',
-    gap: 8
+    cursor: ({ interactive }) => (interactive ? 'text' : 'default')
 });
 
 // Layout switches from a single mobile column to two columns at md (900px):
@@ -445,8 +381,12 @@ const AssistantTurn = styledComponent<{ collapsed?: boolean }>('div', {
 });
 
 // Message bubbles are separate styled elements so role-dependent styling never
-// relies on inline objects. Width fills the turn wrapper.
-const UserMessage = styledComponent('article', {
+// relies on inline objects. Width fills the turn wrapper. The `editable` prop
+// marks the click-to-edit affordance: an editable bubble (idle persisted turn)
+// carries the I-beam cursor, while non-editable surfaces (the transient
+// pending/streaming bubbles, or bubbles while streaming/another edit runs)
+// keep the default arrow. Dynamic → serializes under @media (min-width: 0px).
+const UserMessage = styledComponent<{ editable?: boolean }>('article', {
     width: '100%',
     padding: '12px 16px',
     borderRadius: '16px 16px 4px 16px',
@@ -454,14 +394,15 @@ const UserMessage = styledComponent('article', {
     color: COLORS.text,
     whiteSpace: 'pre-wrap',
     overflowWrap: 'anywhere',
-    lineHeight: 1.5
+    lineHeight: 1.5,
+    cursor: ({ editable }) => (editable ? 'text' : 'default')
 });
 
 // box-sizing:border-box is load-bearing on the full-width assistant turn: a
 // content-box width:100% would push the bubble 32px (its horizontal padding)
 // PAST the wrapper's right edge once the wrapper pins at the list's content
 // width, dragging a horizontal scrollbar into the message list.
-const AssistantMessage = styledComponent('article', {
+const AssistantMessage = styledComponent<{ editable?: boolean }>('article', {
     width: '100%',
     boxSizing: 'border-box',
     padding: '12px 16px',
@@ -470,7 +411,9 @@ const AssistantMessage = styledComponent('article', {
     color: COLORS.text,
     whiteSpace: 'pre-wrap',
     overflowWrap: 'anywhere',
-    lineHeight: 1.5
+    lineHeight: 1.5,
+    // Same click-to-edit cursor rule as UserMessage (see above).
+    cursor: ({ editable }) => (editable ? 'text' : 'default')
 });
 
 // Row under a turn's bubble that holds ONLY the copy + edit action pair (the
@@ -642,31 +585,6 @@ const TurnIconButton = styledComponent('button', {
     lineHeight: 1
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
-// Inline editor for the free history-editing flow: fills the turn wrapper,
-// three rows tall by default, and keeps the composer keyboard language uniform.
-const EditArea = styledComponent('textarea', {
-    width: '100%',
-    minWidth: 'min(520px, 72vw)',
-    minHeight: 'calc(1.4em * 3 + 24px)',
-    resize: 'vertical',
-    overflowY: 'auto',
-    padding: '12px 14px',
-    border: `1px solid ${COLORS.border}`,
-    borderRadius: 8,
-    backgroundColor: COLORS.page,
-    color: COLORS.text,
-    font: 'inherit',
-    lineHeight: 1.4,
-    outline: 'none'
-}) as unknown as React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>>;
-
-// Save/Cancel controls of the inline editor sit compactly under the textarea.
-const EditActions = styledComponent('div', {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8
-});
-
 // The system prompt row leads every chat — whether the record leads with a
 // persisted system message or the system prompt only exists as a local draft.
 // Both forms render as regular turns with identical chrome (top-left "system"
@@ -692,7 +610,7 @@ const SystemTurn = AssistantTurn;
 // not-yet-persisted DRAFT row's EMPTY state: its only text is the literal
 // placeholder "no prompt", rendered muted so the placeholder reads as a
 // placeholder and not as content.
-const SystemMessage = styledComponent<{ empty?: boolean }>('article', {
+const SystemMessage = styledComponent<{ empty?: boolean; editable?: boolean }>('article', {
     width: '100%',
     boxSizing: 'border-box',
     padding: '12px 16px',
@@ -701,7 +619,11 @@ const SystemMessage = styledComponent<{ empty?: boolean }>('article', {
     color: ({ empty }) => (empty ? COLORS.muted : COLORS.text),
     whiteSpace: 'pre-wrap',
     overflowWrap: 'anywhere',
-    lineHeight: 1.5
+    lineHeight: 1.5,
+    // Same click-to-edit cursor rule as UserMessage (see above): the I-beam
+    // hints that clicking the system bubble (even the "no prompt" placeholder)
+    // opens the inline editor directly.
+    cursor: ({ editable }) => (editable ? 'text' : 'default')
 });
 
 // Composer separates the editable input from the message list and exposes a stable
@@ -911,16 +833,18 @@ const rememberModel = (id: string): void => {
 type MessageListOptions = {
     // Index of the message currently under inline edit, or null when idle.
     editingIndex: number | null;
-    // Draft text held by the inline editor.
-    editingText: string;
-    // True while a history-replacement PUT (edit save or message delete) is in flight.
-    savingEdit: boolean;
     // Edit affordances are hidden during streaming/deletion; one edit at a time.
     canEdit: boolean;
-    onEditStart: (index: number, content: string) => void;
-    onEditChange: (text: string) => void;
+    // Turns a bubble INTO the inline HTML editor (contentEditable, focused).
+    // The offset is the click's character position (see textOffsetFromPoint):
+    // it restores the caret onto the CLICKED WORD after the editable remount;
+    // null (pen-triggered) places the caret at the text end.
+    onEditStart: (index: number, offset: number | null) => void;
+    // Blur-delivered commit: the bubble's DOM text replaces the message via
+    // whole-history PUT (see commitEdit in the component for guards).
+    onEditCommit: (index: number, text: string) => void;
+    // Escape/abandon: close without persisting; the keyed remount reverts the DOM.
     onEditCancel: () => void;
-    onEditSave: () => void;
     onMessageDelete: (index: number) => void;
     // Copies a message's raw text to the system clipboard (client-side only).
     onMessageCopy: (content: string) => void;
@@ -931,34 +855,113 @@ type MessageListOptions = {
     onToggleTurnCollapse: (index: number) => void;
 };
 
-// Shared inline editor block used by both user and assistant turns; alignment is
-// owned by the surrounding turn wrapper. Save replaces the ENTIRE history
-// through the identified PUT (see saveEdit), so edited history is exactly what
-// the next provider turn receives.
-const renderEditor = (options: MessageListOptions): React.ReactNode => (
-    <>
-        <EditArea
-            value={options.editingText}
-            onChange={(event) => options.onEditChange(event.target.value)}
-            aria-label="Edit message"
-            data-testid="edit-message-input"
-            autoFocus
-        />
-        <EditActions>
-            <SecondaryButton
-                type="button"
-                onClick={options.onEditSave}
-                disabled={options.savingEdit || options.editingText.trim().length === 0}
-                data-testid="edit-message-save"
-            >
-                {options.savingEdit ? 'Saving...' : 'Save'}
-            </SecondaryButton>
-            <SecondaryButton type="button" onClick={options.onEditCancel} disabled={options.savingEdit} data-testid="edit-message-cancel">
-                Cancel
-            </SecondaryButton>
-        </EditActions>
-    </>
-);
+// Read the text of a contentEditable bubble while preserving line structure.
+// Browsers split lines via <div>/<p> wrappers and <br> breaks, and
+// element.textContent loses BOTH (it concatenates line fragments without any
+// separator) — committing raw textContent would silently fuse a multi-line
+// edit into one line. The bubbles render with white-space:pre-wrap, so a
+// plain '\n'-joined string round-trips exactly.
+const editableTextContent = (element: HTMLElement): string => {
+    const walk = (node: Node): string => {
+        if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? '';
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+        const tag = (node as HTMLElement).tagName;
+        if (tag === 'BR') return '\n';
+        const inner = Array.from(node.childNodes).map(walk).join('');
+        // Block wrappers below the bubble root each own a line.
+        if (node !== element && (tag === 'DIV' || tag === 'P')) return `${inner}\n`;
+        return inner;
+    };
+    return Array.from(element.childNodes).map(walk).join('').replace(/\n+$/, '');
+};
+
+// Translate the click POINT (viewport coordinates) into a plain character
+// offset inside the clicked element's text. The bubble only becomes
+// contentEditable AFTER the click (a keyed remount), so the browser never
+// natively places a caret on the pre-edit node — without this translation the
+// editable remount's programmatic focus would always drop the caret at the
+// START of the text instead of on the clicked word. caretRangeFromPoint is the
+// Chrome/Safari API; Firefox exposes caretPositionFromPoint. jsdom implements
+// NEITHER, so tests stub it or exercise the null fallback (caret at end).
+const textOffsetFromPoint = (x: number, y: number, element: HTMLElement): number | null => {
+    // Resolve the DOM position under the point across engines.
+    let pointNode: Node | null = null;
+    let pointOffset = 0;
+    const caretRangeFromPoint = (document as Document & {
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    }).caretRangeFromPoint;
+    const caretPositionFromPoint = (document as Document & {
+        caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node | null; offset: number } | null;
+    }).caretPositionFromPoint;
+    if (typeof caretRangeFromPoint === 'function') {
+        const range = caretRangeFromPoint.call(document, x, y);
+        if (!range) return null;
+        pointNode = range.startContainer;
+        pointOffset = range.startOffset;
+    } else if (typeof caretPositionFromPoint === 'function') {
+        const position = caretPositionFromPoint.call(document, x, y);
+        if (!position) return null;
+        pointNode = position.offsetNode;
+        pointOffset = position.offset;
+    } else {
+        return null;
+    }
+    if (pointNode === null || !element.contains(pointNode)) return null;
+    // Position resolved to the element itself (click past the last glyph on a
+    // line): offset counts child NODES, so sum their text lengths.
+    if (pointNode === element) {
+        let total = 0;
+        Array.from(element.childNodes).slice(0, pointOffset).forEach((child) => {
+            total += (child.textContent ?? '').length;
+        });
+        return total;
+    }
+    // Position resolved inside a text node: sum the lengths of every preceding
+    // text node (pre-wrap bubbles hold exactly one, but stay shape-general).
+    let total = 0;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    while (current !== null) {
+        if (current === pointNode) return total + pointOffset;
+        total += (current.textContent ?? '').length;
+        current = walker.nextNode();
+    }
+    // Unresolvable node shape (should not happen): fall back to the text end.
+    return total;
+};
+
+// Collapse the caret at a character offset inside a freshly editable element.
+// Offsets past the text length clamp to the end; an EMPTY element focuses at
+// its (single possible) position. Used by the editing auto-focus effect to
+// restore the click point captured via textOffsetFromPoint.
+const placeCaretAtOffset = (element: HTMLElement, charOffset: number): void => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let remaining = charOffset;
+    let node = walker.nextNode();
+    let lastTextNode: Node | null = null;
+    while (node !== null) {
+        const length = (node.textContent ?? '').length;
+        if (remaining <= length) {
+            range.setStart(node, remaining);
+            range.collapse(true);
+            break;
+        }
+        remaining -= length;
+        lastTextNode = node;
+        node = walker.nextNode();
+    }
+    if (node === null) {
+        // Past-the-end or empty element: clamp to the last text node's end (or
+        // the element itself when it holds no text at all).
+        if (lastTextNode !== null) range.setStart(lastTextNode, (lastTextNode.textContent ?? '').length);
+        else range.setStart(element, 0);
+        range.collapse(true);
+    }
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+};
 
 // Convert an API record into message nodes while keeping rendering logic
 // role-specific and explicit. User and assistant turns are freely editable (pen
@@ -990,7 +993,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         const editControl = !collapsed && options.canEdit && options.editingIndex === null ? (
             <TurnIconButton
                 type="button"
-                onClick={() => options.onEditStart(index, message.content)}
+                onClick={() => options.onEditStart(index, null)}
                 aria-label="Edit message"
                 title="Edit message"
                 data-testid={`edit-message-${index}`}
@@ -1025,6 +1028,28 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 <span aria-hidden="true">⧉</span>
             </TurnIconButton>
         ) : null;
+        // Smart inline editing: clicking the expanded bubble's WORDS turns the
+        // bubble ITSELF into the editor (contentEditable — no textarea, no
+        // separate input field), restoring the caret onto the CLICKED WORD via
+        // the captured click-point offset (the pen does the same, caret at
+        // end). The guard mirrors the pen exactly (idle, expanded, no other
+        // edit running), so clicking is inert while streaming, deleting, or
+        // editing another turn. The handler is undefined (not merely blocking)
+        // while unavailable so the cursor hint and the click affordance agree.
+        const openEditor = !collapsed && options.canEdit && options.editingIndex === null
+            ? (event: React.MouseEvent<HTMLElement>) =>
+                  options.onEditStart(index, textOffsetFromPoint(event.clientX, event.clientY, event.currentTarget))
+            : undefined;
+        // Shared bubble props for all three roles: the click target IS the
+        // message text (`message-content-${index}`), with the I-beam cursor
+        // and the affordance tooltip only while an edit CAN start.
+        const editable = openEditor !== undefined;
+        const bubbleProps = {
+            editable,
+            onClick: openEditor,
+            title: editable ? 'Click to edit' : undefined,
+            'data-testid': `message-content-${index}`
+        };
         // Top-left attribution text: the producing model's stripped name for
         // assistant turns WITH per-message attribution (ChatMessage.model);
         // the literal role name otherwise ("user" / "system" for now — a real
@@ -1037,7 +1062,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         // line, never inline) on the turn's side (user turns right-aligned),
         // delete cross on the row's right. The label itself is the collapse
         // toggle — collapsing is pure view state — and renders except while
-        // this turn is being edited (the editor occupies the bubble slot).
+        // this turn is being edited (the bubble then IS the editor, and the
+        // toggle must not compete with the text caret).
         // No chevron glyph ever renders beside it.
         const alignRight = message.role === 'user';
         const headerRow = !editing ? (
@@ -1079,15 +1105,46 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                 {deleteControl}
             </TurnHeaderRow>
         ) : null;
+        // The bubble itself IS the inline HTML editor while its turn is being
+        // edited: contentEditable + focused, BLUR commits the DOM text through
+        // the whole-history PUT (via onEditCommit → commitEdit), ESCAPE cancels.
+        // The key flips between 'view' and 'edit' so abandoning an edit REMOUNTS
+        // the bubble — React never rewrites untouched contentEditable DOM (a
+        // known reconciliation gap), and only a remount reliably restores the
+        // original text. data-editing marks the node for the component's
+        // auto-focus effect.
+        const BubbleComponent: React.ElementType =
+            message.role === 'user' ? UserMessage : message.role === 'assistant' ? AssistantMessage : SystemMessage;
+        const bubble = collapsed ? null : editing ? (
+            <BubbleComponent
+                key="edit"
+                role="textbox"
+                aria-multiline="true"
+                aria-label="Edit message"
+                contentEditable
+                suppressContentEditableWarning
+                data-editing="true"
+                onBlur={(event: React.FocusEvent<HTMLElement>) => options.onEditCommit(index, editableTextContent(event.currentTarget))}
+                onKeyDown={(event: React.KeyboardEvent<HTMLElement>) => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault();
+                        options.onEditCancel();
+                    }
+                }}
+                data-testid={`message-content-${index}`}
+            >
+                {message.content}
+            </BubbleComponent>
+        ) : (
+            <BubbleComponent key="view" {...bubbleProps}>
+                {message.content}
+            </BubbleComponent>
+        );
         if (message.role === 'user') {
             nodes.push(
                 <UserTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
-                    {editing ? renderEditor(options) : (
-                        <>
-                            {headerRow}
-                            {!collapsed && <UserMessage>{message.content}</UserMessage>}
-                        </>
-                    )}
+                    {headerRow}
+                    {bubble}
                     {!editing && editControl !== null && (
                         <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
@@ -1100,12 +1157,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             // like the other roles.
             nodes.push(
                 <AssistantTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
-                    {editing ? renderEditor(options) : (
-                        <>
-                            {headerRow}
-                            {!collapsed && <AssistantMessage>{message.content}</AssistantMessage>}
-                        </>
-                    )}
+                    {headerRow}
+                    {bubble}
                     {!editing && editControl !== null && (
                         <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
@@ -1119,12 +1172,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             // assistant reply — whenever a fresh record loads).
             nodes.push(
                 <SystemTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
-                    {editing ? renderEditor(options) : (
-                        <>
-                            {headerRow}
-                            {!collapsed && <SystemMessage>{message.content}</SystemMessage>}
-                        </>
-                    )}
+                    {headerRow}
+                    {bubble}
                     {!editing && editControl !== null && (
                         <TrailingControls><TurnActionPair>{copyControl}{editControl}</TurnActionPair></TrailingControls>
                     )}
@@ -1225,11 +1274,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // Cleared on new chat, on chat switch, on conversation deletion, and
     // after a completed send.
     const systemPrompt = useStateHook('');
-    // The draft turn's own inline editor (opened by its pen): the open flag
-    // plus the in-editor text, kept separate from `systemPrompt` so Cancel
-    // discards the half-typed edit without touching the saved draft.
+    // The draft turn's own inline editing flag (opened by clicking its bubble
+    // or its pen): there is NO textarea state — the bubble IS the editor
+    // (contentEditable), its text lives in the DOM until blur commits the
+    // trimmed text into `systemPrompt` or Escape cancels (the keyed remount
+    // reverts the DOM to the saved draft).
     const editingSystemPrompt = useStateHook(false);
-    const systemPromptDraft = useStateHook('');
     // Indices of currently collapsed message turns. Seeded via
     // defaultCollapsedIndices (ALL turns except the latest assistant reply:
     // user turns fold, system turns fold, older replies fold) whenever a fresh
@@ -1253,16 +1303,23 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // Mobile drawer state; at md+ the sidebar is a permanent column and this
     // state is ignored by CSS (the toggle button is display:none there).
     const sidebarOpen = useStateHook(false);
-    // Inline history editing: index of the message under edit plus the draft
-    // text; `savingEdit` guards the identified PUT that replaces the history.
+    // Inline history editing: index of the message whose bubble currently IS
+    // the editor (contentEditable). `savingEdit` guards the identified PUT
+    // that replaces the history on blur-commit.
     const editingIndex = useStateHook<number | null>(null);
-    const editingText = useStateHook('');
     const savingEdit = useStateHook(false);
-    // Header title rename: the draft plus a dedicated saving flag (the rename
-    // rides the same identified PUT, with the history round-tripping unchanged).
+    // Header title rename: the h1 ITSELF is the editor (contentEditable) —
+    // no dialog, no input field, so there is NO draft state; only the flag
+    // plus a dedicated saving flag (the rename rides the same identified PUT,
+    // with the history round-tripping unchanged).
     const editingTitle = useStateHook(false);
-    const titleDraft = useStateHook('');
     const savingTitle = useStateHook(false);
+    // Ref-backed handoff of the click's character offset: the click handler
+    // writes it (no re-render wanted) and the editing auto-focus effect reads
+    // it ONCE to restore the caret onto the clicked word after the editable
+    // remount — then clears it so pen-triggered edits fall back to the text
+    // end. See textOffsetFromPoint / placeCaretAtOffset.
+    const caretOffset = useReferenceHook<number | null>(null);
 
     // Load the provider model catalog once on mount. The provider needs no API key
     // from the browser, so no credentials are handled here.
@@ -1340,6 +1397,27 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [message(), pendingUser(), streaming(), selected()]);
 
+    // Focus the surface that just became the inline HTML editor (a message
+    // bubble, the system prompt draft bubble, or the header title). The node
+    // remounts keyed on entering edit mode, so the effect (not a ref callback)
+    // focuses the fresh node — no ref-identity churn can steal the caret back
+    // on unrelated re-renders. The caret is then RESTORED to the click's
+    // captured character offset (without it, programmatic focus dumps the
+    // caret at the text start); null offset (pen-triggered, or jsdom without
+    // caretRangeFromPoint) lands at the text end.
+    useEffect(() => {
+        if (editingIndex() !== null || editingSystemPrompt() || editingTitle()) {
+            const target = document.querySelector<HTMLElement>('[data-editing="true"]');
+            if (target) {
+                target.focus();
+                placeCaretAtOffset(target, caretOffset() ?? Number.MAX_SAFE_INTEGER);
+                caretOffset(null);
+            }
+        }
+        // Deps read accessor state: all independent edit flags.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editingIndex(), editingSystemPrompt(), editingTitle()]);
+
     // Inherit a conversation's recorded model ONLY when the browser has not
     // remembered one yet; the inherited model then becomes the remembered one.
     const applyModelMemory = useCallback((recordModel: string) => {
@@ -1349,42 +1427,56 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [model]);
 
-    // Abandon any half-finished inline edit; shared by chat switching, new chat,
-    // deletion, and the editor's own Cancel button.
+    // Abandon the inline bubble edit (Escape, chat switching, new chat,
+    // deletion); the keyed remount reverts the bubble's DOM to the persisted
+    // text, so nothing else is needed here.
     const cancelEdit = useCallback(() => {
         editingIndex(null);
-        editingText('');
-    }, [editingIndex, editingText]);
+    }, [editingIndex]);
 
-    // Close the header rename editor; shared by chat switching, new chat,
-    // deletion, and the editor's own Cancel button.
+    // Stop editing the header title (Escape, chat switching, new chat,
+    // deletion); the keyed h1 remount reverts the discarded DOM text, so
+    // nothing else is needed here.
     const cancelTitleEdit = useCallback(() => {
         editingTitle(false);
-        titleDraft('');
-    }, [editingTitle, titleDraft]);
+    }, [editingTitle]);
 
-    // Close the system prompt DRAFT editor and drop its half-typed text;
-    // shared by chat switching, new chat, deletion, the completed send, and
-    // the editor's own Cancel button. The saved draft (systemPrompt) is NOT
-    // touched here — only the editor chrome.
+    // Turn the header title ITSELF into the inline editor (contentEditable,
+    // auto-focused + caret-restored by the editing effect) — no dialog.
+    // Blocked while a turn streams/deletes (the old dialog's disabled state
+    // made the same gate).
+    const startTitleEdit = useCallback((offset: number | null = null) => {
+        if (loading() || deleting()) return;
+        caretOffset(offset);
+        editingTitle(true);
+    }, [caretOffset, deleting, editingTitle, loading]);
+
+    // Stop editing the system prompt draft (Escape, chat switching, new chat,
+    // deletion, completed send). The saved draft (systemPrompt) is NOT touched
+    // here — the keyed bubble remount reverts any half-typed DOM text.
     const cancelSystemPromptDraft = useCallback(() => {
         editingSystemPrompt(false);
-        systemPromptDraft('');
-    }, [editingSystemPrompt, systemPromptDraft]);
+    }, [editingSystemPrompt]);
 
-    // Open the draft prompt's inline editor seeded with the current draft.
-    const startSystemPromptEdit = useCallback(() => {
-        systemPromptDraft(systemPrompt());
+    // Turn the draft prompt's bubble into the inline editor (click on its
+    // words or its pen). The bubble renders the saved draft's text; editing
+    // happens in the DOM until blur commits. The offset restores the caret to
+    // the clicked word (null → text end, e.g. the pen).
+    const startSystemPromptEdit = useCallback((offset: number | null = null) => {
+        caretOffset(offset);
         editingSystemPrompt(true);
-    }, [editingSystemPrompt, systemPrompt, systemPromptDraft]);
+    }, [caretOffset, editingSystemPrompt]);
 
-    // Save stays LOCAL: the draft persists as the conversation's leading
-    // system message only on the next send (see submit). A blank save trims
-    // to empty and the turn falls back to the "no prompt" placeholder.
-    const saveSystemPromptDraft = useCallback(() => {
-        systemPrompt(systemPromptDraft().trim());
-        cancelSystemPromptDraft();
-    }, [cancelSystemPromptDraft, systemPrompt, systemPromptDraft]);
+    // Commit the draft bubble's BLUR-delivered text. Save stays LOCAL: the
+    // draft persists as the conversation's leading system message only on the
+    // next send (see submit). A blank commit trims to empty and the turn falls
+    // back to the "no prompt" placeholder. The flag guard rejects stale blurs
+    // landing after an Escape-cancel on the same DOM node.
+    const saveSystemPromptDraft = useCallback((rawText: string) => {
+        if (!editingSystemPrompt()) return;
+        systemPrompt(rawText.trim());
+        editingSystemPrompt(false);
+    }, [editingSystemPrompt, systemPrompt]);
 
     // Select a conversation and fetch its full message history; the recorded model
     // applies only when nothing is remembered (a remembered/picked model wins).
@@ -1463,16 +1555,18 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, loading, message, selected, systemPrompt]);
 
-    // Open the inline editor for one message, seeded with its current content.
-    const startEdit = useCallback((index: number, content: string) => {
+    // Turn one message's bubble into the inline HTML editor (contentEditable,
+    // auto-focused by the editing effect above). The offset restores the caret
+    // to the clicked word; null (pen) lands at the text end.
+    const startEdit = useCallback((index: number, offset: number | null = null) => {
+        caretOffset(offset);
         editingIndex(index);
-        editingText(content);
-    }, [editingIndex, editingText]);
+    }, [caretOffset, editingIndex]);
 
     // Remove a single message and persist the shortened history through the same
-    // identified PUT the editor uses; the next provider turn automatically sends
-    // the shortened history as its context. Guarded by savingEdit like saveEdit
-    // so two history rewrites can never race.
+    // identified PUT the inline editor's blur-commit uses; the next provider
+    // turn automatically sends the shortened history as its context. Guarded by
+    // savingEdit like commitEdit so two history rewrites can never race.
     const deleteMessage = useCallback(async (index: number) => {
         const record = selected();
         if (!record || savingEdit()) return;
@@ -1523,66 +1617,82 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [error]);
 
-    // Open the header rename editor seeded with the conversation's current title.
-    const startTitleEdit = useCallback(() => {
-        titleDraft(selected()?.title ?? '');
-        editingTitle(true);
-    }, [editingTitle, selected, titleDraft]);
-
-    // Persist a rename through the SAME identified PUT the message editor uses:
-    // the history round-trips unchanged while the explicit title wins over the
-    // server's first-line derivation. Blocked while a turn streams so a late
-    // append-follow-up GET cannot overwrite the rename (and vice versa).
-    const saveTitle = useCallback(async () => {
+    // Commit a rename delivered by the title h1's BLUR (or Enter): the SAME
+    // identified PUT the message editor uses — the history round-trips
+    // unchanged while the explicit title wins over the server's first-line
+    // derivation. Guards mirror commitEdit: the editing flag rejects stale
+    // blurs after an Escape-cancel; blank/unchanged titles close without a
+    // request (blank titles are forbidden, and the keyed h1 remount restores
+    // the persisted one); the conversation guard keeps a blur-commit that
+    // raced a chat switch/new chat from resurrecting the old title onto the
+    // fresh surface. loading() still blocks a rename while a turn streams so
+    // a late append-follow-up GET cannot overwrite it (and vice versa).
+    const saveTitle = useCallback(async (rawTitle: string) => {
+        if (!editingTitle()) return;
         const record = selected();
-        const title = titleDraft().trim();
-        if (!record || !title || savingTitle() || loading()) return;
+        const title = rawTitle.trim();
+        cancelTitleEdit();
+        if (!record || !title || savingTitle() || loading() || title === record.title) return;
         savingTitle(true);
         try {
             const result = (await replaceConversationMessages(baseUrl, record.conversationId, {
                 messages: record.messages,
                 title
             })).conversation;
-            selected(result);
+            if (selected()?.conversationId === record.conversationId) selected(result);
             const summary = summaryFromRecord(result);
             chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
-            cancelTitleEdit();
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
         } finally {
             savingTitle(false);
         }
-    }, [baseUrl, cancelTitleEdit, chats, error, loading, savingTitle, selected, titleDraft]);
+    }, [baseUrl, cancelTitleEdit, chats, editingTitle, error, loading, savingTitle, selected]);
 
-    // Persist an edit by REPLACING the complete history through the identified
-    // PUT. The server returns the canonical record (messageCount/updatedAt and a
-    // re-derived title when the first user turn changed), which re-syncs both the
-    // selection and the sidebar summary. Turn submission always builds the
-    // provider payload from selected().messages, so the next chat message
-    // automatically sends the edited history to the model.
-    const saveEdit = useCallback(async () => {
-        const index = editingIndex();
+    // Commit an inline bubble edit delivered by BLUR: the bubble's DOM text
+    // replaces the message's content by REPLACING the complete history through
+    // the identified PUT. The server returns the canonical record
+    // (messageCount/updatedAt and a re-derived title when the first user turn
+    // changed), which re-syncs both the selection and the sidebar summary.
+    // Turn submission always builds the provider payload from
+    // selected().messages, so the next chat message automatically sends the
+    // edited history to the model. Guards, in order:
+    // - editingIndex must still match (rejects a stale blur landing on the
+    //   detached node AFTER Escape cancelled: browsers may fire blur on a
+    //   removed focused element);
+    // - blank text closes WITHOUT persisting (the keyed remount restores the
+    //   original — empty messages are forbidden);
+    // - UNCHANGED text needs no request at all;
+    // - RACE: blur commits on the SAME click that switches chats, opens a new
+    //   chat, or deletes the conversation — the PUT then resolves AFTER the
+    //   surface moved on, and applying the returning record would resurrect
+    //   the old chat. The edit still persists server-side (and the sidebar
+    //   summary updates), but `selected` is only overwritten while the surface
+    //   still shows the edited conversation.
+    const commitEdit = useCallback(async (index: number, rawText: string) => {
+        if (editingIndex() !== index) return;
         const record = selected();
-        const text = editingText().trim();
-        if (index === null || !record || !text || savingEdit()) return;
+        const text = rawText.trim();
+        cancelEdit();
+        if (!record || !text || savingEdit()) return;
+        if (record.messages[index]?.content === text) return;
         savingEdit(true);
         try {
             const messages: ChatMessage[] = record.messages.map((existing, candidate) =>
                 candidate === index ? { ...existing, content: text } : existing
             );
             const result = (await replaceConversationMessages(baseUrl, record.conversationId, { messages })).conversation;
-            selected(result);
+            if (selected()?.conversationId === record.conversationId) selected(result);
             const summary = summaryFromRecord(result);
             chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
-            cancelEdit();
             error('');
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
         } finally {
             savingEdit(false);
         }
-    }, [baseUrl, cancelEdit, chats, editingIndex, editingText, error, savingEdit, selected]);
+    }, [baseUrl, cancelEdit, chats, editingIndex, error, savingEdit, selected]);
 
     // Send flow: (1) stream the assistant turn from the provider using the ENTIRE
     // conversation history — system prompt included — plus the new user message,
@@ -1761,14 +1871,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // so the closures always see the latest accessor state.
     const messageOptions: MessageListOptions = {
         editingIndex: editingIndex(),
-        editingText: editingText(),
-        savingEdit: savingEdit(),
         // No edit affordances while a turn streams or a delete is in flight.
         canEdit: !loading() && !deleting(),
         onEditStart: startEdit,
-        onEditChange: (text) => editingText(text),
+        onEditCommit: (index, text) => void commitEdit(index, text),
         onEditCancel: cancelEdit,
-        onEditSave: () => void saveEdit(),
         onMessageDelete: (index) => void deleteMessage(index),
         onMessageCopy: (content) => void copyMessage(content),
         collapsedTurns: collapsedTurns(),
@@ -1790,20 +1897,48 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                         <span aria-hidden="true">☰</span>
                     </SidebarToggle>
                     {/* The header title is the SELECTED chat's title; the product
-                        name is the new-chat fallback. Clicking the title itself
-                        (no separate pen) opens the rename dialog below. */}
-                    {selected() !== null ? (
-                        <HeaderTitleButton
-                            type="button"
-                            onClick={startTitleEdit}
-                            disabled={loading()}
+                        name is the new-chat fallback (non-interactive). Clicking
+                        the title itself turns the h1 CONTENTEDITABLE (inline
+                        rename — no dialog, no input): BLUR or ENTER commits the
+                        trimmed text through the identified PUT, ESCAPE cancels
+                        (keyed remount reverts the DOM). Titles are single-line,
+                        so Enter commits instead of inserting a break. */}
+                    {selected() === null ? (
+                        <HeaderTitle data-testid="chat-title">Chat Assistant</HeaderTitle>
+                    ) : editingTitle() ? (
+                        <HeaderTitle
+                            key="edit"
+                            interactive
+                            role="textbox"
+                            aria-multiline="false"
+                            aria-label="Conversation title"
+                            contentEditable
+                            suppressContentEditableWarning
+                            data-editing="true"
+                            onBlur={(event) => void saveTitle(editableTextContent(event.currentTarget))}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    event.currentTarget.blur();
+                                } else if (event.key === 'Escape') {
+                                    event.preventDefault();
+                                    cancelTitleEdit();
+                                }
+                            }}
+                            data-testid="chat-title"
+                        >
+                            {selected()!.title}
+                        </HeaderTitle>
+                    ) : (
+                        <HeaderTitle
+                            key="view"
+                            interactive
+                            onClick={(event) => startTitleEdit(textOffsetFromPoint(event.clientX, event.clientY, event.currentTarget))}
                             title="Rename conversation"
                             data-testid="chat-title"
                         >
                             {selected()!.title}
-                        </HeaderTitleButton>
-                    ) : (
-                        <HeaderTitle data-testid="chat-title">Chat Assistant</HeaderTitle>
+                        </HeaderTitle>
                     )}
                 </HeaderLead>
                 {/* No header actions: conversation deletion lives on each sidebar
@@ -1832,12 +1967,14 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             is the local-draft form: the bubble carries the
                             saved draft or the literal placeholder "no prompt",
                             and the ONLY affordance is the edit pen (plus a copy
-                            action once real draft text exists) — NO textarea
-                            renders until the pen opens the same inline editor
-                            every turn uses, and NO delete cross ever (the
-                            system prompt cannot be removed). Once the record
-                            leads with a persisted system message, renderMessages
-                            draws that turn instead and this block disappears. */}
+                            action once real draft text exists) — clicking
+                            EITHER (or the words) makes the BUBBLE ITSELF the
+                            inline editor every turn uses (blur saves the
+                            draft locally, Escape cancels), and NO delete cross
+                            ever (the system prompt cannot be removed). Once
+                            the record leads with a persisted system message,
+                            renderMessages draws that turn instead and this
+                            block disappears. */}
                         {!hasPersistedSystemPrompt && (
                             <SystemTurn data-testid="system-prompt-turn">
                                 <TurnHeaderRow>
@@ -1848,28 +1985,54 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                     </TurnHeaderLead>
                                 </TurnHeaderRow>
                                 {editingSystemPrompt() ? (
-                                    <>
-                                        <EditArea
-                                            value={systemPromptDraft()}
-                                            onChange={(event) => systemPromptDraft(event.target.value)}
-                                            aria-label="System prompt"
-                                            data-testid="system-prompt-input"
-                                            autoFocus
-                                        />
-                                        <EditActions>
-                                            {/* Blank saves are allowed: they
-                                                return the turn to "no prompt". */}
-                                            <SecondaryButton type="button" onClick={saveSystemPromptDraft} data-testid="system-prompt-save">
-                                                Save
-                                            </SecondaryButton>
-                                            <SecondaryButton type="button" onClick={cancelSystemPromptDraft} data-testid="system-prompt-cancel">
-                                                Cancel
-                                            </SecondaryButton>
-                                        </EditActions>
-                                    </>
+                                    // The bubble IS the editor (contentEditable
+                                    // — no textarea/input): BLUR commits the
+                                    // DOM text locally (blank → "no prompt"),
+                                    // ESCAPE cancels. Keyed 'edit' so the
+                                    // remount on exit reverts the DOM. While
+                                    // EMPTY the editable surface shows nothing
+                                    // (contentEditable has no placeholder);
+                                    // the bubble chrome keeps it discoverable.
+                                    <SystemMessage
+                                        key="edit"
+                                        empty={systemPromptEmpty}
+                                        role="textbox"
+                                        aria-multiline="true"
+                                        aria-label="Edit system prompt"
+                                        contentEditable
+                                        suppressContentEditableWarning
+                                        data-editing="true"
+                                        onBlur={(event) => saveSystemPromptDraft(editableTextContent(event.currentTarget))}
+                                        onKeyDown={(event) => {
+                                            if (event.key === 'Escape') {
+                                                event.preventDefault();
+                                                cancelSystemPromptDraft();
+                                            }
+                                        }}
+                                        data-empty={systemPromptEmpty}
+                                        data-testid="system-prompt-value"
+                                    >
+                                        {systemPrompt()}
+                                    </SystemMessage>
                                 ) : (
                                     <>
-                                        <SystemMessage empty={systemPromptEmpty} data-empty={systemPromptEmpty} data-testid="system-prompt-value">
+                                        {/* Click the WORDS to edit directly
+                                            (the bubble becomes contentEditable,
+                                            exactly like every turn's pen) —
+                                            works even on the "no prompt"
+                                            placeholder. Inert while a turn
+                                            streams or a delete runs. */}
+                                        <SystemMessage
+                                            key="view"
+                                            empty={systemPromptEmpty}
+                                            editable={canEditSystemPrompt}
+                                            onClick={(event) => {
+                                                if (canEditSystemPrompt) startSystemPromptEdit(textOffsetFromPoint(event.clientX, event.clientY, event.currentTarget));
+                                            }}
+                                            title={canEditSystemPrompt ? 'Click to edit' : undefined}
+                                            data-empty={systemPromptEmpty}
+                                            data-testid="system-prompt-value"
+                                        >
                                             {systemPromptEmpty ? 'no prompt' : systemPrompt()}
                                         </SystemMessage>
                                         {canEditSystemPrompt && (
@@ -1893,7 +2056,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                                     )}
                                                     <TurnIconButton
                                                         type="button"
-                                                        onClick={startSystemPromptEdit}
+                                                        onClick={() => startSystemPromptEdit(null)}
                                                         aria-label="Edit system prompt"
                                                         title="Edit system prompt"
                                                         data-testid="edit-system-prompt"
@@ -2037,49 +2200,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     </Composer>
                 </Conversation>
             </Workspace>
-            {/* Rename dialog, opened by clicking the header title. Enter saves,
-                Escape or a scrim click cancels; the scrim stops propagation at
-                the dialog box so clicks inside never dismiss accidentally. */}
-            {selected() !== null && editingTitle() && (
-                <DialogScrim onClick={cancelTitleEdit} data-testid="title-dialog-scrim">
-                    <TitleDialog
-                        role="dialog"
-                        aria-modal="true"
-                        aria-label="Rename conversation"
-                        data-testid="title-dialog"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <DialogHeading>Rename conversation</DialogHeading>
-                        <TitleInput
-                            value={titleDraft()}
-                            onChange={(event) => titleDraft(event.target.value)}
-                            onKeyDown={(event) => {
-                                if (event.key === 'Enter' && titleDraft().trim().length > 0 && !savingTitle()) {
-                                    void saveTitle();
-                                } else if (event.key === 'Escape') {
-                                    cancelTitleEdit();
-                                }
-                            }}
-                            aria-label="Conversation title"
-                            data-testid="chat-title-input"
-                            autoFocus
-                        />
-                        <DialogActions>
-                            <SecondaryButton type="button" onClick={cancelTitleEdit} disabled={savingTitle()} data-testid="chat-title-cancel">
-                                Cancel
-                            </SecondaryButton>
-                            <SecondaryButton
-                                type="button"
-                                onClick={() => void saveTitle()}
-                                disabled={savingTitle() || titleDraft().trim().length === 0}
-                                data-testid="chat-title-save"
-                            >
-                                {savingTitle() ? 'Saving...' : 'Save'}
-                            </SecondaryButton>
-                        </DialogActions>
-                    </TitleDialog>
-                </DialogScrim>
-            )}
+            {/* No rename dialog: renaming is INLINE — the header title h1
+                itself becomes contentEditable (see HeaderLead). */}
         </Page>
     );
 });
