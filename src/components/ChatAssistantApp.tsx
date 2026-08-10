@@ -50,13 +50,17 @@
 // action, same bubble styling, full-history PUT rewrites) EXCEPT it cannot
 // be deleted. Assistant (and system) turns span the conversation's FULL
 // content width (max-width:100%); user turns stay right-aligned under the
-// narrower min(760px, 86%) cap. Every message TURN carries an attribution
-// label in the
+// narrower min(760px, 86%) cap — and every EXPANDED turn wrapper floors at
+// min-width:50% of the list's content width so short bubbles still occupy
+// about half the row, while COLLAPSED turns (label + one-line preview) keep
+// no floor and stay compact. Every message TURN carries an attribution label in the
 // TOP-LEFT corner of the row above its bubble: the producing model's name for
 // assistant turns, the literal speaker ("user" / "system" for now) otherwise.
 // That label IS the turn's collapse toggle — no chevron glyph ever renders.
-// Collapsing folds the turn down to the label plus a one-line preview of its
-// first line; clicking the collapsed preview line (the visible "message") or
+// Collapsing folds the turn down to the label on its OWN line plus a one-line
+// preview of its first line BELOW it — stacked, never inline; user-side
+// stacks stay RIGHT-aligned (label and preview hug the right edge). Clicking
+// the collapsed preview line (the visible "message") or
 // the label expands it back. The delete cross stays on the row's right. By
 // default EVERY turn starts COLLAPSED except the LATEST assistant reply —
 // user turns fold to one-line previews of their questions, system turns fold
@@ -407,24 +411,33 @@ const EmptyState = styledComponent('div', {
     textAlign: 'center'
 });
 
-// Turn wrappers own alignment and max-width so each bubble can sit together
+// Turn wrappers own alignment and width bands so each bubble can sit together
 // with its turn chrome (attribution label, edit controls, inline editor)
 // inside one flex column — the bubbles themselves no longer self-align.
+// The min-width floor applies ONLY WHILE EXPANDED (`collapsed` prop): an
+// expanded turn occupies about half the row even for one-word content
+// (min-width:50% of the list's content width); a COLLAPSED turn (label +
+// one-line preview) carries no floor and shrinks to its content. The dynamic
+// value serializes under @media (min-width: 0px) per variant — the tests
+// locate EACH rendered turn's min-width via its own Emotion class for an
+// exact expanded-vs-collapsed reading.
 // User turns stay right-aligned under the narrow cap; ASSISTANT (and system —
 // SystemTurn aliases AssistantTurn below) turns span the message list's FULL
 // content width (max-width:100%) so long responses use the whole row.
-const UserTurn = styledComponent('div', {
+const UserTurn = styledComponent<{ collapsed?: boolean }>('div', {
     alignSelf: 'flex-end',
     maxWidth: 'min(760px, 86%)',
+    minWidth: ({ collapsed }) => (collapsed ? 'auto' : '50%'),
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-end',
     gap: 4
 });
 
-const AssistantTurn = styledComponent('div', {
+const AssistantTurn = styledComponent<{ collapsed?: boolean }>('div', {
     alignSelf: 'flex-start',
     maxWidth: '100%',
+    minWidth: ({ collapsed }) => (collapsed ? 'auto' : '50%'),
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-start',
@@ -497,9 +510,16 @@ const TrailingControls = styledComponent(TurnControls, {
 // to fit content (AssistantTurn's align-items:flex-start would otherwise
 // left-pack the row). minHeight keeps the header row stable when no delete
 // cross renders on its right (e.g. on collapsed turns, whose cross hides).
+// align-items:flex-start pins the delete cross beside the LABEL line of a
+// COLLAPSED turn's two-line stack (label over preview) instead of vertically
+// centering it against both lines. width:100% is required: turn wrappers
+// shrink their column children to fit content (AssistantTurn's align-items:
+// flex-start would otherwise left-pack the row). minHeight keeps the header
+// row stable when no delete cross renders on its right (e.g. on collapsed
+// turns, whose cross hides).
 const TurnHeaderRow = styledComponent('div', {
     display: 'flex',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 6,
     padding: '0 4px',
@@ -508,13 +528,19 @@ const TurnHeaderRow = styledComponent('div', {
     boxSizing: 'border-box'
 });
 
-// Left group of the header row: label + preview share the row's flex space.
-const TurnHeaderLead = styledComponent('div', {
+// Lead group of the header row: label (line 1) + collapsed preview (line 2)
+// STACK vertically — the collapsed view shows them on separate lines, never
+// inline. User turns keep the stack RIGHT-aligned (alignRight), matching the
+// wrapper's side; assistant/system turns stay left. The alignment is dynamic
+// per side, so it serializes under @media (min-width: 0px) — the tests read
+// each rendered lead's alignment via its own Emotion class.
+const TurnHeaderLead = styledComponent<{ alignRight?: boolean }>('div', {
     flex: 1,
     minWidth: 0,
     display: 'flex',
-    alignItems: 'center',
-    gap: 6
+    flexDirection: 'column',
+    alignItems: ({ alignRight }) => (alignRight ? 'flex-end' : 'flex-start'),
+    gap: 2
 });
 
 // Top-left attribution label of a persisted turn: the producing model's
@@ -544,15 +570,21 @@ const TurnLabelText = styledComponent('span', {
     lineHeight: 1.3
 });
 
-// One-line preview replacing a collapsed bubble: first line of the message,
-// muted, ellipsis-truncated. The preview is CLICKABLE — since no chevron
-// exists, clicking the visible collapsed "message" expands the turn again.
-const TurnPreview = styledComponent('span', {
-    flex: 1,
+// One-line preview BELOW the label of a collapsed turn: first line of the
+// message, muted, ellipsis-truncated. In the lead's COLUMN layout it clamps
+// to the wrapper width via max-width:100% (a nowrap span would otherwise
+// force the shrink-fitted turn to grow) and never gets a box; its text aligns
+// with the turn's side (user: right; assistant/system: left — dynamic, so it
+// serializes under @media (min-width: 0px)). The preview is CLICKABLE — since
+// no chevron exists, clicking the visible collapsed "message" expands the
+// turn again.
+const TurnPreview = styledComponent<{ alignRight?: boolean }>('span', {
     minWidth: 0,
+    maxWidth: '100%',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
+    textAlign: ({ alignRight }) => (alignRight ? 'right' : 'left'),
     color: COLORS.muted,
     fontSize: 12,
     lineHeight: 1.4,
@@ -1001,13 +1033,16 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             ? modelLabel(message.model)
             : message.role;
         // Header row above the bubble: the attribution label (+ first-line
-        // preview while collapsed) LEFT, delete cross RIGHT. The label itself
-        // is the collapse toggle — collapsing is pure view state — and renders
-        // except while this turn is being edited (the editor occupies the
-        // bubble slot). No chevron glyph ever renders beside it.
+        // preview STACKED BELOW it while collapsed — label line over preview
+        // line, never inline) on the turn's side (user turns right-aligned),
+        // delete cross on the row's right. The label itself is the collapse
+        // toggle — collapsing is pure view state — and renders except while
+        // this turn is being edited (the editor occupies the bubble slot).
+        // No chevron glyph ever renders beside it.
+        const alignRight = message.role === 'user';
         const headerRow = !editing ? (
             <TurnHeaderRow>
-                <TurnHeaderLead>
+                <TurnHeaderLead alignRight={alignRight}>
                     <TurnLabel
                         type="button"
                         onClick={() => options.onToggleTurnCollapse(index)}
@@ -1028,9 +1063,11 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                         </TurnLabelText>
                     </TurnLabel>
                     {collapsed && (
-                        // The collapsed "message" is this preview line: clicking
-                        // it expands the turn again (there is no chevron to click).
+                        // The collapsed "message" is this preview line BELOW the
+                        // label: clicking it expands the turn again (there is no
+                        // chevron to click).
                         <TurnPreview
+                            alignRight={alignRight}
                             onClick={() => options.onToggleTurnCollapse(index)}
                             title="Expand message"
                             data-testid={`message-preview-${index}`}
@@ -1044,7 +1081,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         ) : null;
         if (message.role === 'user') {
             nodes.push(
-                <UserTurn key={key} data-testid={`message-turn-${index}`}>
+                <UserTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {editing ? renderEditor(options) : (
                         <>
                             {headerRow}
@@ -1062,7 +1099,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             // the row below carries only the shared copy + edit pair, exactly
             // like the other roles.
             nodes.push(
-                <AssistantTurn key={key} data-testid={`message-turn-${index}`}>
+                <AssistantTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {editing ? renderEditor(options) : (
                         <>
                             {headerRow}
@@ -1081,7 +1118,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             // record's default collapsed indices — every turn except the latest
             // assistant reply — whenever a fresh record loads).
             nodes.push(
-                <SystemTurn key={key} data-testid={`message-turn-${index}`}>
+                <SystemTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {editing ? renderEditor(options) : (
                         <>
                             {headerRow}
@@ -1880,7 +1917,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                             span — they cannot collapse yet), so the
                                             turn chrome does not jump on completion. */}
                                         <TurnHeaderRow>
-                                            <TurnHeaderLead>
+                                            <TurnHeaderLead alignRight>
                                                 <TurnLabelText>user</TurnLabelText>
                                             </TurnHeaderLead>
                                         </TurnHeaderRow>

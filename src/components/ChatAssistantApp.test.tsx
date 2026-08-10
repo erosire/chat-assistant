@@ -32,7 +32,9 @@
 // of the row above its bubble (the producing model for assistant turns, the
 // literal "user"/"system" speaker otherwise); that label IS the collapse
 // toggle — no chevron glyph anywhere — and collapsed turns hide the bubble
-// (and its controls) behind a one-line preview whose click expands the turn.
+// (and its controls) behind a STACK of the label line over a one-line preview
+// (user side right-aligned) whose click expands the turn. Expanded turns
+// floor at 50% of the list width; collapsed ones stay compact.
 // By default EVERY turn starts COLLAPSED except the LATEST assistant reply —
 // user turns fold, system turns fold, and older replies fold once a newer
 // reply lands. Composer keyboard rules: Enter submits on desktop (md+),
@@ -1207,8 +1209,16 @@ describe('ChatAssistantApp', () => {
         const css = Array.from(document.querySelectorAll('style[data-emotion]'))
             .map((tag) => tag.textContent)
             .join('\n');
-        expect(/\.css-[^{]+\{[^}]*align-self:flex-start;[^}]*max-width:100%;[^}]*\}/.test(css)).toBe(true);
-        expect(/\.css-[^{]+\{[^}]*align-self:flex-end;[^}]*max-width:min\(760px, 86%\);[^}]*\}/.test(css)).toBe(true);
+        const fullTurn = /\.css-[^{]+\{[^}]*align-self:flex-start;[^}]*max-width:100%;[^}]*\}/.exec(css)?.[0];
+        expect(fullTurn).toBeDefined();
+        const userTurn = /\.css-[^{]+\{[^}]*align-self:flex-end;[^}]*max-width:min\(760px, 86%\);[^}]*\}/.exec(css)?.[0];
+        expect(userTurn).toBeDefined();
+        // EXPANDED turns floor at about half the list's content width. The
+        // floor is the wrapper's DYNAMIC declaration (collapse-conditional),
+        // so it lives in the turn's own Emotion class under the
+        // @media (min-width: 0px) layer — read it off this rendered turn.
+        const draftClass = screen.getByTestId('system-prompt-turn').className;
+        expect(css).toContain(`@media (min-width: 0px){.${draftClass}{min-width:50%;}}`);
         // The empty placeholder bubble: the panel surface + bubble padding are
         // static, while the color is the dynamic (media-wrapped) MUTED variant
         // — styledComponent serializes function-valued props under
@@ -1518,30 +1528,66 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('message-preview-1')).toBeNull();
         expect(screen.getByTestId('message-turn-1').querySelector('article')?.textContent).toBe('Hello from the assistant');
 
+        // The collapsed view STACKS: the label sits on its OWN line with the
+        // preview BELOW it (never inline). The lead is a COLUMN whose two
+        // children are [label toggle, preview], and the whole stack keeps the
+        // turn's side: the USER stack is RIGHT-aligned. Alignment + the
+        // 50%-only-when-expanded width floor are DYNAMIC declarations (they
+        // live in each element's own Emotion class under @media (min-width:
+        // 0px)), so they are read from the sheet by class, not getComputedStyle.
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        const mediaStyle = (testid: string, property: string): string | null => {
+            const cls = screen.getByTestId(testid).className;
+            return new RegExp(`@media \\(min-width: 0px\\)\\{\\.${cls}\\{[^}]*${property}:([^;]+);[^}]*\\}\\}`).exec(css)?.[1] ?? null;
+        };
+        const userLead = screen.getByTestId('collapse-message-0').parentElement as HTMLElement;
+        expect(window.getComputedStyle(userLead).flexDirection).toBe('column');
+        expect(userLead.firstElementChild).toBe(screen.getByTestId('collapse-message-0'));
+        expect(userLead.lastElementChild).toBe(screen.getByTestId('message-preview-0'));
+        // The LEAD (the toggle's parent column) keeps the user stack right-aligned.
+        expect(new RegExp(`@media \\(min-width: 0px\\)\\{\\.${userLead.className}\\{[^}]*align-items:flex-end;[^}]*\\}\\}`).test(css)).toBe(true);
+        // The user preview's text hugs the right edge as well.
+        expect(mediaStyle('message-preview-0', 'text-align')).toBe('right');
+        // The ASSISTANT stack mirrors left: same column, left alignment.
+        const assistantLead = screen.getByTestId('collapse-message-1').parentElement as HTMLElement;
+        expect(window.getComputedStyle(assistantLead).flexDirection).toBe('column');
+        expect(new RegExp(`@media \\(min-width: 0px\\)\\{\\.${assistantLead.className}\\{[^}]*align-items:flex-start;[^}]*\\}\\}`).test(css)).toBe(true);
+        // Width floor: ONLY the expanded turn carries min-width:50%; the
+        // collapsed one stays compact (min-width:auto).
+        expect(mediaStyle('message-turn-0', 'min-width')).toBe('auto');
+        expect(mediaStyle('message-turn-1', 'min-width')).toBe('50%');
+
         // Collapse the ASSISTANT turn: bubble + edit/copy/delete hide behind a
-        // one-line preview of the reply's first line.
+        // one-line preview of the reply's first line STACKED under its label...
         fireEvent.click(screen.getByTestId('collapse-message-1'));
         expect(screen.getByTestId('collapse-message-1').getAttribute('aria-expanded')).toBe('false');
         expect(screen.getByTestId('message-preview-1').textContent).toBe('Hello from the assistant');
+        expect(assistantLead.lastElementChild).toBe(screen.getByTestId('message-preview-1'));
         expect(screen.getByTestId('message-turn-1').querySelector('article')).toBeNull();
         expect(screen.queryByTestId('edit-message-1')).toBeNull();
         expect(screen.queryByTestId('copy-message-1')).toBeNull();
         expect(screen.queryByTestId('delete-message-1')).toBeNull();
+        // ...and its width floor drops off: collapsed rows stay compact.
+        expect(mediaStyle('message-turn-1', 'min-width')).toBe('auto');
         // Collapsing is pure view state — no fetch ran.
         expect((fetch as any).mock.calls).toHaveLength(6);
 
-        // Expand again restores the bubble and its controls.
+        // Expand again restores the bubble, its controls, and the 50% floor.
         fireEvent.click(screen.getByTestId('collapse-message-1'));
         expect(screen.getByTestId('message-turn-1').querySelector('article')?.textContent).toBe('Hello from the assistant');
         expect(screen.queryByTestId('message-preview-1')).toBeNull();
         expect(screen.getByTestId('edit-message-1')).toBeDefined();
         expect(screen.getByTestId('copy-message-1')).toBeDefined();
         expect(screen.getByTestId('delete-message-1')).toBeDefined();
+        expect(mediaStyle('message-turn-1', 'min-width')).toBe('50%');
 
-        // Expanding the collapsed USER turn restores its bubble the same way.
+        // Expanding the collapsed USER turn restores its bubble and floor.
         fireEvent.click(screen.getByTestId('collapse-message-0'));
         expect(screen.queryByTestId('message-preview-0')).toBeNull();
         expect(screen.getByTestId('message-turn-0').querySelector('article')?.textContent).toBe('Hello assistant');
+        expect(mediaStyle('message-turn-0', 'min-width')).toBe('50%');
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
