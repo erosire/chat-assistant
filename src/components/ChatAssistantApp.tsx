@@ -36,23 +36,24 @@
 // preventScroll:true so the list NEVER jumps — default focus() scrolls the
 // provisional offset-0 caret into view and in a long chat snapped the list
 // to the message's top; caret RESTORED ONTO THE CLICKED WORD via the
-// captured click-point offset — see textOffsetFromPoint; pen-triggered edits
-// place the caret at the text end);
-// the pen icon does the same redundantly. The edit SAVES AUTOMATICALLY ON BLUR (the
+// captured click-point offset — see textOffsetFromPoint; an unresolvable
+// click point places the caret at the text end). There is NO separate edit
+// button — the words themselves are the trigger (the old edit pen was retired
+// as redundant). The edit SAVES AUTOMATICALLY ON BLUR (the
 // bubble's DOM text commits through the whole-history PUT; blank text just
 // restores the original) and ESCAPE cancels (a keyed bubble remount reverts
 // the DOM — React reconciliation cannot reset a mutated contentEditable node).
 // While ANY turn is being edited NO turn chrome disappears: the header row —
 // the producing-model/speaker label — stays rendered (only the edited turn's
 // collapse toggle greys out + disables, so folding cannot unmount the live
-// editor), and EVERY turn's edit pen, copy, and delete icons (the system
-// prompt draft's pen/copy included) stay rendered but greyed out + natively
-// disabled — one edit at a time, visible. Streaming and conversation deletion
+// editor), and EVERY turn's copy and delete icons (the system prompt draft's
+// copy included) stay rendered but greyed out + natively disabled — one edit
+// at a time, visible. Streaming and conversation deletion
 // still hide those icons entirely.
 // Messages remain individually deletable (x icon);
-// next to the edit pen EVERY turn also carries a copy action (two-squares
+// EVERY turn also carries a copy action (two-squares
 // icon) that writes the raw message text to the system clipboard without
-// touching storage. The copy+edit controls row under each bubble is
+// touching storage. The controls row under each bubble is
 // BOTTOM-STICKY within its own turn: while a turn's content extends beyond
 // the message list's bottom scrollport edge the row rides the list's visible
 // bottom edge, following the scroll as a TRANSPARENT floating strip (an
@@ -66,15 +67,13 @@
 // slot past the turn's header (see TrailingControls);
 // message edits, message deletes, and renames all replace the ENTIRE history
 // through the identified PUT, so the next turn automatically sends the
-// edited/shortened history to the provider. Every turn also carries a copy
-// action next to the edit pen that writes the raw message text to the system
-// clipboard (client-side only, no storage). Every chat is led by a SYSTEM
+// edited/shortened history to the provider. Every chat is led by a SYSTEM
 // prompt turn: a regular LEFT-aligned message row (same wrapper + bubble
 // styling as the assistant) that sits at the start of the chat even while
-// EMPTY — showing the literal placeholder "no prompt" with only an edit pen
-// (clicking the bubble OR the pen turns the BUBBLE ITSELF into the
-// contentEditable inline editor, saving on blur / cancelling on Escape,
-// no copy while there is nothing to copy). A saved non-empty draft replaces
+// EMPTY — showing the literal placeholder "no prompt" (clicking the bubble's
+// words turns the BUBBLE ITSELF into the contentEditable inline editor,
+// saving on blur / cancelling on Escape; no copy action while there is
+// nothing to copy). A saved non-empty draft replaces
 // the placeholder text and is persisted as the leading system message on the
 // next send (prepended to the provider history); after that the system turn
 // behaves like any other persisted turn (same inline editor, same copy
@@ -130,7 +129,7 @@
 // yanked the list back down: the "random jumps to the bottom" report);
 // the follow silently resumes once the user returns to the bottom.
 // Scroll JUMPS are SECTION-LOCAL: every user/assistant/system turn's own
-// copy/edit panel (the strip under its bubble) carries an up/down chevron
+// controls panel (the strip under its bubble) carries an up/down chevron
 // pair at its left edge (TurnJumpPair). "^" fast-animates the list until
 // THAT section's top edge docks on the list's top padding line; "v" until
 // THAT section's bottom edge lands on the bottom padding line — fixed
@@ -140,7 +139,7 @@
 // to its own block. The transient pending/streaming turns render no
 // controls panel, so they carry no chevrons.
 // ALL control icons in this file come from the shared stroke-based SVG icon
-// family in src/icons (menu, close, edit, copy, chevrons) — unicode text
+// family in src/icons (menu, close, copy, chevrons) — unicode text
 // glyphs were retired because their rendering depended on the system font.
 import React, { useCallback, useEffect } from 'react';
 import { arrayEach, isString } from '@presource/core';
@@ -169,7 +168,6 @@ import {
     ChevronUpIcon,
     CloseIcon,
     CopyIcon,
-    EditIcon,
     MenuIcon
 } from '../icons';
 
@@ -483,9 +481,9 @@ const TurnControls = styledComponent('div', {
     boxSizing: 'border-box'
 });
 
-// Groups the copy + edit icon buttons so they stay glued together on the row's
+// Groups the copy icon button so it stays glued to the row's
 // right edge — space-between on the parent TurnControls would otherwise spread
-// them to opposite corners. copy sits immediately LEFT of the edit pen.
+// it to the opposite corner.
 const TurnActionPair = styledComponent('div', {
     display: 'flex',
     alignItems: 'center',
@@ -701,12 +699,12 @@ const ConversationDeleteButton = styledComponent(MessageDeleteButton, {
     right: 6
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
-// Icon-only affordance for the per-message edit action (the pen) — and for
-// the copy action paired beside it. Both render icons from the shared
-// stroke-based family (src/icons: EditIcon/CopyIcon); the svg is aria-hidden,
-// the accessible label lives on the button.
+// Icon-only affordance for the per-message copy action — and for the section
+// jump chevrons paired in the same controls row. The icons render from the
+// shared stroke-based family (src/icons: CopyIcon/chevrons); the svg is
+// aria-hidden, the accessible label lives on the button.
 // The `greyed` prop (paired with native disabled at the render site) keeps
-// the pen/copy icons RENDERED but dimmed + inert while an inline edit runs
+// the copy icon RENDERED but dimmed + inert while an inline edit runs
 // anywhere: one edit at a time, but the icons never disappear mid-edit —
 // they grey out instead. opacity/cursor are dynamic → serialized under
 // @media (min-width: 0px) by styledComponent.
@@ -733,7 +731,7 @@ const TurnIconButton = styledComponent<{ greyed?: boolean }>('button', {
 // The system prompt row leads every chat — whether the record leads with a
 // persisted system message or the system prompt only exists as a local draft.
 // Both forms render as regular turns with identical chrome (top-left "system"
-// label, bubble, pen-driven inline editor); the draft form's persistence is
+// label, bubble, click-to-edit inline editor); the draft form's persistence is
 // deferred: a saved non-empty draft is stored locally until the next send
 // persists it as the conversation's leading `system` message (prepended to
 // the provider history AND persisted with the turn — see submit), after which
@@ -984,7 +982,8 @@ type MessageListOptions = {
     // Turns a bubble INTO the inline HTML editor (contentEditable, focused).
     // The offset is the click's character position (see textOffsetFromPoint):
     // it restores the caret onto the CLICKED WORD after the editable remount;
-    // null (pen-triggered) places the caret at the text end.
+    // null (the click point could not be resolved, e.g. jsdom) places the
+    // caret at the text end.
     onEditStart: (index: number, offset: number | null) => void;
     // Blur-delivered commit: the bubble's DOM text replaces the message via
     // whole-history PUT (see commitEdit in the component for guards).
@@ -1118,26 +1117,27 @@ const placeCaretAtOffset = (element: HTMLElement, charOffset: number): void => {
 };
 
 // Convert an API record into message nodes while keeping rendering logic
-// role-specific and explicit. User and assistant turns are freely editable (pen
-// icon, right side of the controls row under the bubble) and individually
-// deletable (x icon in the row ABOVE the bubble, right-aligned); both actions
-// rewrite the whole history through the identified PUT. Every turn additionally
-// carries a copy action (two-squares icon, immediately LEFT of the pen) that
-// sends the raw message text to the clipboard. SYSTEM turns behave exactly like
-// user/assistant turns (same inline editor, same copy action) EXCEPT they never
-// render the delete cross — the system prompt cannot be removed (a chat without
-// one shows the empty draft box above the list instead, not a system turn).
+// role-specific and explicit. User and assistant turns are freely editable
+// (clicking the expanded bubble's WORDS turns it into the inline editor) and
+// individually deletable (x icon in the row ABOVE the bubble, right-aligned);
+// both actions rewrite the whole history through the identified PUT. Every
+// turn additionally carries a copy action (two-squares icon in the controls
+// row under the bubble) that sends the raw message text to the clipboard.
+// SYSTEM turns behave exactly like user/assistant turns (same inline editor,
+// same copy action) EXCEPT they never render the delete cross — the system
+// prompt cannot be removed (a chat without one shows the empty draft turn at
+// the top of the list instead, not a system turn).
 // Every turn's row ABOVE its bubble carries an ATTRIBUTION LABEL on the LEFT:
 // the producing model's stripped name for assistant turns with a recorded
 // ChatMessage.model (older records without it fall back to "assistant"),
 // otherwise the literal speaker label ("user" / "system" for now). That label
 // IS the collapse toggle — no chevron glyph ever renders. Collapsed turns hide
-// the bubble AND its edit/copy/delete controls, showing the label plus a
+// the bubble AND its copy/delete controls, showing the label plus a
 // one-line first-line preview instead; clicking the preview expands the turn.
 // While ANY turn is being edited NO chrome disappears: every turn's header row
 // (the model/speaker label) stays rendered — its collapse toggle merely greys
 // out + disables on the EDITED turn so folding cannot unmount the live editor —
-// and every turn's pen/copy/delete icons stay rendered but greyed out +
+// and every turn's copy/delete icons stay rendered but greyed out +
 // natively disabled (one edit at a time). Streaming and conversation deletion
 // (canEdit === false) still hide the icons entirely, exactly as before.
 const renderMessages = (messages: ChatMessage[], options: MessageListOptions): React.ReactNode[] => {
@@ -1146,27 +1146,13 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         const key = `${message.role}-${index}`;
         const editing = options.editingIndex === index;
         const collapsed = options.collapsedTurns.includes(index);
-        // The pen (edit, controls row under the bubble), the copy action beside
-        // it, and the delete cross appear on every idle, EXPANDED turn: none
-        // during streaming/conversation deletion (canEdit), none while the turn
-        // is collapsed (its bubble is hidden). While ANY turn is being edited
-        // they all STAY RENDERED but greyed out + natively disabled
-        // (controlsGreyed): one edit at a time, but no icon ever disappears
-        // mid-edit — it only fades.
+        // The copy action (controls row under the bubble) and the delete cross
+        // appear on every idle, EXPANDED turn: none during streaming/
+        // conversation deletion (canEdit), none while the turn is collapsed
+        // (its bubble is hidden). While ANY turn is being edited they all STAY
+        // RENDERED but greyed out + natively disabled (controlsGreyed): one
+        // edit at a time, but no icon ever disappears mid-edit — it only fades.
         const controlsGreyed = options.editingIndex !== null;
-        const editControl = !collapsed && options.canEdit ? (
-            <TurnIconButton
-                type="button"
-                greyed={controlsGreyed}
-                disabled={controlsGreyed}
-                onClick={() => options.onEditStart(index, null)}
-                aria-label="Edit message"
-                title="Edit message"
-                data-testid={`edit-message-${index}`}
-            >
-                <EditIcon size={14} />
-            </TurnIconButton>
-        ) : null;
         // The delete cross sits on the RIGHT of the header row above the bubble;
         // SYSTEM messages are the one non-deletable turn: edit + copy still apply.
         const deleteControl = !collapsed && options.canEdit && message.role !== 'system' ? (
@@ -1183,7 +1169,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             </MessageDeleteButton>
         ) : null;
         // Copying writes ANY message's raw text to the clipboard and never
-        // touches storage. Visibility mirrors the edit pen. The icon is the
+        // touches storage. Visibility matches the delete cross's row rule
+        // (idle, expanded). The icon is the
         // shared CopyIcon (two overlapping squares — the "clone" glyph of the
         // turn chrome).
         const copyControl = !collapsed && options.canEdit ? (
@@ -1202,11 +1189,11 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         // Smart inline editing: clicking the expanded bubble's WORDS turns the
         // bubble ITSELF into the editor (contentEditable — no textarea, no
         // separate input field), restoring the caret onto the CLICKED WORD via
-        // the captured click-point offset (the pen does the same, caret at
-        // end). The guard mirrors the pen exactly (idle, expanded, no other
-        // edit running), so clicking is inert while streaming, deleting, or
-        // editing another turn. The handler is undefined (not merely blocking)
-        // while unavailable so the cursor hint and the click affordance agree.
+        // the captured click-point offset. The guard requires an idle,
+        // expanded turn with no other edit running, so clicking is inert while
+        // streaming, deleting, or editing another turn. The handler is
+        // undefined (not merely blocking) while unavailable so the cursor hint
+        // and the click affordance agree.
         const openEditor = !collapsed && options.canEdit && options.editingIndex === null
             ? (event: React.MouseEvent<HTMLElement>) =>
                   options.onEditStart(index, textOffsetFromPoint(event.clientX, event.clientY, event.currentTarget))
@@ -1318,17 +1305,17 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         if (message.role === 'user') {
             // The controls row renders while the turn is expanded and idle —
             // INCLUDING while it (or another turn) is being edited: the
-            // greyed-out + disabled pen/copy pair stays visible under the
+            // greyed-out + disabled copy action stays visible under the
             // editor bubble instead of disappearing.
             nodes.push(
                 <UserTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {headerRow}
                     {bubble}
-                    {editControl !== null && (
+                    {copyControl !== null && (
                         // floating = measured sticky gate (component state);
                         // the testid is the gate's per-turn measurement hook.
                         // Section-local scroll chevrons sit INSIDE the same
-                        // panel as the copy/edit pair (left edge; the pair
+                        // panel as the copy action (left edge; the action
                         // stays glued right): "^" flies the list so THIS
                         // turn's top edge docks on the list's top padding
                         // line, "v" so its bottom edge lands on the bottom
@@ -1338,7 +1325,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                                 <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
                                 <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
-                            <TurnActionPair>{copyControl}{editControl}</TurnActionPair>
+                            <TurnActionPair>{copyControl}</TurnActionPair>
                         </TrailingControls>
                     )}
                 </UserTurn>
@@ -1346,17 +1333,17 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         } else if (message.role === 'assistant') {
             // The producing model marks the turn in its top-left header label
             // (see headerRow above, replacing the old caption under the bubble);
-            // the row below carries only the shared copy + edit pair, exactly
+            // the row below carries only the shared copy action, exactly
             // like the other roles.
             nodes.push(
                 <AssistantTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {headerRow}
                     {bubble}
-                    {editControl !== null && (
+                    {copyControl !== null && (
                         // floating = measured sticky gate (component state);
                         // the testid is the gate's per-turn measurement hook.
                         // Section-local scroll chevrons sit INSIDE the same
-                        // panel as the copy/edit pair (left edge; the pair
+                        // panel as the copy action (left edge; the action
                         // stays glued right): "^" flies the list so THIS
                         // turn's top edge docks on the list's top padding
                         // line, "v" so its bottom edge lands on the bottom
@@ -1366,26 +1353,27 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                                 <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
                                 <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
-                            <TurnActionPair>{copyControl}{editControl}</TurnActionPair>
+                            <TurnActionPair>{copyControl}</TurnActionPair>
                         </TrailingControls>
                     )}
                 </AssistantTurn>
             );
         } else {
-            // System turn: same edit pen + copy action as every other turn, but
-            // NO delete cross — the system prompt cannot be removed. It starts
-            // collapsed by default (the component seeds collapsedTurns with the
-            // record's default collapsed indices — every turn except the latest
-            // assistant reply — whenever a fresh record loads).
+            // System turn: same click-to-edit bubble + copy action as every
+            // other turn, but NO delete cross — the system prompt cannot be
+            // removed. It starts collapsed by default (the component seeds
+            // collapsedTurns with the record's default collapsed indices —
+            // every turn except the latest assistant reply — whenever a fresh
+            // record loads).
             nodes.push(
                 <SystemTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {headerRow}
                     {bubble}
-                    {editControl !== null && (
+                    {copyControl !== null && (
                         // floating = measured sticky gate (component state);
                         // the testid is the gate's per-turn measurement hook.
                         // Section-local scroll chevrons sit INSIDE the same
-                        // panel as the copy/edit pair (left edge; the pair
+                        // panel as the copy action (left edge; the action
                         // stays glued right): "^" flies the list so THIS
                         // turn's top edge docks on the list's top padding
                         // line, "v" so its bottom edge lands on the bottom
@@ -1395,7 +1383,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                                 <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
                                 <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
-                            <TurnActionPair>{copyControl}{editControl}</TurnActionPair>
+                            <TurnActionPair>{copyControl}</TurnActionPair>
                         </TrailingControls>
                     )}
                 </SystemTurn>
@@ -1531,8 +1519,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // Cleared on new chat, on chat switch, on conversation deletion, and
     // after a completed send.
     const systemPrompt = useStateHook('');
-    // The draft turn's own inline editing flag (opened by clicking its bubble
-    // or its pen): there is NO textarea state — the bubble IS the editor
+    // The draft turn's own inline editing flag (opened by clicking its
+    // bubble's words): there is NO textarea state — the bubble IS the editor
     // (contentEditable), its text lives in the DOM until blur commits the
     // trimmed text into `systemPrompt` or Escape cancels (the keyed remount
     // reverts the DOM to the saved draft).
@@ -1611,8 +1599,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // Ref-backed handoff of the click's character offset: the click handler
     // writes it (no re-render wanted) and the editing auto-focus effect reads
     // it ONCE to restore the caret onto the clicked word after the editable
-    // remount — then clears it so pen-triggered edits fall back to the text
-    // end. See textOffsetFromPoint / placeCaretAtOffset.
+    // remount — then clears it so a later unresolvable click point falls back
+    // to the text end. See textOffsetFromPoint / placeCaretAtOffset.
     const caretOffset = useReferenceHook<number | null>(null);
 
     // Load the provider model catalog once on mount. The provider needs no API key
@@ -1902,8 +1890,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // focuses the fresh node — no ref-identity churn can steal the caret back
     // on unrelated re-renders. The caret is then RESTORED to the click's
     // captured character offset (without it, programmatic focus dumps the
-    // caret at the text start); null offset (pen-triggered, or jsdom without
-    // caretRangeFromPoint) lands at the text end.
+    // caret at the text start); null offset (unresolvable click point, e.g.
+    // jsdom without caretRangeFromPoint) lands at the text end.
     // preventScroll is LOAD-BEARING — the long-chat scroll-jump fix: default
     // focus() SCROLLS every scrollable ancestor to reveal the focused node,
     // and for a contentEditable the browser additionally plants a provisional
@@ -1914,8 +1902,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // stayed jumped while the caret sat at the clicked word: the reported
     // disorientation. preventScroll:true skips the scroll step entirely (HTML
     // focus processing model); the clicked word is on screen by definition,
-    // so nothing ever needs revealing. Pen-triggered edits (caret at the text
-    // end) stay equally calm — if the end is below the fold, the browser's
+    // so nothing ever needs revealing. End-placed carets (unresolvable click
+    // point) stay equally calm — if the end is below the fold, the browser's
     // native caret reveal engages on the first typed character instead.
     // Browsers too old for FocusOptions ignore the argument harmlessly.
     useEffect(() => {
@@ -1971,10 +1959,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         editingSystemPrompt(false);
     }, [editingSystemPrompt]);
 
-    // Turn the draft prompt's bubble into the inline editor (click on its
-    // words or its pen). The bubble renders the saved draft's text; editing
+    // Turn the draft prompt's bubble into the inline editor (a click on its
+    // words is the trigger). The bubble renders the saved draft's text; editing
     // happens in the DOM until blur commits. The offset restores the caret to
-    // the clicked word (null → text end, e.g. the pen).
+    // the clicked word (null → text end, the unresolvable-point fallback).
     const startSystemPromptEdit = useCallback((offset: number | null = null) => {
         caretOffset(offset);
         editingSystemPrompt(true);
@@ -2074,7 +2062,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
 
     // Turn one message's bubble into the inline HTML editor (contentEditable,
     // auto-focused by the editing effect above). The offset restores the caret
-    // to the clicked word; null (pen) lands at the text end.
+    // to the clicked word; null (unresolvable click point) lands at the text
+    // end.
     const startEdit = useCallback((index: number, offset: number | null = null) => {
         caretOffset(offset);
         editingIndex(index);
@@ -2107,8 +2096,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [baseUrl, cancelEdit, chats, collapsedTurns, error, savingEdit, selected]);
 
-    // Copy any message's raw text to the system clipboard (the action next to
-    // the edit pen on every turn). The async Clipboard API is preferred; the
+    // Copy any message's raw text to the system clipboard (the per-turn copy
+    // action in the controls row under the bubble). The async Clipboard API is
+    // preferred; the
     // hidden-textarea + execCommand path keeps older or permission-restricted
     // browsers working (jsdom has neither, so tests stub navigator.clipboard).
     // This is a pure client-side action: storage is never involved; failures
@@ -2488,15 +2478,14 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             While the record has NO leading system message this
                             is the local-draft form: the bubble carries the
                             saved draft or the literal placeholder "no prompt",
-                            and the ONLY affordance is the edit pen (plus a copy
-                            action once real draft text exists) — clicking
-                            EITHER (or the words) makes the BUBBLE ITSELF the
+                            and clicking its WORDS makes the BUBBLE ITSELF the
                             inline editor every turn uses (blur saves the
-                            draft locally, Escape cancels), and NO delete cross
-                            ever (the system prompt cannot be removed). Once
-                            the record leads with a persisted system message,
-                            renderMessages draws that turn instead and this
-                            block disappears. */}
+                            draft locally, Escape cancels); a copy action
+                            appears once real draft text exists, and NO delete
+                            cross ever (the system prompt cannot be removed).
+                            Once the record leads with a persisted system
+                            message, renderMessages draws that turn instead and
+                            this block disappears. */}
                         {!hasPersistedSystemPrompt && (
                             <SystemTurn data-testid="system-prompt-turn">
                                 <TurnHeaderRow>
@@ -2537,11 +2526,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                         {systemPrompt()}
                                     </SystemMessage>
                                 ) : (
-                                    // Click the WORDS to edit directly (the
-                                    // bubble becomes contentEditable, exactly
-                                    // like every turn's pen) — works even on
-                                    // the "no prompt" placeholder. Inert while
-                                    // a turn streams or a delete runs.
+                                    // Click the WORDS to edit (the bubble
+                                    // becomes contentEditable, exactly like
+                                    // every turn's bubble) — works even on the
+                                    // "no prompt" placeholder. Inert while a
+                                    // turn streams or a delete runs.
                                     <SystemMessage
                                         key="view"
                                         empty={systemPromptEmpty}
@@ -2556,7 +2545,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                         {systemPromptEmpty ? 'no prompt' : systemPrompt()}
                                     </SystemMessage>
                                 )}
-                                {/* The draft turn's copy + pen pair mirrors the
+                                {/* The draft turn's copy action mirrors the
                                     message-turn rule: it STAYS RENDERED while
                                     the draft's own editor is open, greyed out +
                                     disabled instead of disappearing (the
@@ -2584,10 +2573,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                         </TurnJumpPair>
                                         <TurnActionPair>
                                             {/* Copy mirrors the per-message
-                                                action (immediately LEFT of
-                                                the pen) but exists only
-                                                when there is real draft
-                                                text to copy. */}
+                                                action but exists only when
+                                                there is real draft text to
+                                                copy. */}
                                             {!systemPromptEmpty && (
                                                 <TurnIconButton
                                                     type="button"
@@ -2601,17 +2589,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                                     <CopyIcon size={14} />
                                                 </TurnIconButton>
                                             )}
-                                            <TurnIconButton
-                                                type="button"
-                                                greyed={editingSystemPrompt()}
-                                                disabled={editingSystemPrompt()}
-                                                onClick={() => startSystemPromptEdit(null)}
-                                                aria-label="Edit system prompt"
-                                                title="Edit system prompt"
-                                                data-testid="edit-system-prompt"
-                                            >
-                                                <EditIcon size={14} />
-                                            </TurnIconButton>
                                         </TurnActionPair>
                                     </TrailingControls>
                                 )}

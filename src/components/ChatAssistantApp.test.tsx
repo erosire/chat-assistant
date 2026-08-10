@@ -16,25 +16,25 @@
 // Every assistant response is marked in
 // its top-left corner with the producing model (per-message ChatMessage.model);
 // SMART INLINE EDITING: there is no input field — clicking an expanded turn's
-// WORDS (or the edit pen on the right of its controls row) turns the bubble
-// ITSELF into a contentEditable inline HTML editor, which SAVES AUTOMATICALLY
+// WORDS turns the bubble ITSELF into a contentEditable inline HTML editor,
+// which SAVES AUTOMATICALLY
 // ON BLUR (blank/unchanged text closes without a request) and cancels on
 // ESCAPE (a keyed bubble remount reverts the mutated DOM); the x
 // delete control in the row above the bubble (right-aligned) — edits and
 // deletes both rewrite the
 // history through the identified PUT, so the next turn sends the
 // edited/shortened history upstream.
-// Every turn also carries a copy action next to the pen that writes the raw
+// Every turn also carries a copy action that writes the raw
 // message text to the system clipboard (a pure client-side action: no storage).
 // Every chat is led by a system prompt row: while the record has no system
 // message the DRAFT form shows (even empty) as a regular LEFT-aligned turn —
 // top-left "system" label (plain span: nothing to fold), the literal
-// placeholder "no prompt" in the bubble, and ONLY an edit pen (no copy
-// without text) that opens the same inline editor every turn uses; a saved
+// placeholder "no prompt" in the bubble, and clicking its words opens the
+// same inline editor every turn uses (no copy without text); a saved
 // non-empty draft replaces the placeholder and is persisted as the leading
 // system message on the next send (prepended to the provider history); system
 // turns then render like any turn (same bubble styling as user/assistant,
-// edit pen + copy) EXCEPT they cannot be deleted.
+// click-to-edit + copy) EXCEPT they cannot be deleted.
 // Every turn carries an attribution label in the top-left corner
 // of the row above its bubble (the producing model for assistant turns, the
 // literal "user"/"system" speaker otherwise); that label IS the collapse
@@ -54,7 +54,7 @@
 // rendered ONLY while the composer has focus (focus-within, including the
 // arrow and the model select). The input's right padding keeps text clear of
 // the arrow. Scroll JUMPS are SECTION-LOCAL: every user/assistant/system
-// turn's own copy/edit panel (the strip under its bubble — transient
+// turn's own controls panel (the strip under its bubble — transient
 // pending/streaming turns have none) carries an up/down chevron pair at its
 // left edge: "^" fast-animates the list (fixed 200ms ease-out) until THAT
 // section's top edge docks on the list's top padding line, "v" until THAT
@@ -958,23 +958,23 @@ describe('ChatAssistantApp', () => {
         await sendFirstTurn();
 
         // User turns start COLLAPSED by default: expand the first turn so its
-        // edit pen (hidden while collapsed) can turn its bubble into the editor.
+        // bubble (hidden while collapsed) can be clicked into the editor.
         fireEvent.click(screen.getByTestId('collapse-message-0'));
         expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('true');
 
-        // The pen turns the BUBBLE ITSELF into the inline HTML editor — no
-        // textarea, no input field: the same testid now marks a contentEditable
-        // article seeded with the current message text. NO chrome disappears:
-        // EVERY turn's pens STAY RENDERED but greyed out + disabled while the
-        // edit runs (one edit at a time).
-        fireEvent.click(screen.getByTestId('edit-message-0'));
+        // Clicking the WORDS turns the BUBBLE ITSELF into the inline HTML
+        // editor — no textarea, no input field: the same testid now marks a
+        // contentEditable article seeded with the current message text. NO
+        // chrome disappears: the copy actions STAY RENDERED but natively
+        // disabled while the edit runs (one edit at a time).
+        fireEvent.click(screen.getByTestId('message-content-0'));
         const bubble = screen.getByTestId('message-content-0');
         expect(bubble.tagName).toBe('ARTICLE');
         expect(bubble.getAttribute('contenteditable')).toBe('true');
         expect(bubble.getAttribute('role')).toBe('textbox');
         expect(bubble.textContent).toBe('Hello assistant');
-        expect((screen.getByTestId('edit-message-0') as HTMLButtonElement).disabled).toBe(true);
-        expect((screen.getByTestId('edit-message-1') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByTestId('copy-message-0') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByTestId('copy-message-1') as HTMLButtonElement).disabled).toBe(true);
 
         // Edit the words IN PLACE (jsdom cannot type into contentEditable, so
         // the DOM text is set directly — exactly what the browser produces).
@@ -1031,9 +1031,9 @@ describe('ChatAssistantApp', () => {
         await sendFirstTurn();
 
         // The assistant turn starts EXPANDED (latest reply): open the inline
-        // editor via its pen, type, then press ESCAPE: the keyed bubble remount
-        // reverts the DOM text and no request runs.
-        fireEvent.click(screen.getByTestId('edit-message-1'));
+        // editor by clicking its words, type, then press ESCAPE: the keyed
+        // bubble remount reverts the DOM text and no request runs.
+        fireEvent.click(screen.getByTestId('message-content-1'));
         const bubble = screen.getByTestId('message-content-1');
         expect(bubble.getAttribute('contenteditable')).toBe('true');
         bubble.textContent = 'Discarded rewrite';
@@ -1044,7 +1044,7 @@ describe('ChatAssistantApp', () => {
 
         // A rewritten bubble committed on blur replaces the history while
         // keeping the attribution.
-        fireEvent.click(screen.getByTestId('edit-message-1'));
+        fireEvent.click(screen.getByTestId('message-content-1'));
         const editingBubbble = screen.getByTestId('message-content-1');
         editingBubbble.textContent = 'Rewritten answer';
         fireEvent.blur(editingBubbble, { relatedTarget: null });
@@ -1074,7 +1074,8 @@ describe('ChatAssistantApp', () => {
         await sendFirstTurn();
 
         // Expand the collapsed USER turn first so BOTH turns expose their full
-        // chrome (pen, copy, delete cross, label toggle) before the edit opens.
+        // chrome (copy action, delete cross, label toggle) before the edit
+        // opens.
         fireEvent.click(screen.getByTestId('collapse-message-0'));
 
         // Reader for an element's DYNAMIC declarations, which styledComponent
@@ -1091,13 +1092,13 @@ describe('ChatAssistantApp', () => {
         };
 
         // Idle baseline: all controls enabled, full opacity, pointer cursor.
-        expect((screen.getByTestId('edit-message-1') as HTMLButtonElement).disabled).toBe(false);
+        expect((screen.getByTestId('copy-message-1') as HTMLButtonElement).disabled).toBe(false);
         expect((screen.getByTestId('collapse-message-1') as HTMLButtonElement).disabled).toBe(false);
-        expect(mediaStyle('edit-message-1', 'opacity')).toBe('1');
-        expect(mediaStyle('edit-message-1', 'cursor')).toBe('pointer');
+        expect(mediaStyle('copy-message-1', 'opacity')).toBe('1');
+        expect(mediaStyle('copy-message-1', 'cursor')).toBe('pointer');
 
-        // Open the assistant turn's inline editor via its pen.
-        fireEvent.click(screen.getByTestId('edit-message-1'));
+        // Open the assistant turn's inline editor by clicking its words.
+        fireEvent.click(screen.getByTestId('message-content-1'));
         expect(screen.getByTestId('message-content-1').getAttribute('contenteditable')).toBe('true');
 
         // THE MODEL NAME STAYS: the producing model's attribution label is
@@ -1120,15 +1121,15 @@ describe('ChatAssistantApp', () => {
         expect(mediaStyle('collapse-message-0', 'cursor')).toBe('pointer');
 
         // THE OTHER ICONS STAY, GREYED OUT + DISABLED: the edited turn's own
-        // pen, copy, and delete cross... disabled... greyed out
-        const editedControls = ['edit-message-1', 'copy-message-1', 'delete-message-1'];
+        // copy action and delete cross... disabled... greyed out
+        const editedControls = ['copy-message-1', 'delete-message-1'];
         editedControls.forEach((testid) => {
             expect((screen.getByTestId(testid) as HTMLButtonElement).disabled).toBe(true);
             expect(mediaStyle(testid, 'opacity')).toBe('0.4');
             expect(mediaStyle(testid, 'cursor')).toBe('default');
         });
         // ...and equally the OTHER turn's (one edit at a time).
-        const otherControls = ['edit-message-0', 'copy-message-0', 'delete-message-0'];
+        const otherControls = ['copy-message-0', 'delete-message-0'];
         otherControls.forEach((testid) => {
             expect((screen.getByTestId(testid) as HTMLButtonElement).disabled).toBe(true);
             expect(mediaStyle(testid, 'opacity')).toBe('0.4');
@@ -1153,10 +1154,10 @@ describe('ChatAssistantApp', () => {
         await waitForModelSelection();
         await sendFirstTurn();
 
-        // The user turn starts collapsed; expand it and turn its bubble into
-        // the editor via the pen.
+        // The user turn starts collapsed; expand it and click its bubble's
+        // words into the editor.
         fireEvent.click(screen.getByTestId('collapse-message-0'));
-        fireEvent.click(screen.getByTestId('edit-message-0'));
+        fireEvent.click(screen.getByTestId('message-content-0'));
         const bubble = screen.getByTestId('message-content-0');
         expect(bubble.getAttribute('contenteditable')).toBe('true');
 
@@ -1168,7 +1169,7 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls).toHaveLength(6);
 
         // Whitespace-only text is equally not a save.
-        fireEvent.click(screen.getByTestId('edit-message-0'));
+        fireEvent.click(screen.getByTestId('message-content-0'));
         screen.getByTestId('message-content-0').textContent = '   ';
         fireEvent.blur(screen.getByTestId('message-content-0'), { relatedTarget: null });
         expect(screen.getByTestId('message-content-0').textContent).toBe('Hello assistant');
@@ -1190,8 +1191,7 @@ describe('ChatAssistantApp', () => {
         expect(viewBubble.getAttribute('title')).toBe('Click to edit');
 
         // Clicking the WORDS turns the bubble ITSELF into the inline HTML
-        // editor (contentEditable + focused) — the edit pen (edit-message-0)
-        // is never touched in this flow.
+        // editor (contentEditable + focused).
         fireEvent.click(viewBubble);
         const bubble = screen.getByTestId('message-content-0');
         expect(bubble.getAttribute('contenteditable')).toBe('true');
@@ -1264,15 +1264,16 @@ describe('ChatAssistantApp', () => {
         delete (document as Partial<Document> & { caretRangeFromPoint?: unknown }).caretRangeFromPoint;
     });
 
-    it('places the caret at the text END when the edit pen opens a bubble (no click point)', async () => {
+    it('places the caret at the text END when the click point cannot be resolved', async () => {
         renderApp();
         await waitForModelSelection();
         await sendFirstTurn();
 
-        // The pen carries no coordinates: the caret lands at the end of the
-        // message ("Hello from the assistant" is 24 characters), ready to
-        // append — never stranded at the text start.
-        fireEvent.click(screen.getByTestId('edit-message-1'));
+        // jsdom implements no caretRangeFromPoint, so the word click carries
+        // no usable coordinates: the caret lands at the end of the message
+        // ("Hello from the assistant" is 24 characters), ready to append —
+        // never stranded at the text start.
+        fireEvent.click(screen.getByTestId('message-content-1'));
         const bubble = screen.getByTestId('message-content-1');
         expect(bubble.getAttribute('contenteditable')).toBe('true');
         const selection = window.getSelection();
@@ -1313,12 +1314,12 @@ describe('ChatAssistantApp', () => {
         expect(window.getSelection()?.focusOffset).toBe(24);
         expect(list.scrollTop).toBe(87);
 
-        // The pen routes through the SAME effect after Escape closes the first
-        // edit (Escape itself focuses nothing): same single preventScroll
+        // Re-clicking routes through the SAME effect after Escape closes the
+        // first edit (Escape itself focuses nothing): same single preventScroll
         // focus, caret at the end, scroll untouched.
         fireEvent.keyDown(screen.getByTestId('message-content-1'), { key: 'Escape' });
         expect(focusSpy.mock.calls).toEqual([[{ preventScroll: true }]]);
-        fireEvent.click(screen.getByTestId('edit-message-1'));
+        fireEvent.click(screen.getByTestId('message-content-1'));
         expect(focusSpy.mock.calls).toEqual([[{ preventScroll: true }], [{ preventScroll: true }]]);
         expect(window.getSelection()?.focusOffset).toBe(24);
         expect(list.scrollTop).toBe(87);
@@ -1372,8 +1373,7 @@ describe('ChatAssistantApp', () => {
         renderApp();
         await waitForModelSelection();
 
-        // The "no prompt" placeholder bubble itself is the click target — the
-        // pen (edit-system-prompt) is never touched in this flow.
+        // The "no prompt" placeholder bubble itself is the click target.
         const viewBubble = screen.getByTestId('system-prompt-value');
         expect(viewBubble.textContent).toBe('no prompt');
         expect(viewBubble.getAttribute('title')).toBe('Click to edit');
@@ -1385,10 +1385,7 @@ describe('ChatAssistantApp', () => {
         expect(document.activeElement).toBe(bubble);
         expect(bubble.textContent).toBe('');
 
-        // The draft turn's own pen STAYS RENDERED while its editor is open —
-        // greyed out + disabled instead of disappearing (no copy yet: there is
-        // still no saved draft text).
-        expect((screen.getByTestId('edit-system-prompt') as HTMLButtonElement).disabled).toBe(true);
+        // No copy action yet: there is still no saved draft text.
         expect(screen.queryByTestId('copy-system-prompt')).toBeNull();
 
         // Blurring away saves the draft LOCALLY (blank would return the turn
@@ -1399,9 +1396,8 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
         expect(screen.getByTestId('system-prompt-value').getAttribute('data-empty')).toBe('false');
         expect((fetch as any).mock.calls).toHaveLength(2);
-        // The editor closed: the pen is enabled again and, with real draft
-        // text now saved, the copy action exists (enabled too).
-        expect((screen.getByTestId('edit-system-prompt') as HTMLButtonElement).disabled).toBe(false);
+        // The editor closed and, with real draft text now saved, the copy
+        // action exists (enabled).
         expect((screen.getByTestId('copy-system-prompt') as HTMLButtonElement).disabled).toBe(false);
 
         // Reopening reseeds the saved draft; a blank blur restores "no prompt".
@@ -1464,7 +1460,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('message-model-1')).toBeNull();
     });
 
-    it('copies any message to the clipboard through the button next to the edit pen', async () => {
+    it('copies any message to the clipboard through the turn copy action', async () => {
         // jsdom implements no Clipboard API, so navigator.clipboard is stubbed
         // for this test (configurable so it stays removable between tests).
         const writeText = vi.fn((_text: string) => Promise.resolve());
@@ -1477,12 +1473,10 @@ describe('ChatAssistantApp', () => {
         // (the assistant turn is the latest reply, so it is already expanded).
         fireEvent.click(screen.getByTestId('collapse-message-0'));
 
-        // On EVERY turn the copy control sits immediately LEFT of the edit pen
-        // inside the shared action pair on the row under the bubble.
+        // EVERY expanded turn carries its copy control on the row under the
+        // bubble.
         const copyUser = screen.getByTestId('copy-message-0');
-        expect(copyUser.nextElementSibling?.getAttribute('data-testid')).toBe('edit-message-0');
         const copyAssistant = screen.getByTestId('copy-message-1');
-        expect(copyAssistant.nextElementSibling?.getAttribute('data-testid')).toBe('edit-message-1');
 
         // The user query goes to the clipboard...
         fireEvent.click(copyUser);
@@ -1498,7 +1492,7 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
-    it('bottom-sticks the copy/edit controls row so it follows the scroll until its turn end is in view', async () => {
+    it('bottom-sticks the copy controls row so it follows the scroll until its turn end is in view', async () => {
         renderApp();
         await waitForModelSelection();
         await sendFirstTurn();
@@ -1653,7 +1647,7 @@ describe('ChatAssistantApp', () => {
 
         // New chat surface: the system prompt row is the message list's FIRST
         // turn, its bubble showing the literal placeholder — the bubble is NOT
-        // editable until the pen (or a click on it) turns it into the editor.
+        // editable until a click on it turns it into the editor.
         const draftTurn = screen.getByTestId('system-prompt-turn');
         expect(screen.getByTestId('message-list').firstElementChild).toBe(draftTurn);
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
@@ -1661,7 +1655,7 @@ describe('ChatAssistantApp', () => {
 
         // Opening the editor and CANCELLING (Escape) leaves the placeholder
         // untouched: the keyed bubble remount reverts the discarded DOM text.
-        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        fireEvent.click(screen.getByTestId('system-prompt-value'));
         const editingBubble = screen.getByTestId('system-prompt-value');
         expect(editingBubble.getAttribute('contenteditable')).toBe('true');
         expect(editingBubble.textContent).toBe('');
@@ -1696,7 +1690,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
     });
 
-    it('renders the system prompt row like an assistant/user turn: "no prompt" placeholder with only the edit pen', async () => {
+    it('renders the system prompt row like an assistant/user turn: "no prompt" placeholder without a copy action', async () => {
         renderApp();
         await waitForModelSelection();
 
@@ -1715,15 +1709,16 @@ describe('ChatAssistantApp', () => {
 
         // EMPTY state: the bubble is the literal placeholder, marked
         // data-empty, NOT yet editable (no contentEditable until clicked) —
-        // and ONLY the edit pen renders (no copy without text, no delete
-        // cross EVER).
+        // and NO action button renders (no copy without text, no delete cross
+        // EVER; the retired edit pen is gone — the words themselves are the
+        // only edit trigger).
         const bubble = screen.getByTestId('system-prompt-value');
         expect(turn.children[1]).toBe(bubble);
         expect(bubble.textContent).toBe('no prompt');
         expect(bubble.getAttribute('data-empty')).toBe('true');
         expect(bubble.tagName).toBe('ARTICLE');
         expect(bubble.getAttribute('contenteditable')).toBeNull();
-        expect(screen.getByTestId('edit-system-prompt')).toBeDefined();
+        expect(screen.queryByTestId('edit-system-prompt')).toBeNull();
         expect(screen.queryByTestId('copy-system-prompt')).toBeNull();
         expect(screen.queryByTestId('delete-message-0')).toBeNull();
 
@@ -1761,29 +1756,29 @@ describe('ChatAssistantApp', () => {
         expect(assistantBubble).toContain('box-sizing:border-box');
     });
 
-    it('edits the system prompt draft inline through its pen, copies the saved draft, and still persists nothing until the next send', async () => {
+    it('edits the system prompt draft inline by clicking its bubble, copies the saved draft, and still persists nothing until the next send', async () => {
         // Clipboard stub (jsdom has no Clipboard API).
         const writeText = vi.fn((_text: string) => Promise.resolve());
         Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } });
         renderApp();
         await waitForModelSelection();
 
-        // The pen turns the bubble itself into the inline editor, seeded empty.
-        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        // Clicking the words turns the bubble itself into the inline editor,
+        // seeded empty.
+        fireEvent.click(screen.getByTestId('system-prompt-value'));
         const editingBubble = screen.getByTestId('system-prompt-value');
         expect(editingBubble.getAttribute('contenteditable')).toBe('true');
         expect(editingBubble.textContent).toBe('');
         editingBubble.textContent = 'You are terse.';
         fireEvent.blur(editingBubble, { relatedTarget: null });
 
-        // The saved draft replaces the placeholder; the copy action appears
-        // immediately LEFT of the pen; the editor closed. NOTHING hit storage.
+        // The saved draft replaces the placeholder, the copy action appears,
+        // and the editor closed. NOTHING hit storage.
         const bubble = screen.getByTestId('system-prompt-value');
         expect(bubble.textContent).toBe('You are terse.');
         expect(bubble.getAttribute('data-empty')).toBe('false');
         expect(bubble.getAttribute('contenteditable')).toBeNull();
         const copy = screen.getByTestId('copy-system-prompt');
-        expect(copy.nextElementSibling?.getAttribute('data-testid')).toBe('edit-system-prompt');
         expect((fetch as any).mock.calls).toHaveLength(2);
 
         fireEvent.click(copy);
@@ -1791,7 +1786,7 @@ describe('ChatAssistantApp', () => {
 
         // Reopening reseeds the saved draft; a blank blur-commit restores the
         // placeholder (and the copy action disappears again).
-        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        fireEvent.click(screen.getByTestId('system-prompt-value'));
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
         screen.getByTestId('system-prompt-value').textContent = '   ';
         fireEvent.blur(screen.getByTestId('system-prompt-value'), { relatedTarget: null });
@@ -1799,7 +1794,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('copy-system-prompt')).toBeNull();
     });
 
-    it('persists a typed system prompt as the leading system message on send and gives it edit/copy but no delete', async () => {
+    it('persists a typed system prompt as the leading system message on send and gives it click-to-edit/copy but no delete', async () => {
         // The identified GET returns the fixture WITH the persisted system
         // message — it only runs after the append, so no state tracking needed.
         const conversationWithSystem = {
@@ -1844,10 +1839,10 @@ describe('ChatAssistantApp', () => {
         renderApp();
         await waitForModelSelection();
 
-        // Draft a prompt through the turn's pen (the bubble becomes the
+        // Draft a prompt by clicking the turn's bubble (the bubble becomes the
         // contentEditable editor; a blur commits the draft), then send the
         // first turn.
-        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        fireEvent.click(screen.getByTestId('system-prompt-value'));
         screen.getByTestId('system-prompt-value').textContent = 'You are terse.';
         fireEvent.blur(screen.getByTestId('system-prompt-value'), { relatedTarget: null });
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
@@ -1898,9 +1893,9 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('collapse-message-2').getAttribute('aria-expanded')).toBe('true');
         expect(screen.getByTestId('message-turn-2').querySelector('article')?.textContent).toBe('Hello from the assistant');
 
-        // Expanding the system turn reveals it like any other turn: edit pen +
-        // copy exist (immediately adjacent), but NO delete cross — the prompt
-        // cannot be removed.
+        // Expanding the system turn reveals it like any other turn: click-to-
+        // edit bubble + copy action, but NO delete cross — the prompt cannot
+        // be removed.
         fireEvent.click(screen.getByTestId('collapse-message-0'));
         expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('true');
         expect(screen.getByTestId('message-turn-0').querySelector('article')?.textContent).toBe('You are terse.');
@@ -1936,9 +1931,7 @@ describe('ChatAssistantApp', () => {
         expect(assistantBubble).toContain('color:#e8ecf2');
         expect(assistantBubble).toContain('line-height:1.5');
         expect(assistantBubble).not.toContain('font-size');
-        expect(screen.getByTestId('edit-message-0')).toBeDefined();
         const copySystem = screen.getByTestId('copy-message-0');
-        expect(copySystem.nextElementSibling?.getAttribute('data-testid')).toBe('edit-message-0');
         expect(screen.queryByTestId('delete-message-0')).toBeNull();
         // The collapsed user turn hides its delete cross until expanded; the
         // expanded (latest) assistant turn's delete cross is already visible.
@@ -1955,9 +1948,9 @@ describe('ChatAssistantApp', () => {
 
         // Editing the PERSISTED system prompt rewrites the full history through
         // the PUT, keeping the user/assistant turns and their model attribution
-        // intact: the pen turns its bubble into the seeded inline editor and
-        // the blur commits.
-        fireEvent.click(screen.getByTestId('edit-message-0'));
+        // intact: clicking its bubble's words turns it into the seeded inline
+        // editor and the blur commits.
+        fireEvent.click(screen.getByTestId('message-content-0'));
         const systemEdit = screen.getByTestId('message-content-0');
         expect(systemEdit.getAttribute('contenteditable')).toBe('true');
         expect(systemEdit.textContent).toBe('You are terse.');
@@ -1992,9 +1985,9 @@ describe('ChatAssistantApp', () => {
         // ...so the leading system turn still shows the "no prompt" placeholder.
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('no prompt');
 
-        // NOW draft a prompt through the pen (bubble-as-editor + blur-commit)
-        // and send a second turn.
-        fireEvent.click(screen.getByTestId('edit-system-prompt'));
+        // NOW draft a prompt by clicking the bubble (bubble-as-editor +
+        // blur-commit) and send a second turn.
+        fireEvent.click(screen.getByTestId('system-prompt-value'));
         screen.getByTestId('system-prompt-value').textContent = 'You are terse.';
         fireEvent.blur(screen.getByTestId('system-prompt-value'), { relatedTarget: null });
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are terse.');
@@ -2095,14 +2088,13 @@ describe('ChatAssistantApp', () => {
         expect(mediaStyle('message-turn-0', 'min-width')).toBe('auto');
         expect(mediaStyle('message-turn-1', 'min-width')).toBe('50%');
 
-        // Collapse the ASSISTANT turn: bubble + edit/copy/delete hide behind a
+        // Collapse the ASSISTANT turn: bubble + copy/delete hide behind a
         // one-line preview of the reply's first line STACKED under its label...
         fireEvent.click(screen.getByTestId('collapse-message-1'));
         expect(screen.getByTestId('collapse-message-1').getAttribute('aria-expanded')).toBe('false');
         expect(screen.getByTestId('message-preview-1').textContent).toBe('Hello from the assistant');
         expect(assistantLead.lastElementChild).toBe(screen.getByTestId('message-preview-1'));
         expect(screen.getByTestId('message-turn-1').querySelector('article')).toBeNull();
-        expect(screen.queryByTestId('edit-message-1')).toBeNull();
         expect(screen.queryByTestId('copy-message-1')).toBeNull();
         expect(screen.queryByTestId('delete-message-1')).toBeNull();
         // ...and its width floor drops off: collapsed rows stay compact.
@@ -2114,7 +2106,6 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(screen.getByTestId('collapse-message-1'));
         expect(screen.getByTestId('message-turn-1').querySelector('article')?.textContent).toBe('Hello from the assistant');
         expect(screen.queryByTestId('message-preview-1')).toBeNull();
-        expect(screen.getByTestId('edit-message-1')).toBeDefined();
         expect(screen.getByTestId('copy-message-1')).toBeDefined();
         expect(screen.getByTestId('delete-message-1')).toBeDefined();
         expect(mediaStyle('message-turn-1', 'min-width')).toBe('50%');
@@ -2375,7 +2366,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('collapse-message-3').getAttribute('aria-expanded')).toBe('true');
         expect(screen.queryByTestId('message-preview-3')).toBeNull();
         expect(screen.getByTestId('message-turn-3').querySelector('article')?.textContent).toBe('Second answer');
-        expect(screen.getByTestId('edit-message-3')).toBeDefined();
+        expect(screen.getByTestId('copy-message-3')).toBeDefined();
         expect(screen.getByTestId('message-model-3').textContent).toBe('zeta-model');
     });
 
@@ -2434,7 +2425,7 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls).toHaveLength(6);
     });
 
-    it('flies the message list to a section\'s own edges from the up/down chevrons in that section\'s copy/edit panel', async () => {
+    it('flies the message list to a section\'s own edges from the up/down chevrons in that section\'s controls panel', async () => {
         renderApp();
         await waitForModelSelection();
 
