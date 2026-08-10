@@ -43,13 +43,15 @@
 // bubble's DOM text commits through the whole-history PUT; blank text just
 // restores the original) and ESCAPE cancels (a keyed bubble remount reverts
 // the DOM — React reconciliation cannot reset a mutated contentEditable node).
-// While ANY turn is being edited NO turn chrome disappears: the header row —
+// While ANY turn is being edited or a new reply is generating NO persisted-turn
+// chrome disappears: the header row —
 // the producing-model/speaker label — stays rendered (only the edited turn's
 // collapse toggle greys out + disables, so folding cannot unmount the live
 // editor), and EVERY turn's copy and delete icons (the system prompt draft's
 // copy included) stay rendered but greyed out + natively disabled — one edit
-// at a time, visible. Streaming and conversation deletion
-// still hide those icons entirely.
+// at a time, visible. Conversation deletion and prompt persistence still hide
+// those icons entirely; provider waiting/streaming leaves the whole dashboard
+// enabled and fully styled instead of making the UI look frozen.
 // Messages remain individually deletable (x icon);
 // EVERY turn also carries a copy action (two-squares
 // icon) that writes the raw message text to the system clipboard without
@@ -141,7 +143,7 @@
 // family in src/icons (menu, close, copy, chevrons) — unicode text
 // glyphs were retired because their rendering depended on the system font.
 import React, { useCallback, useEffect } from 'react';
-import { arrayEach, isString } from '@presource/core';
+import { arrayEach } from '@presource/core';
 import { styledComponent, useReferenceHook, useStateHook } from '@presource/react';
 import {
     addToConversation,
@@ -1011,8 +1013,14 @@ const rememberModel = (id: string): void => {
 type MessageListOptions = {
     // Index of the message currently under inline edit, or null when idle.
     editingIndex: number | null;
-    // Edit affordances are hidden during streaming/deletion; one edit at a time.
+    // This flag describes whether inline editing is currently allowed. Provider
+    // waiting/streaming is deliberately absent: network latency must not make
+    // existing controls look disabled or stop the rest of the UI repainting.
     canEdit: boolean;
+    // Expanded persisted-turn controls remain visible while a response generates;
+    // deletion/prompt persistence still removes their surface because those
+    // operations change the record itself.
+    showControls: boolean;
     // Turns a bubble INTO the inline HTML editor (contentEditable, focused).
     // The offset is the click's character position (see textOffsetFromPoint):
     // it restores the caret onto the CLICKED WORD after the editable remount;
@@ -1191,8 +1199,9 @@ export const switchMessageRole = (message: ChatMessage, assistantModel: string):
 // (the model/speaker label) stays rendered — its collapse toggle merely greys
 // out + disables on the EDITED turn so folding cannot unmount the live editor —
 // and every turn's copy/delete icons stay rendered but greyed out +
-// natively disabled (one edit at a time). Streaming and conversation deletion
-// (canEdit === false) still hide the icons entirely, exactly as before.
+// natively disabled (one edit at a time). Conversation deletion and prompt
+// persistence (showControls === false) still hide the icons; provider streaming
+// does not.
 const renderMessages = (messages: ChatMessage[], options: MessageListOptions): React.ReactNode[] => {
     const nodes: React.ReactNode[] = [];
     arrayEach(messages, ({ index, value: message }) => {
@@ -1200,15 +1209,16 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         const editing = options.editingIndex === index;
         const collapsed = options.collapsedTurns.includes(index);
         // The copy action (controls row under the bubble) and the delete cross
-        // appear on every idle, EXPANDED turn: none during streaming/
-        // conversation deletion (canEdit), none while the turn is collapsed
-        // (its bubble is hidden). While ANY turn is being edited they all STAY
-        // RENDERED but greyed out + natively disabled (controlsGreyed): one
-        // edit at a time, but no icon ever disappears mid-edit — it only fades.
+        // appear on every EXPANDED turn unless the conversation is being deleted
+        // or its prompt is being persisted. Generation never contributes to this
+        // visual state: waiting for a provider must not grey out the dashboard.
+        // Collapsed turns still hide their bubble row by design. Only an active
+        // inline edit greys controls, preserving the one-editor-at-a-time rule.
         const controlsGreyed = options.editingIndex !== null;
+        const controlsVisible = !collapsed && options.showControls;
         // The delete cross sits on the RIGHT of the header row above the bubble;
         // SYSTEM messages are the one non-deletable turn: edit + copy still apply.
-        const deleteControl = !collapsed && options.canEdit && message.role !== 'system' ? (
+        const deleteControl = controlsVisible && message.role !== 'system' ? (
             <MessageDeleteButton
                 type="button"
                 greyed={controlsGreyed}
@@ -1226,7 +1236,7 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         // (idle, expanded). The icon is the
         // shared CopyIcon (two overlapping squares — the "clone" glyph of the
         // turn chrome).
-        const copyControl = !collapsed && options.canEdit ? (
+        const copyControl = controlsVisible ? (
             <TurnIconButton
                 type="button"
                 greyed={controlsGreyed}
@@ -1242,8 +1252,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
         // The role switch remains beside the attribution label even while a turn
         // is collapsed, because the label is the visible handle in that state.
         // During another inline edit it stays rendered but disabled/greyed, while
-        // streaming or deletion hides it with the rest of the edit chrome.
-        const roleSwitchControl = options.canEdit && message.role !== 'system' ? (
+        // deletion or prompt persistence removes it with the changing record.
+        const roleSwitchControl = options.showControls && message.role !== 'system' ? (
             <TurnIconButton
                 type="button"
                 greyed={controlsGreyed}
@@ -1380,10 +1390,9 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             </BubbleComponent>
         );
         if (message.role === 'user') {
-            // The controls row renders while the turn is expanded and idle —
-            // INCLUDING while it (or another turn) is being edited: the
-            // greyed-out + disabled copy action stays visible under the
-            // editor bubble instead of disappearing.
+            // The controls row renders while the turn is expanded, including
+            // while a response streams or another turn is edited. Only the
+            // active-edit state intentionally greys its mutation controls.
             nodes.push(
                 <UserTurn key={key} collapsed={collapsed} data-testid={`message-turn-${index}`}>
                     {headerRow}
@@ -1399,8 +1408,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                         // padding line (see jumpTurnEdge).
                         <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}>
                             <TurnJumpPair>
-                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
-                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
+                                 <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
+                                 <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
                             <TurnActionPair>{copyControl}</TurnActionPair>
                         </TrailingControls>
@@ -1427,8 +1436,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                         // padding line (see jumpTurnEdge).
                         <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}>
                             <TurnJumpPair>
-                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
-                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
+                                 <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
+                                 <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
                             <TurnActionPair>{copyControl}</TurnActionPair>
                         </TrailingControls>
@@ -1457,8 +1466,8 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
                         // padding line (see jumpTurnEdge).
                         <TrailingControls floating={options.stickyTurns.includes(index)} data-testid={`turn-controls-${index}`}>
                             <TurnJumpPair>
-                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
-                                <TurnIconButton type="button" onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
+                                 <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid={`turn-jump-top-${index}`}><ChevronUpIcon size={14} /></TurnIconButton>
+                                 <TurnIconButton type="button" greyed={controlsGreyed} disabled={controlsGreyed} onClick={() => options.onJumpTurnEdge(`message-turn-${index}`, false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid={`turn-jump-bottom-${index}`}><ChevronDownIcon size={14} /></TurnIconButton>
                             </TurnJumpPair>
                             <TurnActionPair>{copyControl}</TurnActionPair>
                         </TrailingControls>
@@ -2024,13 +2033,13 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
 
     // Turn the header title ITSELF into the inline editor (contentEditable,
     // auto-focused + caret-restored by the editing effect) — no dialog.
-    // Blocked while a turn streams/deletes (the old dialog's disabled state
-    // made the same gate).
+    // Provider waiting/streaming does not block title editing; only deletion
+    // blocks a rename because the selected surface is being removed.
     const startTitleEdit = useCallback((offset: number | null = null) => {
-        if (loading() || deleting()) return;
+        if (deleting()) return;
         caretOffset(offset);
         editingTitle(true);
-    }, [caretOffset, deleting, editingTitle, loading]);
+    }, [caretOffset, deleting, editingTitle]);
 
     // Stop editing the system prompt draft (Escape, chat switching, new chat,
     // deletion, completed send). The saved text (systemPrompt) is NOT touched
@@ -2060,7 +2069,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         const originalConversationId = record?.conversationId ?? null;
         editingSystemPrompt(false);
         systemPrompt(text);
-        if (!text || savingSystemPrompt() || loading() || deleting()) return;
+        if (!text || savingSystemPrompt() || deleting()) return;
 
         savingSystemPrompt(true);
         try {
@@ -2105,7 +2114,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             savingSystemPrompt(false);
         }
-    }, [baseUrl, cancelSystemPromptDraft, chats, collapsedTurns, deleting, editingSystemPrompt, error, loading, model, savingSystemPrompt, selected, systemPrompt]);
+    }, [baseUrl, cancelSystemPromptDraft, chats, collapsedTurns, deleting, editingSystemPrompt, error, model, savingSystemPrompt, selected, systemPrompt]);
 
     // Select a conversation and fetch its full message history; the recorded model
     // applies only when nothing is remembered (a remembered/picked model wins).
@@ -2162,9 +2171,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // deleted entry IS the open chat does the surface reset to the empty
     // new-chat state (any other chat stays open and selected). The model
     // selection survives either way, matching startNewChat. Blocked while a
-    // turn is streaming so a late-arriving stream cannot resurrect the chat.
+    // turn is streaming; the active request still owns its original record and
+    // completion state is reconciled by the send flow.
     const deleteChat = useCallback(async (conversationId: string) => {
-        if (deleting() || loading()) return;
+        if (deleting()) return;
         deleting(true);
         try {
             await deleteConversation(baseUrl, conversationId);
@@ -2186,7 +2196,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             deleting(false);
         }
-    }, [baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, loading, message, selected, systemPrompt]);
+    }, [baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, message, selected, systemPrompt]);
 
     // Turn one message's bubble into the inline HTML editor (contentEditable,
     // auto-focused by the editing effect above). The offset restores the caret
@@ -2231,7 +2241,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // defaults because the latest assistant index may change after the swap.
     const switchMessage = useCallback(async (index: number) => {
         const record = selected();
-        if (!record || loading() || deleting() || savingEdit()) return;
+        if (!record || deleting() || savingEdit()) return;
         const existing = record.messages[index];
         if (!existing || existing.role === 'system') return;
         savingEdit(true);
@@ -2251,7 +2261,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             savingEdit(false);
         }
-    }, [baseUrl, cancelEdit, chats, collapsedTurns, deleting, error, loading, model, savingEdit, selected]);
+    }, [baseUrl, cancelEdit, chats, collapsedTurns, deleting, error, model, savingEdit, selected]);
 
     // Copy any message's raw text to the system clipboard (the per-turn copy
     // action in the controls row under the bubble). The async Clipboard API is
@@ -2289,14 +2299,14 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // request (blank titles are forbidden, and the keyed h1 remount restores
     // the persisted one); the conversation guard keeps a blur-commit that
     // raced a chat switch/new chat from resurrecting the old title onto the
-    // fresh surface. loading() still blocks a rename while a turn streams so
-    // a late append-follow-up GET cannot overwrite it (and vice versa).
+    // fresh surface. The request remains independently asynchronous while the
+    // title control stays usable.
     const saveTitle = useCallback(async (rawTitle: string) => {
         if (!editingTitle()) return;
         const record = selected();
         const title = rawTitle.trim();
         cancelTitleEdit();
-        if (!record || !title || savingTitle() || loading() || title === record.title) return;
+        if (!record || !title || savingTitle() || title === record.title) return;
         savingTitle(true);
         try {
             const result = (await replaceConversationMessages(baseUrl, record.conversationId, {
@@ -2312,7 +2322,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             savingTitle(false);
         }
-    }, [baseUrl, cancelTitleEdit, chats, editingTitle, error, loading, savingTitle, selected]);
+    }, [baseUrl, cancelTitleEdit, chats, editingTitle, error, savingTitle, selected]);
 
     // Commit an inline bubble edit delivered by BLUR: the bubble's DOM text
     // replaces the message's content by REPLACING the complete history through
@@ -2503,7 +2513,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 <ConversationDeleteButton
                     type="button"
                     onClick={() => void deleteChat(chat.conversationId)}
-                    disabled={deleting() || loading()}
+                    // Provider waiting/streaming is asynchronous and must not
+                    // grey the sidebar. Deletion still owns its own guard so a
+                    // second delete cannot race the active DELETE request.
+                    disabled={deleting()}
                     aria-label="Delete conversation"
                     title="Delete conversation"
                     data-testid={`delete-chat-${chat.conversationId}`}
@@ -2531,19 +2544,25 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // While the draft is empty the system turn's bubble is the literal
     // placeholder "no prompt"; the copy action only exists with real text.
     const systemPromptEmpty = systemPrompt().trim() === '';
-    // The draft turn's affordances follow the same rules as message turns:
-    // none while a turn streams or a conversation delete is in flight.
-    const canEditSystemPrompt = !loading() && !deleting() && !savingSystemPrompt();
+    // The draft editor is unavailable only while its own persistence/delete flow
+    // owns the record. Provider waiting/streaming does not grey or disable this
+    // draft's controls, so the dashboard remains responsive during generation.
+    const canEditSystemPrompt = !deleting() && !savingSystemPrompt();
+    const showSystemPromptControls = !deleting() && !savingSystemPrompt();
 
     // Options handed to the module-level message renderer; rebuilt every render
     // so the closures always see the latest accessor state.
     const messageOptions: MessageListOptions = {
         editingIndex: editingIndex(),
-        // No edit affordances while a turn streams or a delete is in flight.
-        // A prompt persistence request owns the current history write just like
-        // streaming/deletion; hiding message edit controls prevents concurrent
-        // full-history mutations from racing the prompt save.
-        canEdit: !loading() && !deleting() && !savingSystemPrompt(),
+        // Provider generation is asynchronous UI state, not a reason to disable
+        // editing/copying/scroll controls. Only a destructive or history-writing
+        // operation suppresses inline editing to avoid concurrent record writes.
+        canEdit: !deleting() && !savingSystemPrompt(),
+        // Generation does not replace the persisted history until completion,
+        // therefore the existing expanded-turn controls remain renderable while
+        // loading. Deletion and prompt persistence intentionally remove them
+        // because those flows own a changing record surface.
+        showControls: !deleting() && !savingSystemPrompt(),
         onEditStart: startEdit,
         onEditCommit: (index, text) => void commitEdit(index, text),
         onEditCancel: cancelEdit,
@@ -2732,7 +2751,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                     producing-chrome-never-disappears rule).
                                     Copy still exists only when there is real
                                     saved draft text. */}
-                                {canEditSystemPrompt && (
+                                {showSystemPromptControls && (
                                     // The draft turn joins the same measured
                                     // sticky gate as message turns — its
                                     // sentinel index in stickyTurns is -1 (a
@@ -2748,19 +2767,19 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                             own wrapper (testid key
                                             "system-prompt-turn"). */}
                                         <TurnJumpPair>
-                                            <TurnIconButton type="button" onClick={() => jumpTurnEdge('system-prompt-turn', true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid="system-prompt-jump-top"><ChevronUpIcon size={14} /></TurnIconButton>
-                                            <TurnIconButton type="button" onClick={() => jumpTurnEdge('system-prompt-turn', false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid="system-prompt-jump-bottom"><ChevronDownIcon size={14} /></TurnIconButton>
+                                            <TurnIconButton type="button" greyed={!canEditSystemPrompt} disabled={!canEditSystemPrompt} onClick={() => jumpTurnEdge('system-prompt-turn', true)} aria-label="Scroll to section top" title="Scroll to section top" data-testid="system-prompt-jump-top"><ChevronUpIcon size={14} /></TurnIconButton>
+                                            <TurnIconButton type="button" greyed={!canEditSystemPrompt} disabled={!canEditSystemPrompt} onClick={() => jumpTurnEdge('system-prompt-turn', false)} aria-label="Scroll to section bottom" title="Scroll to section bottom" data-testid="system-prompt-jump-bottom"><ChevronDownIcon size={14} /></TurnIconButton>
                                         </TurnJumpPair>
                                         <TurnActionPair>
                                             {/* Copy mirrors the per-message
                                                 action but exists only when
                                                 there is real draft text to
                                                 copy. */}
-                                            {!systemPromptEmpty && (
+                                            {!systemPromptEmpty && showSystemPromptControls && (
                                                 <TurnIconButton
                                                     type="button"
-                                                    greyed={editingSystemPrompt()}
-                                                    disabled={editingSystemPrompt()}
+                                                    greyed={!canEditSystemPrompt || editingSystemPrompt()}
+                                                    disabled={!canEditSystemPrompt || editingSystemPrompt()}
                                                     onClick={() => void copyMessage(systemPrompt())}
                                                     aria-label="Copy system prompt"
                                                     title="Copy system prompt"
@@ -2848,7 +2867,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 }}
                                 aria-label="Select model"
                                 data-testid="model-select"
-                                disabled={loading() || catalog.length === 0}
+                                // The model picker remains usable while a
+                                // response streams; the request already holds
+                                // its own model snapshot.
+                                disabled={catalog.length === 0}
                             >
                                 {catalog.length === 0
                                     ? <option value="">No models available</option>
@@ -2882,7 +2904,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 placeholder="Message the assistant..."
                                 aria-label="Message the assistant"
                                 data-testid="chat-input"
-                                disabled={loading()}
+                                 // Provider waiting/streaming does not disable
+                                 // drafting the next message; submit's loading
+                                 // guard prevents overlapping provider turns.
                                 // one row by default: the browser's two-row
                                 // textarea default would otherwise survive the
                                 // resize effect's 'auto' measurement and lock the
@@ -2895,7 +2919,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             {composerFocus() && (
                                 <SendButton
                                     type="submit"
-                                    disabled={loading() || savingSystemPrompt() || !chosenModel || !isString(message()) || !message().trim()}
+                                    // Keep the send affordance styled normally in
+                                    // every async state, including after submit
+                                    // clears the draft. submit() owns validation
+                                    // and rejects overlapping requests; a native
+                                    // disabled prop would make the whole composer
+                                    // look frozen while the provider streams.
                                     aria-label="Send message"
                                     title="Send message"
                             data-testid="send-chat-button"

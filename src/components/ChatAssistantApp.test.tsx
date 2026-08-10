@@ -665,6 +665,79 @@ describe('ChatAssistantApp', () => {
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBe(DEFAULT_MODEL);
     });
 
+    it('keeps existing turn icons mounted and interactive while a reply is generating', async () => {
+        // A controlled stream leaves the persisted user and assistant turns in
+        // place while the transient pending/streaming pair is rendered, which
+        // reproduces the generation phase where icon controls used to vanish.
+        const stream = controlledStream();
+        let completionCount = 0;
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (url.endsWith('/chat/completions')) {
+                // Finish the setup turn immediately, then hold the second turn
+                // open so the test can inspect controls during generation.
+                return Promise.resolve(completionCount++ === 0 ? sseResponse(completionFrames) : stream.response());
+            }
+            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(200, { conversations: [] }));
+            }
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'POST') return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+            if (init?.method === 'GET') {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+        await sendFirstTurn();
+
+        // Expand the collapsed user turn so both persisted turns expose their
+        // complete control rows before generation begins.
+        fireEvent.click(screen.getByTestId('collapse-message-0'));
+        expect(screen.getByTestId('copy-message-0').querySelector('svg[data-icon="copy"]')).not.toBeNull();
+        expect(screen.getByTestId('copy-message-1').querySelector('svg[data-icon="copy"]')).not.toBeNull();
+        expect(screen.getByTestId('delete-message-0').querySelector('svg[data-icon="close"]')).not.toBeNull();
+        expect(screen.getByTestId('delete-message-1').querySelector('svg[data-icon="close"]')).not.toBeNull();
+
+        // Starting a second turn must retain every existing SVG and keep every
+        // existing control interactive; the transient rows still intentionally
+        // carry no controls until persistence creates their canonical turns.
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Follow up question' } });
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect(screen.getByTestId('pending-user-message')).toBeDefined());
+        // The composer and sidebar remain ordinary interactive controls while
+        // the provider request is pending; loading is an async status signal,
+        // never a blanket disabled/greyed presentation state.
+        expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).disabled).toBe(false);
+        expect((screen.getByTestId('model-select') as HTMLSelectElement).disabled).toBe(false);
+        // The send icon remains a normal button even after submit clears the
+        // draft; submit() validates the empty draft and active request instead
+        // of presenting a disabled/greyed control during provider streaming.
+        expect((screen.getByTestId('send-chat-button') as HTMLButtonElement).disabled).toBe(false);
+        expect((screen.getByTestId('delete-chat-conversation-1') as HTMLButtonElement).disabled).toBe(false);
+        for (const testid of ['copy-message-0', 'copy-message-1', 'delete-message-0', 'delete-message-1', 'switch-message-0', 'switch-message-1', 'turn-jump-top-0', 'turn-jump-bottom-0', 'turn-jump-top-1', 'turn-jump-bottom-1']) {
+            const control = screen.getByTestId(testid) as HTMLButtonElement;
+            expect(control.disabled).toBe(false);
+            expect(control.querySelector('svg')).not.toBeNull();
+        }
+
+        // No storage mutation occurs until the stream is complete; this proves
+        // the request remains asynchronous while the existing controls remain
+        // usable during every waiting/streaming phase.
+        expect((fetch as any).mock.calls).toHaveLength(7);
+        await act(async () => {
+            stream.push(completionFrames[0]);
+            stream.push(completionFrames[1]);
+            stream.push(completionFrames[2]);
+            stream.push(completionFrames[3]);
+            stream.close();
+        });
+        await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(9));
+    });
+
     it('sends the entire history to the newly selected model regardless of prior turns', async () => {
         renderApp();
         await waitForModelSelection();
