@@ -25,4 +25,9 @@
 // Embedders that need a different backend pass the baseUrl/providerUrl props on
 // ChatAssistantApp (components/ChatAssistantApp.tsx:1577-1580) instead of
 // editing this constant.
-export const DEFAULT_SERVER_URL = 'http://192.168.8.128:5000';
+//
+// The host/port themselves live in ./config.ts (DATABASE_API_HOST/PORT); this
+// constant is the assembled origin the rest of the api layer consumes, kept
+// here as the historical import surface for existing callers.
+import { DATABASE_API_URL } from './config';
+export const DEFAULT_SERVER_URL = DATABASE_API_URL;
