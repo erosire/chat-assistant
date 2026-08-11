@@ -70,7 +70,7 @@
 // stack full-width on mobile and sit in a right-aligned row on desktop.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChatMessage } from '../api';
+import type { ChatMessage, ConversationRecord } from '../api';
 import { ChatAssistantApp, controlsShouldFloat } from './ChatAssistantApp';
 
 const BASE_URL = 'http://test.local/v1/chat-assistant/conversation';
@@ -106,7 +106,10 @@ const conversation = {
         { role: 'assistant' as const, content: 'Hello from the assistant', model: ALT_MODEL }
     ],
     createdAt: '2026-08-06T00:00:00.000Z',
-    updatedAt: '2026-08-06T00:00:01.000Z'
+    updatedAt: '2026-08-06T00:00:01.000Z',
+    // The composer displays the latest persisted provider total for the open
+    // record, so the fixture includes a deterministic usage value for selection.
+    usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 }
 };
 
 // JSON-envelope Response substitute for catalog, storage, and pre-stream error cases.
@@ -178,6 +181,10 @@ const mockFetch = () =>
         // authoritative; a non-null value is reserved for prompt persistence
         // flows whose returned history must include the new system turn.
         let storedMessages: ChatMessage[] | null = null;
+        // The real identified POST accumulates usage across completed turns;
+        // keeping the mock's canonical record stateful verifies the composer shows
+        // a growing conversation total instead of only the latest response.
+        let storedUsage: ConversationRecord['usage'] | undefined;
         return vi.fn((url: string, init?: RequestInit) => {
         if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
         if (url.endsWith('/chat/completions')) return Promise.resolve(sseResponse(completionFrames));
@@ -193,8 +200,18 @@ const mockFetch = () =>
             return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
         }
         if (init?.method === 'POST') {
-            const body = JSON.parse(String(init.body)) as { messages?: ChatMessage[] };
+            const body = JSON.parse(String(init.body)) as {
+                messages?: ChatMessage[];
+                usage?: ConversationRecord['usage'];
+            };
             if (storedMessages !== null) storedMessages = [...storedMessages, ...(body.messages ?? [])];
+            if (body.usage) {
+                storedUsage = {
+                    prompt_tokens: (storedUsage?.prompt_tokens ?? 0) + (body.usage.prompt_tokens ?? 0),
+                    completion_tokens: (storedUsage?.completion_tokens ?? 0) + (body.usage.completion_tokens ?? 0),
+                    total_tokens: (storedUsage?.total_tokens ?? 0) + (body.usage.total_tokens ?? 0)
+                };
+            }
             return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
         }
         if (init?.method === 'PUT') {
@@ -219,7 +236,10 @@ const mockFetch = () =>
             const persisted = storedMessages !== null
                 ? { ...conversation, messages: storedMessages, messageCount: storedMessages.length }
                 : conversation;
-            return Promise.resolve(response(200, { conversationId: conversation.conversationId, conversation: persisted }));
+            return Promise.resolve(response(200, {
+                conversationId: conversation.conversationId,
+                conversation: storedUsage === undefined ? persisted : { ...persisted, usage: storedUsage }
+            }));
         }
         return Promise.resolve(response(404, { error: 'unexpected request' }));
         });
@@ -280,6 +300,9 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('send-chat-button')).toBeNull();
         expect(screen.getByTestId('model-picker')).toBeDefined();
         expect(screen.getByTestId('model-select')).toBeDefined();
+        // A fresh conversation has not received provider usage yet, so the
+        // top-right composer indicator is explicit rather than blank.
+        expect(screen.getByTestId('token-usage').textContent).toBe('Total tokens: 0');
 
         const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
         expect(input).toBeDefined();
@@ -370,6 +393,15 @@ describe('ChatAssistantApp', () => {
         // Selecting the restored chat reads its full record through the identified GET.
         fireEvent.click(tab);
         await waitFor(() => expect(screen.getByText('Hello from the assistant')).toBeDefined());
+        // The open sidebar item exposes both the semantic pressed state and the
+        // visible active class styling; the token total comes from the selected
+        // record rather than its compact summary.
+        expect(tab.getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('token-usage').textContent).toBe('Total tokens: 9');
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        expect(css).toMatch(/@media \(min-width: 0px\)\{\.css-[^{]+\{[^}]*background-color:#273d72;[^}]*border-color:#5f82f0;[^}]*box-shadow:0 0 0 1px #5f82f0;[^}]*\}\}/);
         expect((fetch as any).mock.calls[2]).toEqual([`${BASE_URL}/conversation-1`, { method: 'GET' }]);
     });
 
@@ -650,6 +682,7 @@ describe('ChatAssistantApp', () => {
                     body: JSON.stringify({
                         model: DEFAULT_MODEL,
                         stream: true,
+                        stream_options: { include_usage: true },
                         messages: [{ role: 'user', content: 'Hello assistant' }]
                     })
                 }
@@ -822,16 +855,20 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(screen.getByTestId('send-chat-button'));
 
         await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(9));
+        // Each fixture completion reports nine tokens; the conversation indicator
+        // accumulates both completed turns rather than replacing the first total.
+        expect(screen.getByTestId('token-usage').textContent).toBe('Total tokens: 18');
         // The second streamed provider request carries the full 3-message history under the new model.
         expect((fetch as any).mock.calls[6]).toEqual([
             `${PROVIDER_URL}/chat/completions`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: ALT_MODEL,
-                    stream: true,
-                    messages: [
+                    body: JSON.stringify({
+                        model: ALT_MODEL,
+                        stream: true,
+                        stream_options: { include_usage: true },
+                        messages: [
                         { role: 'user', content: 'Hello assistant' },
                         { role: 'assistant', content: 'Hello from the assistant' },
                         { role: 'user', content: 'Follow up question' }
@@ -915,6 +952,7 @@ describe('ChatAssistantApp', () => {
                     body: JSON.stringify({
                         model: DEFAULT_MODEL,
                         stream: true,
+                        stream_options: { include_usage: true },
                         messages: [{ role: 'user', content: 'Hello assistant' }]
                     })
                 }
@@ -1205,6 +1243,7 @@ describe('ChatAssistantApp', () => {
                 body: JSON.stringify({
                     model: DEFAULT_MODEL,
                     stream: true,
+                    stream_options: { include_usage: true },
                     messages: [
                         { role: 'user', content: 'Edited question' },
                         { role: 'assistant', content: 'Hello from the assistant' },
@@ -1860,6 +1899,7 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls[2][1].body).toBe(JSON.stringify({
             model: DEFAULT_MODEL,
             stream: true,
+            stream_options: { include_usage: true },
             messages: [{ role: 'user', content: 'Hello assistant' }]
         }));
         expect(JSON.parse((fetch as any).mock.calls[4][1].body as string)).toEqual({
@@ -2051,6 +2091,7 @@ describe('ChatAssistantApp', () => {
                 body: JSON.stringify({
                     model: DEFAULT_MODEL,
                     stream: true,
+                    stream_options: { include_usage: true },
                     messages: [
                         { role: 'system', content: 'You are terse.' },
                         { role: 'user', content: 'Hello assistant' }
@@ -2212,6 +2253,7 @@ describe('ChatAssistantApp', () => {
                 body: JSON.stringify({
                     model: DEFAULT_MODEL,
                     stream: true,
+                    stream_options: { include_usage: true },
                     messages: [
                         { role: 'system', content: 'You are terse.' },
                         { role: 'user', content: 'Hello assistant' },
@@ -2549,6 +2591,7 @@ describe('ChatAssistantApp', () => {
         expect(JSON.parse((fetch as any).mock.calls[2][1].body as string)).toEqual({
             model: DEFAULT_MODEL,
             stream: true,
+            stream_options: { include_usage: true },
             messages: [{ role: 'user', content: 'Hello assistant' }]
         });
 

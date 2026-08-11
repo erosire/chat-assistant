@@ -80,7 +80,14 @@ describe('provider API client', () => {
         expect(fetch).toHaveBeenCalledWith('http://test.local/providers/private/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'openai/gpt-5.6-sol', stream: true, messages })
+            // Usage is requested explicitly because compatible providers otherwise
+            // omit the final usage-only SSE frame consumed by provider.ts.
+            body: JSON.stringify({
+                model: 'openai/gpt-5.6-sol',
+                stream: true,
+                stream_options: { include_usage: true },
+                messages
+            })
         });
     });
 
@@ -109,6 +116,7 @@ describe('provider API client', () => {
             body: JSON.stringify({
                 model: 'openai/gpt-5.6-sol',
                 stream: true,
+                stream_options: { include_usage: true },
                 messages: [
                     { role: 'user', content: 'Question' },
                     { role: 'assistant', content: 'Earlier answer' }

@@ -106,7 +106,16 @@ export async function streamProviderChatCompletion(
     const response = await fetch(`${normalizeBaseUrl(baseUrl)}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, stream: true, messages: toProviderMessages(messages) })
+        // OpenAI-compatible providers omit usage from streamed responses unless
+        // this explicit opt-in is present. Without it, the SSE parser correctly
+        // sees content but never receives a usage frame, so the conversation UI
+        // falls back to "Total tokens: 0" after every completed turn.
+        body: JSON.stringify({
+            model,
+            stream: true,
+            stream_options: { include_usage: true },
+            messages: toProviderMessages(messages)
+        })
     });
     if (!response.ok) {
         throw new Error(await errorMessage(response, 'Provider chat completion failed'));

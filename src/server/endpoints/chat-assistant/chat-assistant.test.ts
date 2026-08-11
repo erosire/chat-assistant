@@ -238,6 +238,52 @@ describe('conversation service handlers', () => {
         });
     });
 
+    it('accumulates token usage across every completed conversation turn', async () => {
+        // Provider usage is reported per request, while the conversation indicator
+        // represents lifetime usage for the open chat. The second append therefore
+        // adds to the first turn instead of replacing its counters.
+        vi.setSystemTime(new Date('2026-08-06T00:00:10.000Z'));
+        const store = memoryStore([{
+            ...existingConversation,
+            usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 }
+        }]);
+
+        const result = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: {
+                    messages: [
+                        { role: 'user', content: 'Second question' },
+                        { role: 'assistant', content: 'Second answer' }
+                    ],
+                    usage: { prompt_tokens: 8, completion_tokens: 6, total_tokens: 14 }
+                }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    messageCount: 4,
+                    messages: [
+                        { role: 'user', content: 'First question' },
+                        { role: 'assistant', content: 'First answer' },
+                        { role: 'user', content: 'Second question' },
+                        { role: 'assistant', content: 'Second answer' }
+                    ],
+                    updatedAt: '2026-08-06T00:00:10.000Z',
+                    usage: { prompt_tokens: 13, completion_tokens: 10, total_tokens: 23 }
+                }
+            }
+        });
+    });
+
     it('records the new model when the turn was produced by a different model', async () => {
         vi.setSystemTime(new Date('2026-08-06T00:00:10.000Z'));
         const store = memoryStore([existingConversation]);
@@ -466,9 +512,9 @@ describe('conversation service handlers', () => {
         ]);
     });
 
-    it('drops stale usage counters when the history is replaced', async () => {
-        // Usage describes the last appended turn; after a rewrite it no longer
-        // matches anything, so the replacement must not carry it forward.
+    it('preserves accumulated usage counters when the history is replaced', async () => {
+        // Usage is a conversation lifetime total, so editing or deleting message
+        // history must not make the already-consumed provider tokens disappear.
         vi.setSystemTime(new Date('2026-08-06T00:00:20.000Z'));
         const withUsage: ConversationRecord = {
             ...existingConversation,
@@ -495,8 +541,53 @@ describe('conversation service handlers', () => {
                     title: 'Only question now',
                     messageCount: 1,
                     messages: [{ role: 'user', content: 'Only question now' }],
-                    updatedAt: '2026-08-06T00:00:20.000Z'
-                    // No usage key: the replacement clears the counters.
+                    updatedAt: '2026-08-06T00:00:20.000Z',
+                    usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 }
+                }
+            }
+        });
+    });
+
+    it('adds completed-turn usage when a PUT also prepends history', async () => {
+        // The send fallback uses PUT for a newly introduced system prompt after
+        // provider completion; that rewrite must still record the completed turn.
+        vi.setSystemTime(new Date('2026-08-06T00:00:20.000Z'));
+        const store = memoryStore([existingConversation]);
+
+        const result = await conversationPut(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: {
+                    messages: [
+                        { role: 'system', content: 'You are concise.' },
+                        ...existingConversation.messages,
+                        { role: 'user', content: 'Follow up' },
+                        { role: 'assistant', content: 'Follow-up answer' }
+                    ],
+                    usage: { prompt_tokens: 8, completion_tokens: 6, total_tokens: 14 }
+                }
+            },
+            variables(store)
+        );
+
+        expect(result).toEqual({
+            status: 200,
+            response: {
+                conversationId: 'conversation-1',
+                conversation: {
+                    ...existingConversation,
+                    messageCount: 5,
+                    messages: [
+                        { role: 'system', content: 'You are concise.' },
+                        { role: 'user', content: 'First question' },
+                        { role: 'assistant', content: 'First answer' },
+                        { role: 'user', content: 'Follow up' },
+                        { role: 'assistant', content: 'Follow-up answer' }
+                    ],
+                    updatedAt: '2026-08-06T00:00:20.000Z',
+                    usage: { prompt_tokens: 8, completion_tokens: 6, total_tokens: 14 }
                 }
             }
         });

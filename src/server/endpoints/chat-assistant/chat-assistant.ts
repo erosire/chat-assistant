@@ -70,7 +70,9 @@ const resolveStore = (variables: ChatHandlerVariables): ChatStore => {
 
 // Usage is optional metadata reported by the provider through the UI; only the
 // three numeric token counters are persisted so a malformed field cannot corrupt
-// the stored record shape.
+// the stored record shape. The record-level values are conversation aggregates,
+// not just the most recent provider turn, because prompt_tokens includes the
+// complete history on every request and users need the total spend across turns.
 const parseUsage = (value: unknown): ConversationRecord['usage'] | null | undefined => {
     if (value === undefined) return undefined;
     if (!isObject(value)) return null;
@@ -83,6 +85,22 @@ const parseUsage = (value: unknown): ConversationRecord['usage'] | null | undefi
         }
     }
     return usage;
+};
+
+// Add one completed provider turn to the conversation aggregate. Counters are
+// optional in OpenAI-compatible responses, so an omitted field keeps its previous
+// value rather than resetting it; this also preserves partial usage payloads from
+// providers that report only one side of the accounting data.
+const accumulateUsage = (
+    previous: ConversationRecord['usage'] | undefined,
+    current: NonNullable<ConversationRecord['usage']>
+): ConversationRecord['usage'] => {
+    const aggregate: NonNullable<ConversationRecord['usage']> = { ...(previous ?? {}) };
+    for (const key of ['prompt_tokens', 'completion_tokens', 'total_tokens'] as const) {
+        const value = current[key];
+        if (value !== undefined) aggregate[key] = (aggregate[key] ?? 0) + value;
+    }
+    return aggregate;
 };
 
 // Read and validate the request body shared by identified POST requests.
@@ -229,7 +247,13 @@ export const conversationPost = asHandlerMethod(async (_, parameters, rawVariabl
     // The recorded model follows the turn the UI just completed; the UI re-selects
     // that model on reload unless the user picks another one.
     const model = body.model?.trim() || existing.model;
-    const usage = parseUsage(body.usage) ?? undefined;
+    const turnUsage = parseUsage(body.usage) ?? undefined;
+    // Each POST represents one completed exchange. Add its counters to the
+    // existing conversation aggregate so the UI no longer falls back to zero or
+    // displays only the latest turn after multiple chat messages.
+    // When the provider omits usage, retain the aggregate already stored for the
+    // conversation instead of silently deleting a previously visible total.
+    const usage = turnUsage ? accumulateUsage(existing.usage, turnUsage) : existing.usage;
     const messages = [
         ...existing.messages,
         ...(body.systemPrompt ? [{ role: 'system' as const, content: body.systemPrompt.trim() }] : []),
@@ -285,6 +309,12 @@ export const conversationPut = asHandlerMethod(async (_, parameters, rawVariable
     if (body.title !== undefined && (!isString(body.title) || body.title.trim().length === 0)) {
         return { status: 400, response: { error: 'title must be a non-empty string' } };
     }
+    // PUT normally rewrites existing history without a new provider turn, but the
+    // send flow can also use it to prepend a first system prompt after completion.
+    // Validate that optional usage before mutating the stored conversation.
+    if (parseUsage(body.usage) === null) {
+        return { status: 400, response: { error: 'usage must contain only numeric token counters' } };
+    }
     // `messages` is mandatory here: a replacement without a list is never
     // meaningful (use DELETE to remove a conversation entirely). Empty arrays
     // remain valid so a conversation can be wiped without deleting it.
@@ -308,9 +338,12 @@ export const conversationPut = asHandlerMethod(async (_, parameters, rawVariable
         messageCount: messages.length,
         updatedAt: new Date().toISOString(),
         error: undefined,
-        // Per-turn usage counters describe the appended turn and no longer match
-        // a rewritten history, so a replacement drops stale counters.
-        usage: undefined
+        // Usage is a lifetime conversation aggregate, not metadata tied to one
+        // message index. Rewriting message text must therefore preserve the total
+        // already spent on the conversation instead of returning the UI to zero.
+        usage: body.usage === undefined
+            ? existing.usage
+            : accumulateUsage(existing.usage, parseUsage(body.usage)!)
     });
     return { status: 200, response: { conversationId, conversation } };
 });

@@ -45,7 +45,8 @@ export type ConversationRecord = {
 };
 
 // Both POST operations accept one user message or an explicit initial/message history.
-// `usage` mirrors the token counters reported by the provider for the stored turn.
+// `usage` contains the accumulated provider token counters for the conversation;
+// each completed turn adds its reported prompt, completion, and total values.
 export type ConversationPostRequest = {
     message?: string;
     messages?: ChatMessage[];
@@ -74,6 +75,13 @@ export type ConversationPutRequest = {
     messages: ChatMessage[];
     model?: string;
     title?: string;
+    // Optional completed-turn usage supports the send fallback that must rewrite
+    // history through PUT when a first system prompt is prepended.
+    usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+    };
 };
 
 // GET wraps the persisted record so the response remains extensible without

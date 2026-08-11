@@ -354,7 +354,10 @@ const ChatEntry = styledComponent('div', {
 // Each conversation button presents the server summary without rendering message content in the sidebar.
 // The right padding is deepened so a long title never slides under the
 // overlaid "x" delete control in the entry's top-right corner.
-const ChatButton = styledComponent('button', {
+// `selected` is a visual state prop, not a native button attribute: it gives the
+// open conversation an unmistakable active surface while `aria-pressed` below
+// preserves the already-established accessible state contract.
+const ChatButton = styledComponent<{ selected?: boolean }>('button', {
     width: '100%',
     display: 'flex',
     flexDirection: 'column',
@@ -363,13 +366,15 @@ const ChatButton = styledComponent('button', {
     padding: '12px 32px 12px 12px',
     border: `1px solid ${COLORS.border}`,
     borderRadius: 8,
-    backgroundColor: COLORS.panelStrong,
+    backgroundColor: ({ selected }) => (selected ? COLORS.user : COLORS.panelStrong),
+    borderColor: ({ selected }) => (selected ? COLORS.accentStrong : COLORS.border),
     color: COLORS.text,
     cursor: 'pointer',
     textAlign: 'left',
     font: 'inherit',
-    transition: 'border-color 120ms ease, background-color 120ms ease'
-}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+    transition: 'border-color 120ms ease, background-color 120ms ease',
+    boxShadow: ({ selected }) => (selected ? `0 0 0 1px ${COLORS.accentStrong}` : 'none')
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { selected?: boolean }>;
 
 // Main conversation surface holds the message stream and the composer.
 const Conversation = styledComponent('section', {
@@ -806,6 +811,7 @@ const SystemMessage = styledComponent<{ empty?: boolean; editable?: boolean }>('
 // bottom-right below it — see SendGroup); align-items:stretch lets the input
 // span the whole row.
 const Composer = styledComponent('form', {
+    position: 'relative',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'stretch',
@@ -877,6 +883,22 @@ const ModelText = styledComponent('span', {
     fontSize: 12,
     fontWeight: 700,
     cursor: 'pointer'
+});
+
+// TokenUsage reports the accumulated provider-reported total for the open
+// conversation. The server adds each completed turn's usage before returning the
+// canonical record; an empty/new record has no usage yet and therefore renders
+// zero instead of exposing an ambiguous blank value in the fixed composer chrome.
+const TokenUsage = styledComponent('span', {
+    position: 'absolute',
+    top: 16,
+    right: () => ({ xs: '12px', md: '16px' }),
+    flexShrink: 0,
+    color: COLORS.muted,
+    fontSize: 12,
+    lineHeight: 1.3,
+    textAlign: 'right',
+    whiteSpace: 'nowrap'
 });
 
 // Positioning context for the embedded send arrow: wraps the input.
@@ -2503,7 +2525,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 // can only attach to the END, so the whole history is replaced
                 // through the identified PUT to keep the prompt at index 0.
                 result = (await replaceConversationMessages(baseUrl, record.conversationId, {
-                    messages: [...systemPrefix, ...record.messages, { role: 'user', content: text }, assistantMessage]
+                    messages: [...systemPrefix, ...record.messages, { role: 'user', content: text }, assistantMessage],
+                    ...(reply.usage ? { usage: reply.usage } : {})
                 })).conversation;
             } else {
                 // Regular turn on an existing chat: append the completed pair,
@@ -2568,6 +2591,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             <ChatEntry key={chat.conversationId} data-testid={`chat-entry-${chat.conversationId}`}>
                 <ChatButton
                     type="button"
+                    selected={selected()?.conversationId === chat.conversationId}
                     onClick={() => void selectChat(chat.conversationId)}
                     aria-pressed={selected()?.conversationId === chat.conversationId}
                     data-testid={`chat-tab-${chat.conversationId}`}
@@ -2946,6 +2970,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                     ))}
                             </ModelSelect>
                         </ModelPicker>
+                        <TokenUsage data-testid="token-usage">
+                            Total tokens: {selected()?.usage?.total_tokens ?? 0}
+                        </TokenUsage>
                         <ComposerField data-testid="chat-input-field">
                             <MessageInput
                                 value={message()}
