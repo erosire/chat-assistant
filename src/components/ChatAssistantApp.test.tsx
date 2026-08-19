@@ -50,10 +50,9 @@
 // height math incl. the 2px borders); the composer is a COLUMN: the model
 // selection is a clickable TEXT line ABOVE the full-width input (always
 // visible, the native dropdown select overlaying it invisibly), and the send
-// button is a circular ">" arrow EMBEDDED in the input at its bottom-right —
-// rendered ONLY while the composer has focus (focus-within, including the
-// arrow and the model select). The input's right padding keeps text clear of
-// the arrow. Scroll JUMPS are SECTION-LOCAL: every user/assistant/system
+// button is a circular ">" arrow EMBEDDED in the input at its right edge,
+// vertically centered in the box — rendered ONLY while the composer has focus
+// (focus-within, including the arrow and the model select). The input's Scroll JUMPS are SECTION-LOCAL: every user/assistant/system
 // turn's own controls panel (the strip under its bubble — transient
 // pending/streaming turns have none) carries an up/down chevron pair at its
 // left edge: "^" fast-animates the list (fixed 200ms ease-out) until THAT
@@ -586,13 +585,17 @@ describe('ChatAssistantApp', () => {
         expect(inputRule).toContain('max-height:calc(1.4em * 8 + 26px)');
         expect(inputRule).toContain('padding:12px 52px 12px 14px');
 
-        // The arrow: a 32px circle pinned absolute to the field's bottom-right
-        // (border-radius:50% identifies the rule uniquely).
+        // The arrow: a 32px circle pinned absolute to the field's right edge,
+        // vertically CENTERED in the box (top:50% + translateY(-50%) — it must
+        // stay centered as the input grows from one row to its eight-row cap,
+        // the retired bottom:8px pin read as stuck to the box's rim);
+        // border-radius:50% identifies the rule uniquely.
         const arrowRule = /\.css-[^{]+\{[^}]*border-radius:50%;[^}]*\}/.exec(css)?.[0];
         expect(arrowRule).toBeDefined();
         expect(arrowRule).toContain('position:absolute');
         expect(arrowRule).toContain('right:8px');
-        expect(arrowRule).toContain('bottom:8px');
+        expect(arrowRule).toContain('top:50%');
+        expect(arrowRule).toContain('transform:translateY(-50%)');
         expect(arrowRule).toContain('width:32px');
         expect(arrowRule).toContain('height:32px');
         expect(arrowRule).toContain('background-color:#5f82f0');
@@ -607,7 +610,7 @@ describe('ChatAssistantApp', () => {
         expect(selectRule).toContain('inset:0');
     });
 
-    it('keeps the send arrow hidden until the composer has focus, then shows it inside the input at the bottom-right', async () => {
+    it('keeps the send arrow hidden until the composer has focus, then shows it inside the input at the right edge, vertically centered', async () => {
         renderApp();
         // Catalog + history resolve regardless of focus (the mount effects).
         await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(2));
@@ -618,8 +621,10 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('model-select')).toBeDefined();
         expect(screen.queryByTestId('send-chat-button')).toBeNull();
 
-        // Focus: the arrow appears INSIDE the field, docked bottom-right: the
-        // field is the positioning context, the arrow absolute at right/bottom.
+        // Focus: the arrow appears INSIDE the field, docked at the field's
+        // right edge and vertically centered: the field is the positioning
+        // context, the arrow absolute at right + top:50% with the centering
+        // transform.
         fireEvent.focus(screen.getByTestId('chat-input'));
         const composer = screen.getByTestId('chat-composer');
         expect(composer.firstElementChild).toBe(screen.getByTestId('model-picker'));
@@ -631,7 +636,10 @@ describe('ChatAssistantApp', () => {
         const arrowStyle = window.getComputedStyle(arrow);
         expect(arrowStyle.position).toBe('absolute');
         expect(arrowStyle.right).toBe('8px');
-        expect(arrowStyle.bottom).toBe('8px');
+        expect(arrowStyle.top).toBe('50%');
+        // jsdom (cssstyle) returns the specified transform verbatim, the same
+        // way the viewport-lock test above asserts the page's '100%' height.
+        expect(arrowStyle.transform).toBe('translateY(-50%)');
 
         // Moving focus WITHIN the composer (input → arrow) keeps it visible —
         // the arrow must survive its own click focus move.

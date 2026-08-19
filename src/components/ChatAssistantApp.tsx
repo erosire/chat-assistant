@@ -105,7 +105,9 @@
 // COLUMN: the model selection is a quiet clickable TEXT line ABOVE the input
 // (the stripped model name; the native dropdown select overlays it invisibly
 // so clicking the text opens the real picker), and the send button is a
-// circular ">" arrow pinned INSIDE the input box at its bottom-right corner —
+// circular ">" arrow docked INSIDE the input box at its RIGHT EDGE, vertically
+// CENTERED in the box (top:50% + translateY(-50%)) at every height — one row
+// through the eight-row growth cap —
 // rendered ONLY while the composer has focus (focus-within via the form's
 // onFocus/onBlur: moving between the input, the arrow, and the model select
 // keeps it visible; leaving the composer hides it again). The composer input
@@ -807,9 +809,9 @@ const SystemMessage = styledComponent<{ empty?: boolean; editable?: boolean }>('
 // test hook. flexShrink:0 pins it to the conversation column's BOTTOM edge: it
 // never shrinks or scrolls away while the message list above absorbs all the
 // overflow as the column's only scrolling surface. The composer is a single
-// COLUMN (input full-width on top, focus-gated send control docked
-// bottom-right below it — see SendGroup); align-items:stretch lets the input
-// span the whole row.
+// COLUMN (input full-width, focus-gated send arrow docked at the input's
+// right edge, vertically centered in the box — see SendButton);
+// align-items:stretch lets the input span the whole row.
 const Composer = styledComponent('form', {
     position: 'relative',
     display: 'flex',
@@ -831,8 +833,9 @@ const Composer = styledComponent('form', {
 // box-sizing is border-box (matching the global box-sizing in index.html and
 // making jsdom agree), so the visible box must hold the 1.4em line + 24px
 // vertical padding + the 2px of vertical borders — shared with
-// resizeMessageInput's inline heights and the send control's min-height, so
-// every state of the input stays level with the button. rows=1 (set at the
+// resizeMessageInput's inline heights, so the ONE-ROW box the vertically
+// centered send arrow docks against (and its eight-row growth) never shifts
+// its baseline. rows=1 (set at the
 // render site) removes the browser's two-row textarea default, which the
 // resize effect would otherwise MEASURE as the empty box's scrollHeight and
 // lock the field at two rows (the pre-fix bug: a new chat always showed a
@@ -908,14 +911,22 @@ const ComposerField = styledComponent('div', {
 });
 
 // The send button: a circular button hosting the right chevron (the authored
-// ">" arrow — ChevronRightIcon, not a paper plane) pinned INSIDE the input
-// box at its bottom-right corner (position:absolute inside ComposerField),
-// rendered ONLY while the composer has focus. border-radius:50% identifies
-// this rule uniquely in Emotion's sheet (asserted by the tests).
+// ">" arrow — ChevronRightIcon, not a paper plane) docked INSIDE the input box
+// at its RIGHT EDGE, VERTICALLY CENTERED in the box (position:absolute inside
+// ComposerField: right:8px + top:50% + translateY(-50%)), rendered ONLY while
+// the composer has focus. Centering — instead of the retired bottom:8px pin —
+// keeps the circle optically centered in the one-row box AND still centered
+// once the textarea auto-grows toward its eight-row cap, where a bottom-
+// pinned circle read as stuck to the box's rim (the "not vertically
+// centered" report). top/transform stay STRINGS: a bare percentage or
+// transform number would risk styleStructure's number→rem conversion (the
+// same trap the Sidebar's static zIndex documents). border-radius:50%
+// identifies this rule uniquely in Emotion's sheet (asserted by the tests).
 const SendButton = styledComponent('button', {
     position: 'absolute',
     right: 8,
-    bottom: 8,
+    top: '50%',
+    transform: 'translateY(-50%)',
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -3007,8 +3018,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 rows={1}
                             />
                             {/* The ">" send arrow lives INSIDE the input box at
-                                its bottom-right corner and exists ONLY while the
-                                composer is focused (see onFocus/onBlur above). */}
+                                its right edge, vertically centered in the box,
+                                and exists ONLY while the composer is focused
+                                (see onFocus/onBlur above). */}
                             {composerFocus() && (
                                 <SendButton
                                     type="submit"
