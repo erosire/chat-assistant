@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     appendTranscript,
     createSpeechRecognizer,
+    speechContextSecure,
     speechDeniedDetail,
     speechErrorLabel,
     speechRecognitionSupported,
@@ -118,6 +119,33 @@ const setPermissions = (stub: { query: (descriptor: unknown) => Promise<{ state:
     }
     Object.defineProperty(navigator, 'permissions', { value: stub, configurable: true, writable: true });
 };
+
+describe('speechContextSecure', () => {
+    afterEach(() => {
+        setSecureContext(ORIGINAL_SECURE_CONTEXT);
+    });
+
+    it('is false exactly when window.isSecureContext is strictly false (the insecure-HTTP-LAN case)', () => {
+        setSecureContext(false);
+        expect(speechContextSecure()).toBe(false);
+    });
+
+    it('is true in a genuine secure context (https / localhost)', () => {
+        setSecureContext(true);
+        expect(speechContextSecure()).toBe(true);
+    });
+
+    it('treats an UNDEFINED isSecureContext as secure (older engines must not be misreported)', () => {
+        // Force the property to undefined: the probe uses `!== false` precisely
+        // so a missing flag (not a literal false) does not block microphone use.
+        Object.defineProperty(window, 'isSecureContext', {
+            value: undefined,
+            configurable: true,
+            writable: true
+        });
+        expect(speechContextSecure()).toBe(true);
+    });
+});
 
 describe('speechDeniedDetail', () => {
     afterEach(() => {

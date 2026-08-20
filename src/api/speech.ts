@@ -70,6 +70,29 @@ const resolveRecognitionConstructor = (): SpeechRecognitionConstructor | null =>
 // action at all (false → a "not supported" error instead of a dead button).
 export const speechRecognitionSupported = (): boolean => resolveRecognitionConstructor() !== null;
 
+// Whether the page can even be GRANTED microphone access — i.e. whether it is
+// a secure context. Browsers only show the mic permission prompt (and only let
+// the recognition engine capture audio) in secure contexts: https, or
+// loopback/localhost. A page served over plain HTTP from ANY other origin —
+// most importantly a LAN/private IP viewed from a phone, e.g.
+// `http://192.168.8.128:5173` — is NON-secure (window.isSecureContext === false).
+//
+// THIS is the "detects nothing on mobile but works on the desktop" trap:
+// - `speechRecognitionSupported()` still returns TRUE there (real Chrome/Edge
+//   expose the constructor even in a non-secure context), so the toggle looks
+//   alive;
+// - `start()` does NOT throw — it returns normally; no prompt is shown;
+// - the engine then either fires `onerror:'not-allowed'` OR, on some engines
+//   (and more often on mobile cloud-STT), just ends BENIGNLY (`no-speech` /
+//   `aborted`) — both of which this wrapper treats as silent, so the user sees
+//   NOTHING: the session opens, hears no audio, and quietly closes.
+// Pre-checking here lets the composer surface the actionable
+// HTTPS/localhost fix (via speechDeniedDetail) INSTEAD of starting a doomed
+// session. `!== false` (not truthiness): engines that leave isSecureContext
+// undefined must not be misreported as insecure.
+export const speechContextSecure = (): boolean =>
+    typeof window === 'undefined' || window.isSecureContext !== false;
+
 // Engine error code → display label. codes without a label are not user
 // errors: 'no-speech' (silence timed out) and 'aborted' (programmatic
 // interrupt) end the session SILENTLY — the composer keeps whatever interim

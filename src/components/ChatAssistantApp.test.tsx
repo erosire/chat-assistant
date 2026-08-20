@@ -3161,19 +3161,21 @@ describe('ChatAssistantApp', () => {
             expect(field.lastElementChild).toBe(screen.getByTestId('send-chat-button'));
         });
 
-        it('diagnoses a SILENT microphone denial (no prompt shown) instead of the generic banner', async () => {
+        it('refuses to start a doomed session in an insecure context (the silent mobile "detects nothing" case)', async () => {
             const { engines } = installVoiceEngine();
             renderApp();
             await waitForModelSelection();
 
-            // The engine denies WITHOUT asking (not-allowed) while the page is
-            // on a non-secure origin (http on a non-localhost host — the
-            // typical LAN deployment): the wrapper delivers the generic label
-            // ('Microphone access was denied.'), which the component swaps for
-            // the serving-origin diagnosis (speechDeniedDetail in
-            // src/api/speech.ts). The permissions query stub reports denied —
-            // but in an insecure context the HTTPS fix must win, so the
-            // sticky-block branch must not surface here.
+            // A phone opening `http://<LAN-IP>` (non-localhost plain HTTP) is a
+            // NON-secure context: window.isSecureContext === false. Real Chrome
+            // still exposes the constructor (installVoiceEngine above), and the
+            // wrapper would happily `start()` a session that then captures NO
+            // audio and ends BENIGNLY (no-speech) — surfacing NOTHING to the
+            // user. The component's secure-context pre-check must short-circuit
+            // BEFORE creating any recognizer: no engine starts, and the
+            // actionable HTTPS/localhost diagnosis renders instead (resolved
+            // via speechDeniedDetail). The permissions stub is deliberately
+            // present + denied but must be IGNORED here (the HTTPS fix wins).
             Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true, writable: true });
             Object.defineProperty(navigator, 'permissions', {
                 value: { query: async () => ({ state: 'denied' }) },
@@ -3182,30 +3184,55 @@ describe('ChatAssistantApp', () => {
             });
 
             fireEvent.click(screen.getByTestId('voice-input-button'));
-            act(() => {
-                engines[0].onerror?.({ error: 'not-allowed' });
-            });
+
+            // NOTHING started: the pre-check returned before createSpeechRecognizer.
+            expect(engines).toHaveLength(0);
+            expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
+            // speechDeniedDetail is async (it may consult the Permissions API),
+            // so the banner lands on the next microtask.
             await waitFor(() =>
                 expect(screen.getByTestId('chat-error').textContent).toBe(
                     'Microphone access is blocked: this page is not on HTTPS or localhost, so the browser denies the microphone silently without asking. Serve the page over HTTPS (or open it from localhost) to use voice input.'
                 )
             );
-            expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
 
-            // The same denial on a SECURE context with a sticky site permission
-            // surfaces the site-settings fix instead.
+            // Permissions probe cleanup: the shared jsdom navigator must not
+            // keep the stub for the remaining tests of this file.
+            delete (navigator as unknown as { permissions?: unknown }).permissions;
+            // Restore the secure default for the sticky-denied test below.
             Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true, writable: true });
+        });
+
+        it('surfaces the site-settings fix when the engine denies a SILENT not-allowed on a secure context', async () => {
+            const { engines } = installVoiceEngine();
+            renderApp();
+            await waitForModelSelection();
+
+            // SECURE context (https / localhost) + a sticky site permission:
+            // the secure-context pre-check passes, a recognizer IS created and
+            // started, and the engine then denies without a prompt (not-allowed).
+            // The wrapper delivers the generic label, which onError swaps for
+            // the site-settings diagnosis (Permissions API reports `denied`).
+            Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true, writable: true });
+            Object.defineProperty(navigator, 'permissions', {
+                value: { query: async () => ({ state: 'denied' }) },
+                configurable: true,
+                writable: true
+            });
+
             fireEvent.click(screen.getByTestId('voice-input-button'));
+            expect(engines).toHaveLength(1);
+            expect(engines[0].started).toBe(1);
             act(() => {
-                engines[1].onerror?.({ error: 'not-allowed' });
+                engines[0].onerror?.({ error: 'not-allowed' });
             });
             await waitFor(() =>
                 expect(screen.getByTestId('chat-error').textContent).toBe(
                     'Microphone access was denied before for this site — re-enable it in the browser site settings (the mic icon / padlock menu next to the address bar), then try again.'
                 )
             );
-            // Permissions probe cleanup: the shared jsdom navigator must not
-            // keep the stub for the remaining tests of this file.
+            expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
+            // Permissions probe cleanup for the remaining tests of this file.
             delete (navigator as unknown as { permissions?: unknown }).permissions;
         });
 

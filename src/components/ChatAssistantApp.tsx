@@ -171,6 +171,7 @@ import {
     fetchProviderModels,
     listConversations,
     replaceConversationMessages,
+    speechContextSecure,
     speechDeniedDetail,
     speechRecognitionSupported,
     streamProviderChatCompletion,
@@ -2696,11 +2697,26 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             listening(false);
             return;
         }
-        // API-less browsers (Firefox, jsdom): explicit non-blocking error —
-        // the conversation remains fully usable with typing, no banner-less
-        // dead button.
+        // API-less browsers (Firefox, jsdom, iOS home-screen/PWA where the ctor is
+        // absent): explicit non-blocking error — the conversation stays fully
+        // usable with typing, no banner-less dead button. Checked FIRST so an
+        // origin that is BOTH insecure and API-less reports the true cause.
         if (!speechRecognitionSupported()) {
             error('Voice input is not supported in this browser.');
+            return;
+        }
+        // SECURE-CONTEXT pre-check: in a non-secure context (plain HTTP from a
+        // non-localhost origin — e.g. a phone opening `http://<LAN-IP>`, which
+        // is the classic "works on the desktop (localhost) but detects nothing
+        // on the phone" case) the engine cannot capture audio. Real Chrome
+        // still exposes the constructor AND `start()` still returns normally,
+        // so without this guard the session opens, picks up no audio, and
+        // silently ends (often via benign no-speech) — the user sees NOTHING.
+        // Surface the actionable HTTPS/localhost diagnosis (speechDeniedDetail
+        // resolves to the insecure-context message here) instead of starting a
+        // doomed session.
+        if (!speechContextSecure()) {
+            void speechDeniedDetail().then((cause) => error(cause));
             return;
         }
         // Draft + gate capture: the transcript's append base for every frame
