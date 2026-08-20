@@ -87,6 +87,59 @@ export const speechErrorLabel = (code: string): string =>
         default: ({ value }: { value: string }) => `Voice input failed: ${value}.`
     });
 
+// Diagnose WHY the engine denied microphone access WITHOUT showing a prompt
+// (the 'not-allowed' / 'service-not-allowed' codes — speechErrorLabel's
+// display-ready 'Microphone access was denied.' banner hides the cause, so the
+// composer swaps it for this self-diagnosis). The prompt is suppressed in
+// three situations, in the order checked here:
+//
+// 1. INSECURE CONTEXT — the page is served over plain http on a non-localhost
+//    origin (typical for LAN dev/static deployments, e.g. http://192.168.8.x:5000).
+//    Browsers refuse microphone access SILENTLY here: window.isSecureContext
+//    is false (it is only true for https or localhost) and the denial arrives
+//    as 'not-allowed' with no dialog. Only serving over HTTPS (or localhost)
+//    fixes this from the outside.
+// 2. PREVIOUSLY DENIED SITE PERMISSION — the user picked "Block" (or an older
+//    "Don't allow" decision lingers) for this origin: the prompt is never shown
+//    again and the engine fails immediately. navigator.permissions.query
+//    reports the sticky 'denied' state; the fix lives in the browser's site
+//    settings (the address-bar icon), not on the page.
+// 3. EVERYTHING ELSE — a permission policy blocking microphone on an embedded
+//    iframe (allow="microphone" missing), an OS-level microphone exclusive
+//    lock, or a managed policy. No probe reaches these from the page; the
+//    fallback label names the two likely suspects.
+//
+// Async because (2) resolves through the Permissions API; every probe is
+// guarded because jsdom, locked-down browsers, and SSR expose none of the
+// surfaces (the helper then returns the generic label untouched — the caller
+// can still display it).
+export const speechDeniedDetail = async (): Promise<string> => {
+    const generic = 'Microphone access was denied.';
+    // Cause 1 (insecure context) is the check FIRST: in an insecure context the
+    // Permissions API below may also report 'denied', but the actionable fix is
+    // the HTTPS/localhost one, so it wins. `=== false` (not truthiness): an
+    // undefined isSecureContext (older engines) must not misreport.
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+        return 'Microphone access is blocked: this page is not on HTTPS or localhost, so the browser denies the microphone silently without asking. Serve the page over HTTPS (or open it from localhost) to use voice input.';
+    }
+    // Cause 2 (sticky site denial): the query itself may reject ('microphone'
+    // is not a valid PermissionName on every engine), so the whole probe is
+    // fall-through, never a throw.
+    try {
+        const state = (await navigator.permissions?.query({ name: 'microphone' } as PermissionDescriptor))?.state;
+        if (state === 'denied') {
+            return 'Microphone access was denied before for this site — re-enable it in the browser site settings (the mic icon / padlock menu next to the address bar), then try again.';
+        }
+    } catch {
+        // Permissions API missing or 'microphone' unsupported: fall through to
+        // the generic diagnosis below (the original banner text is kept so the
+        // user is not left with NOTHING).
+    }
+    // Remaining causes (iframe permission policy, OS/other-app lock, managed
+    // policy): unprovable from the page, so name the suspects honestly.
+    return 'Microphone access was denied without a prompt — the browser site settings may be blocking it, or this embedded page is missing microphone permission. Check the mic icon in the address bar.';
+};
+
 // Append a recognized transcript onto the existing composer draft: empty
 // draft → the transcript alone; non-empty draft → ONE separating space,
 // skipped when the draft already ends in whitespace (never a double space,

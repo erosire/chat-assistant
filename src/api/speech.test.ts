@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     appendTranscript,
     createSpeechRecognizer,
+    speechDeniedDetail,
     speechErrorLabel,
     speechRecognitionSupported,
     type ISpeechRecognition
@@ -91,6 +92,90 @@ describe('speechRecognitionSupported', () => {
         vi.unstubAllGlobals();
         installFakeRecognition('webkitSpeechRecognition');
         expect(speechRecognitionSupported()).toBe(true);
+    });
+});
+
+// --- speechDeniedDetail environment control ---------------------------------
+// The diagnostic reads two live platform surfaces: window.isSecureContext and
+// navigator.permissions. jsdom provides the former (data property on window)
+// and NONE of the latter (navigator.permissions is undefined), so tests
+// override both via defineProperty and restore the exact pre-test state after
+// every test (the jsdom window is shared across the whole test file).
+const ORIGINAL_SECURE_CONTEXT = window.isSecureContext;
+const setSecureContext = (value: boolean): void => {
+    Object.defineProperty(window, 'isSecureContext', {
+        value,
+        configurable: true,
+        writable: true
+    });
+};
+// Stub the Permissions API on the navigator instance (shadowing any prototype
+// accessor); passing undefined deletes it again.
+const setPermissions = (stub: { query: (descriptor: unknown) => Promise<{ state: string }> } | undefined): void => {
+    if (stub === undefined) {
+        delete (navigator as unknown as { permissions?: unknown }).permissions;
+        return;
+    }
+    Object.defineProperty(navigator, 'permissions', { value: stub, configurable: true, writable: true });
+};
+
+describe('speechDeniedDetail', () => {
+    afterEach(() => {
+        setSecureContext(ORIGINAL_SECURE_CONTEXT);
+        setPermissions(undefined);
+    });
+
+    it('reports the HTTPS/localhost requirement first when the page is on an insecure context', async () => {
+        setSecureContext(false);
+        // Even with a sticky site denial present, the serving-origin fix wins:
+        // the Permissions query must never be consulted in an insecure context.
+        let queried = false;
+        setPermissions({ query: async () => { queried = true; return { state: 'denied' }; } });
+        expect(await speechDeniedDetail()).toBe(
+            'Microphone access is blocked: this page is not on HTTPS or localhost, so the browser denies the microphone silently without asking. Serve the page over HTTPS (or open it from localhost) to use voice input.'
+        );
+        expect(queried).toBe(false);
+    });
+
+    it('reports the sticky site-level block when the Permissions API says denied', async () => {
+        setSecureContext(true);
+        setPermissions({ query: async () => ({ state: 'denied' }) });
+        expect(await speechDeniedDetail()).toBe(
+            'Microphone access was denied before for this site — re-enable it in the browser site settings (the mic icon / padlock menu next to the address bar), then try again.'
+        );
+    });
+
+    it('falls back to the generic diagnosis when no Permissions API exists (jsdom default)', async () => {
+        setSecureContext(true);
+        // jsdom ships no navigator.permissions: the probe is a no-op fall-through.
+        expect(await speechDeniedDetail()).toBe(
+            'Microphone access was denied without a prompt — the browser site settings may be blocking it, or this embedded page is missing microphone permission. Check the mic icon in the address bar.'
+        );
+    });
+
+    it('falls back to the generic diagnosis when the microphone permission query rejects', async () => {
+        setSecureContext(true);
+        // Older engines reject 'microphone' as a PermissionName: the probe must
+        // swallow the rejection, never throw.
+        setPermissions({
+            query: () => {
+                throw new Error('NotAllowedError: permissions.query rejected');
+            }
+        } as unknown as { query: (descriptor: unknown) => Promise<{ state: string }> });
+        expect(await speechDeniedDetail()).toBe(
+            'Microphone access was denied without a prompt — the browser site settings may be blocking it, or this embedded page is missing microphone permission. Check the mic icon in the address bar.'
+        );
+    });
+
+    it('falls back to the generic diagnosis for non-denied permission states', async () => {
+        setSecureContext(true);
+        // 'prompt' / 'granted' mean the mic would normally be askable: the
+        // silent denial then points at iframe permission policy / OS locks —
+        // the generic diagnosis names those suspects.
+        setPermissions({ query: async () => ({ state: 'prompt' }) });
+        expect(await speechDeniedDetail()).toBe(
+            'Microphone access was denied without a prompt — the browser site settings may be blocking it, or this embedded page is missing microphone permission. Check the mic icon in the address bar.'
+        );
     });
 });
 

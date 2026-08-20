@@ -122,7 +122,11 @@
 // on-screen keyboard) fills the SAME input draft with the spoken words through
 // the Web Speech API wrapper (src/api/speech.ts): pre-typed words survive
 // (the transcript appends one-space separated), the final result stops the
-// session, and the user reviews/sends exactly like a typed message. API-less
+// session AND AUTOMATICALLY SUBMITS the request with the utterance (the
+// voiceTranscript gate skips sessions that ended without a single transcript
+// frame, so a no-speech ending never fires a send of the stale pre-typed
+// draft); an explicit stop X keeps the partial transcript for a manual
+// review/send. API-less
 // browsers get a non-blocking "not supported" banner instead of a dead button. The
 // sidebar is a
 // static column on md+ screens and a toggleable drawer below the md breakpoint.
@@ -167,6 +171,7 @@ import {
     fetchProviderModels,
     listConversations,
     replaceConversationMessages,
+    speechDeniedDetail,
     speechRecognitionSupported,
     streamProviderChatCompletion,
     DEFAULT_CHAT_ASSISTANT_URL,
@@ -1806,6 +1811,16 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const listening = useStateHook(false);
     const recognizer = useReferenceHook<SpeechRecognizerHandle | null>(null);
     const speechDraft = useReferenceHook<string>('');
+    // Voice auto-send gate: the FIRST recognition frame of a session (interim
+    // or final — src/api/speech.ts always delivers the final settled text
+    // before settle() fires onEnd) flips it true, and the finished-utterance
+    // auto-send at session end reads it. A session that ends WITHOUT any
+    // frame (a no-speech silence, an early permission error before the
+    // engine hears anything) must NOT submit the pre-typed draft that may
+    // already sit in the input. Reset on every session start (toggle-on path
+    // in startListening below). Ref-backed: it only flips false→true once
+    // per session, so writes never re-render on purpose.
+    const voiceTranscript = useReferenceHook(false);
 
     // Unmount cleanup: discard a still-live voice session so the speech
     // engine keeps delivering nothing to a dead component. dispose() detaches
@@ -2529,69 +2544,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [baseUrl, cancelEdit, chats, editingIndex, error, savingEdit, selected]);
 
-    // Voice toggle (rendered by the VoiceButton in ComposerField): one tap
-    // starts a single-utterance session whose transcript fills the SAME input
-    // draft the user would have typed — pre-typed words survive because every
-    // frame appends onto the draft snapshot taken at start (appendTranscript
-    // owns the one-space separator); the glyph becomes a stop X, and a second
-    // tap DISCARDS the session (silent dispose — no onEnd on purpose: the UI
-    // state we are about to clear would be noise) while the partial
-    // transcript already written into the input stays for review/editing.
-    // After the session the user reviews and sends exactly like a typed
-    // message (the "send while still listening" race is owned by the
-    // session-stop guard at the top of submit below).
-    const startListening = useCallback(() => {
-        // Toggle off: discard the live session and clear the listening
-        // chrome; the recognized text stays in the input.
-        if (listening()) {
-            recognizer()?.dispose();
-            recognizer(null);
-            listening(false);
-            return;
-        }
-        // API-less browsers (Firefox, jsdom): explicit non-blocking error —
-        // the conversation remains fully usable with typing, no banner-less
-        // dead button.
-        if (!speechRecognitionSupported()) {
-            error('Voice input is not supported in this browser.');
-            return;
-        }
-        // Draft capture: the transcript's append base for every frame (the
-        // ref write keeps interim delivery out of the re-render race —
-        // message() above already holds the pre-session text).
-        speechDraft(message());
-        listening(true);
-        error('');
-        recognizer(createSpeechRecognizer({
-            onTranscript: (transcript) => {
-                // Interim frames are CUMULATIVE from the session start, each
-                // replacing the previous, so the input always reads
-                // draft + latest recognized text — nothing doubles up.
-                message(appendTranscript(speechDraft(), transcript));
-            },
-            onError: (detail) => {
-                // Real engine failure (denied permission, no microphone,
-                // network): the session is over and the display-ready label
-                // lands in the non-modal error banner.
-                listening(false);
-                error(detail);
-            },
-            onEnd: () => {
-                // Terminal for any reason (final result, engine stop, silent
-                // no-speech): the listening chrome comes off; the transcript
-                // stays in the input for review before sending.
-                listening(false);
-            }
-        }));
-        // The constructor resolved at the probe above, yet start() can still be
-        // refused by the engine (e.g. microphone busy): surface a generic
-        // error instead of a session that looks live but never hears.
-        if (!recognizer()?.start()) {
-            listening(false);
-            error('Voice input could not be started.');
-        }
-    }, [error, listening, message, recognizer, speechDraft]);
-
     // Send flow: (1) stream the assistant turn from the provider using the ENTIRE
     // conversation history — system prompt included — plus the new user message,
     // rendering deltas live, (2) only after the stream completes, persist the
@@ -2711,6 +2663,111 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             loading(false);
         }
     }, [baseUrl, listening, pendingUser, providerUrl, recognizer, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, savingSystemPrompt, selected, streaming, systemPrompt]);
+
+    // Voice toggle (rendered by the VoiceButton in ComposerField): one tap
+    // starts a single-utterance session whose transcript fills the SAME input
+    // draft the user would have typed — pre-typed words survive because every
+    // frame appends onto the draft snapshot taken at start (appendTranscript
+    // owns the one-space separator); the glyph becomes a stop X, and a second
+    // tap DISCARDS the session (silent dispose — no onEnd on purpose: the
+    // explicit stop aborts the utterance early, so the partial transcript
+    // stays in the input for review/editing and a MANUAL send; it never
+    // auto-fires).
+    // FINISHED-UTTERANCE AUTO-SEND: when the session ends on its own (onEnd —
+    // the final result frame delivers the settled text into the input first,
+    // then settles; the engine's later stop/onend are guarded no-ops) and the
+    // engine produced at least one transcript frame (voiceTranscript), the
+    // request SUBMITS AUTOMATICALLY through the exact same submit() a typed
+    // message uses: the draft (pre-typed words + transcript) is sent as-is
+    // and the provider round-trip, pending bubble, and persistence run
+    // unchanged. onEnd also delivers benign/engine-stop endings; the
+    // voiceTranscript gate keeps a no-speech or silent ending from
+    // submitting the stale pre-typed draft. Defined AFTER submit on purpose:
+    // the onEnd closure calls it, so submit must already be in scope here
+    // (previously this hook sat above submit and the finished utterance
+    // merely waited for a manual review/send).
+    const startListening = useCallback(() => {
+        // Toggle off: an EXPLICIT stop keeps the recognized text in the
+        // input for review/editing (no auto-send: the user chose to abort
+        // before the utterance finished) and clears the listening chrome.
+        if (listening()) {
+            recognizer()?.dispose();
+            recognizer(null);
+            listening(false);
+            return;
+        }
+        // API-less browsers (Firefox, jsdom): explicit non-blocking error —
+        // the conversation remains fully usable with typing, no banner-less
+        // dead button.
+        if (!speechRecognitionSupported()) {
+            error('Voice input is not supported in this browser.');
+            return;
+        }
+        // Draft + gate capture: the transcript's append base for every frame
+        // (the ref write keeps interim delivery out of the re-render race —
+        // message() above already holds the pre-session text) and the
+        // auto-send gate reset (the PREVIOUS session's frame marker must not
+        // bleed into this one).
+        speechDraft(message());
+        voiceTranscript(false);
+        listening(true);
+        error('');
+        recognizer(createSpeechRecognizer({
+            onTranscript: (transcript) => {
+                // Interim frames are CUMULATIVE from the session start, each
+                // replacing the previous, so the input always reads
+                // draft + latest recognized text — nothing doubles up.
+                // The FIRST frame of any kind (interim or final) marks the
+                // session as having produced speakable text — the
+                // finished-utterance auto-send gate at session end reads
+                // voiceTranscript. src/api/speech.ts always delivers the
+                // final settled text BEFORE settle() fires onEnd, so submit
+                // below reads the FULL utterance, not a partial.
+                voiceTranscript(true);
+                message(appendTranscript(speechDraft(), transcript));
+            },
+            onError: (detail) => {
+                // Real engine failure (denied permission, no microphone,
+                // network): the session is over and the display-ready label
+                // lands in the non-modal error banner (silent benign codes
+                // like 'no-speech' never reach this listener —
+                // speechErrorLabel in src/api/speech.ts returns '').
+                listening(false);
+                // A SILENT denial ('not-allowed' — the browser never asked) is
+                // unactionable as a generic banner: the cause is almost always
+                // the serving origin (http on a non-localhost) or a sticky
+                // site-level block, so swap in the self-diagnosing message
+                // (speechDeniedDetail in src/api/speech.ts) instead.
+                if (detail === 'Microphone access was denied.') {
+                    void speechDeniedDetail().then((cause) => error(cause));
+                    return;
+                }
+                error(detail);
+            },
+            onEnd: () => {
+                // Terminal for any reason (final result, explicit engine
+                // stop, silent no-speech): the listening chrome comes off;
+                // then, only while the engine actually produced a transcript
+                // (voiceTranscript), the finished utterance SUBMITS ITSELF —
+                // the input draft at this point is exactly the pre-typed
+                // words + the recognized speech, and submit runs the provider
+                // round-trip like a typed message (submit's own guards still
+                // apply: a blocked send — no model selected, a turn already
+                // in flight — leaves the draft in the input for a manual
+                // send). A session that ended with no frame submits nothing
+                // and the input keeps its pre-session text untouched.
+                listening(false);
+                if (voiceTranscript()) void submit();
+            }
+        }));
+        // The constructor resolved at the probe above, yet start() can still be
+        // refused by the engine (e.g. microphone busy): surface a generic
+        // error instead of a session that looks live but never hears.
+        if (!recognizer()?.start()) {
+            listening(false);
+            error('Voice input could not be started.');
+        }
+    }, [error, listening, message, recognizer, speechDraft, voiceTranscript, submit]);
 
     // Fold/unfold one message turn. Pure view state: adds the index to the
     // collapsed set or removes it; no network call is ever involved.
@@ -3151,8 +3208,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             />
                             {/* Voice input: the mic docks at the input's LEFT edge (always visible —
                                 the send arrow's mirror); while listening it is a red stop X. The
-                                transcript arrives as the input's value, so review + send work
-                                exactly like a typed message (see startListening above). */}
+                                transcript arrives as the input's value; when the utterance
+                                FINISHES the request submits automatically (finished-utterance
+                                auto-send — see startListening above). An explicit stop X keeps
+                                the partial transcript for review + a manual send. */}
                             <VoiceButton
                                 type="button"
                                 listening={listening()}

@@ -55,8 +55,11 @@
 // (focus-within, including the arrow and the model select). The
 // voice-to-text toggle (mic glyph docked at the input's LEFT edge, ALWAYS
 // visible and a red stop X while listening) fills the SAME input with the
-// transcript (draft preserved, one-space separator); unsupported browsers get
-// a non-blocking "not supported" banner. The input's Scroll JUMPS are SECTION-LOCAL: every user/assistant/system
+// transcript (draft preserved, one-space separator); the final result ends
+// the session AND auto-sends the request with the finished utterance (a
+// no-speech ending sends nothing; an explicit stop X keeps the partial
+// transcript for a manual send); unsupported browsers get a non-blocking
+// "not supported" banner. The input's Scroll JUMPS are SECTION-LOCAL: every user/assistant/system
 // turn's own controls panel (the strip under its bubble — transient
 // pending/streaming turns have none) carries an up/down chevron pair at its
 // left edge: "^" fast-animates the list (fixed 200ms ease-out) until THAT
@@ -251,6 +254,12 @@ const mockFetch = () =>
 const renderApp = () =>
     render(<ChatAssistantApp baseUrl={BASE_URL} providerUrl={PROVIDER_URL} />);
 
+// Original window.isSecureContext captured once at module load: the voice
+// denial-diagnosis test overrides the property on the shared jsdom window and
+// the describe-level afterEach restores exactly this value (jsdom's default
+// depends on the environment URL, which this file never changes).
+const ORIGINAL_SECURE_CONTEXT = window.isSecureContext;
+
 // Sending requires the catalog's sorted default model, which arrives asynchronously.
 // The split send control only exists while the composer has focus, so every
 // helper focuses the input before touching the control (jsdom focus events
@@ -318,6 +327,14 @@ describe('ChatAssistantApp', () => {
     afterEach(() => {
         vi.unstubAllGlobals();
         vi.restoreAllMocks();
+        // Voice-denial diagnosis tests override window.isSecureContext (the
+        // shared jsdom window): the original value is restored here so the
+        // speechDeniedDetail fall-through stays deterministic in every test.
+        Object.defineProperty(window, 'isSecureContext', {
+            value: ORIGINAL_SECURE_CONTEXT,
+            configurable: true,
+            writable: true
+        });
     });
 
     it('renders the empty conversation and composer after fetching the model catalog', async () => {
@@ -3144,6 +3161,54 @@ describe('ChatAssistantApp', () => {
             expect(field.lastElementChild).toBe(screen.getByTestId('send-chat-button'));
         });
 
+        it('diagnoses a SILENT microphone denial (no prompt shown) instead of the generic banner', async () => {
+            const { engines } = installVoiceEngine();
+            renderApp();
+            await waitForModelSelection();
+
+            // The engine denies WITHOUT asking (not-allowed) while the page is
+            // on a non-secure origin (http on a non-localhost host — the
+            // typical LAN deployment): the wrapper delivers the generic label
+            // ('Microphone access was denied.'), which the component swaps for
+            // the serving-origin diagnosis (speechDeniedDetail in
+            // src/api/speech.ts). The permissions query stub reports denied —
+            // but in an insecure context the HTTPS fix must win, so the
+            // sticky-block branch must not surface here.
+            Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true, writable: true });
+            Object.defineProperty(navigator, 'permissions', {
+                value: { query: async () => ({ state: 'denied' }) },
+                configurable: true,
+                writable: true
+            });
+
+            fireEvent.click(screen.getByTestId('voice-input-button'));
+            act(() => {
+                engines[0].onerror?.({ error: 'not-allowed' });
+            });
+            await waitFor(() =>
+                expect(screen.getByTestId('chat-error').textContent).toBe(
+                    'Microphone access is blocked: this page is not on HTTPS or localhost, so the browser denies the microphone silently without asking. Serve the page over HTTPS (or open it from localhost) to use voice input.'
+                )
+            );
+            expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
+
+            // The same denial on a SECURE context with a sticky site permission
+            // surfaces the site-settings fix instead.
+            Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true, writable: true });
+            fireEvent.click(screen.getByTestId('voice-input-button'));
+            act(() => {
+                engines[1].onerror?.({ error: 'not-allowed' });
+            });
+            await waitFor(() =>
+                expect(screen.getByTestId('chat-error').textContent).toBe(
+                    'Microphone access was denied before for this site — re-enable it in the browser site settings (the mic icon / padlock menu next to the address bar), then try again.'
+                )
+            );
+            // Permissions probe cleanup: the shared jsdom navigator must not
+            // keep the stub for the remaining tests of this file.
+            delete (navigator as unknown as { permissions?: unknown }).permissions;
+        });
+
         it('reports a non-blocking "not supported" error when the browser has no speech API', async () => {
             renderApp();
 
@@ -3158,7 +3223,7 @@ describe('ChatAssistantApp', () => {
             expect(input.value).toBe('');
         });
 
-        it('fills the input with the live transcript and ends the session on the final result', async () => {
+        it('fills the input with the live transcript and auto-sends the finished utterance on the final result', async () => {
             const { engines } = installVoiceEngine();
             renderApp();
             await waitForModelSelection();
@@ -3173,23 +3238,43 @@ describe('ChatAssistantApp', () => {
             expect(mic.querySelector('svg[data-icon="close"]')).not.toBeNull();
             const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
 
-            // Interim frame: the input mirrors the partial text live.
+            // Interim frame: the input mirrors the partial text live and the
+            // unfinished utterance triggers NO request yet (only the final
+            // settlement auto-sends).
             act(() => {
                 engines[0].onresult?.({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'Hello' } }] });
             });
             expect(input.value).toBe('Hello');
             expect(mic.getAttribute('aria-pressed')).toBe('true');
+            expect((fetch as any).mock.calls.filter((call: unknown[]) => String(call[0]).endsWith('/chat/completions'))).toHaveLength(0);
 
-            // Final frame: the settled text lands, the session ends, the
-            // listening chrome comes back to the mic (the engine's own onend
-            // after the final stop is a guarded no-op).
+            // Final frame: the session ends and the finished utterance SUBMITS
+            // ITSELF (the engine's own onend after the final stop is a
+            // guarded no-op): the listening chrome comes back to the mic and
+            // the consumed draft clears the input (the pending bubble renders
+            // it instead)...
             act(() => {
                 engines[0].onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'Hello world' } }] });
             });
-            expect(input.value).toBe('Hello world');
+            expect(input.value).toBe('');
             expect(mic.getAttribute('aria-pressed')).toBe('false');
             expect(mic.getAttribute('aria-label')).toBe('Start voice input');
             expect(mic.querySelector('svg[data-icon="mic"]')).not.toBeNull();
+            expect(screen.getByTestId('pending-user-message').textContent).toBe('Hello world');
+            // ...and the provider completion leaves immediately with the full
+            // spoken text as the ONLY user content (new chat: no system
+            // prefix), pinned to the catalog default model.
+            const completions = (fetch as any).mock.calls.filter((call: unknown[]) => String(call[0]).endsWith('/chat/completions'));
+            expect(completions).toHaveLength(1);
+            expect(completions[0][0]).toBe(`${PROVIDER_URL}/chat/completions`);
+            expect(JSON.parse(String(completions[0][1].body))).toEqual({
+                model: DEFAULT_MODEL,
+                stream: true,
+                stream_options: { include_usage: true },
+                messages: [{ role: 'user', content: 'Hello world' }]
+            });
+            // ...and the completed pair persists into the sidebar.
+            await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
         });
 
         it('appends the transcript to the existing draft with one separating space', async () => {
@@ -3208,11 +3293,21 @@ describe('ChatAssistantApp', () => {
             });
             expect(input.value).toBe('Draft text Hello');
 
+            // Final frame: the full draft + transcript now SUBMITS ITSELF
+            // (finished-utterance auto-send): the consumed draft clears the
+            // input, the provider completion carries the combined text as the
+            // user content, and the completed pair persists into the sidebar.
             act(() => {
                 engines[0].onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'Hello world' } }] });
             });
-            expect(input.value).toBe('Draft text Hello world');
+            expect(input.value).toBe('');
             expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
+            const completions = (fetch as any).mock.calls.filter((call: unknown[]) => String(call[0]).endsWith('/chat/completions'));
+            expect(completions).toHaveLength(1);
+            expect(JSON.parse(String(completions[0][1].body)).messages).toEqual([
+                { role: 'user', content: 'Draft text Hello world' }
+            ]);
+            await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
         });
 
         it('shows the engine failure label and ends the session when recognition errors', async () => {
@@ -3230,6 +3325,33 @@ describe('ChatAssistantApp', () => {
             expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
         });
 
+        it('keeps the pre-typed draft and sends nothing when the session ends without any frame (no-speech)', async () => {
+            const { engines } = installVoiceEngine();
+            renderApp();
+            await waitForModelSelection();
+
+            // A pre-typed draft sits in the input before the session starts.
+            const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+            fireEvent.change(input, { target: { value: 'Draft text' } });
+            fireEvent.click(screen.getByTestId('voice-input-button'));
+
+            // The engine hears nothing: silence times out. 'no-speech' is a
+            // benign ending (speechErrorLabel returns '' — no banner) but the
+            // session still settles through the wrapper (onerror settles
+            // first, the engine's own onend afterwards is a guarded no-op), so
+            // the auto-send gate (voiceTranscript) must keep the STALE
+            // pre-typed draft from firing a request.
+            act(() => {
+                engines[0].onerror?.({ error: 'no-speech' });
+                engines[0].onend?.();
+            });
+
+            expect(input.value).toBe('Draft text');
+            expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
+            expect(screen.queryByTestId('chat-error')).toBeNull();
+            expect((fetch as any).mock.calls.filter((call: unknown[]) => String(call[0]).endsWith('/chat/completions'))).toHaveLength(0);
+        });
+
         it('stops the session when the toggle is clicked again, keeping the partial transcript', async () => {
             const { engines } = installVoiceEngine();
             renderApp();
