@@ -116,7 +116,14 @@
 // box to the browser's two-row textarea default) and auto-grows with newlines
 // up to eight rows; its right padding is deepened so text never slides under
 // the embedded arrow. The layout needs no narrow-screen shrink defenses:
-// the model text and the input stack vertically on every viewport. The
+// the model text and the input stack vertically on every viewport. VOICE INPUT: a
+// mic toggle docked at the input's LEFT edge (always visible — unlike the
+// focus-gated send arrow, because tapping the input first would just summon the
+// on-screen keyboard) fills the SAME input draft with the spoken words through
+// the Web Speech API wrapper (src/api/speech.ts): pre-typed words survive
+// (the transcript appends one-space separated), the final result stops the
+// session, and the user reviews/sends exactly like a typed message. API-less
+// browsers get a non-blocking "not supported" banner instead of a dead button. The
 // sidebar is a
 // static column on md+ screens and a toggleable drawer below the md breakpoint.
 // The message list ALWAYS follows the conversation bottom: typing in the
@@ -147,20 +154,27 @@
 import React, { useCallback, useEffect } from 'react';
 import { arrayEach } from '@presource/core';
 import { styledComponent, useReferenceHook, useStateHook } from '@presource/react';
+// appendTranscript/createSpeechRecognizer/speechRecognitionSupported (api/
+// speech.ts) power the composer's voice-to-text toggle: the recognized
+// transcript lands in the same input draft the user would have typed.
 import {
     addToConversation,
+    appendTranscript,
     createConversation,
+    createSpeechRecognizer,
     deleteConversation,
     fetchConversation,
     fetchProviderModels,
     listConversations,
     replaceConversationMessages,
+    speechRecognitionSupported,
     streamProviderChatCompletion,
     DEFAULT_CHAT_ASSISTANT_URL,
     DEFAULT_PROVIDER_URL,
     type ChatMessage,
     type ConversationRecord,
-    type ConversationSummary
+    type ConversationSummary,
+    type SpeechRecognizerHandle
 } from '../api';
 // Shared stroke-based SVG icon family (src/icons): every glyph below was
 // formerly a unicode text character whose rendering depended on the system
@@ -173,6 +187,7 @@ import {
     CopyIcon,
     ForkIcon,
     MenuIcon,
+    MicIcon,
     SwitchIcon
 } from '../icons';
 
@@ -843,8 +858,10 @@ const Composer = styledComponent('form', {
 // remains controlled by the message content. The composer is a COLUMN now
 // (input on top, model text above), so the input spans the full row via
 // width:100% — flex:1 would be a flex-basis:0 HEIGHT in a column and collapse
-// the field. The RIGHT padding is deepened so typed text never slides under
-// the embedded send arrow (32px circle at right:8px). Keyboard behavior (see
+// the field. The HORIZONTAL padding is deepened on BOTH sides so typed text
+// never slides under the embedded circles: the send arrow (32px at right:8px)
+// and the voice toggle (32px at left:8px, the mirrored left dock). Keyboard
+// behavior (see
 // the onKeyDown handler at the render site below): on DESKTOP (md+ viewport)
 // Enter submits the message and Shift+Enter inserts a newline; on MOBILE
 // Enter always inserts a newline and the send arrow performs submission.
@@ -857,7 +874,7 @@ const MessageInput = styledComponent('textarea', {
     maxHeight: 'calc(1.4em * 8 + 26px)',
     resize: 'none',
     overflowY: 'auto',
-    padding: '12px 52px 12px 14px',
+    padding: '12px 52px 12px 52px',
     border: `1px solid ${COLORS.border}`,
     borderRadius: 8,
     backgroundColor: COLORS.page,
@@ -943,6 +960,35 @@ const SendButton = styledComponent('button', {
     fontSize: 15,
     lineHeight: 1
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+
+// Voice input toggle: 32px circular mic docked INSIDE the input box at its
+// LEFT edge — the mirrored twin of SendButton's right dock (absolute +
+// top:50% + translateY(-50%) inside the ComposerField positioning context).
+// ALWAYS rendered, unlike the focus-gated send arrow: talking is a
+// first-class input method and requiring a focus tap first would just
+// summon the on-screen keyboard on mobile. `listening` flips the surface to
+// the danger color (the glyph swap mic→X lives at the render site).
+// borderRadius is the STATIC 16 (a 32px square is geometrically circular):
+// the static px value keeps the send arrow's `border-radius:50%` the unique
+// sheet marker its style rules use for identification.
+const VoiceButton = styledComponent<{ listening?: boolean }>('button', {
+    position: 'absolute',
+    left: 8,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 32,
+    height: 32,
+    padding: 0,
+    border: 'none',
+    borderRadius: 16,
+    backgroundColor: ({ listening }) => (listening ? COLORS.danger : COLORS.panelStrong),
+    color: ({ listening }) => (listening ? '#ffffff' : COLORS.muted),
+    cursor: 'pointer',
+    font: 'inherit'
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { listening?: boolean }>;
 
 // Native select layered invisibly over the model TEXT. Every click on the
 // text actually lands on this select, which opens the real model dropdown;
@@ -1753,6 +1799,23 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // remount — then clears it so a later unresolvable click point falls back
     // to the text end. See textOffsetFromPoint / placeCaretAtOffset.
     const caretOffset = useReferenceHook<number | null>(null);
+    // Voice input (src/api/speech.ts): `listening` drives the mic→X glyph and
+    // the danger surface; `recognizer` holds the live session handle (a ref
+    // write, no re-render — the handle is created at session start); the
+    // draft snapshot taken at start is the transcript's append base.
+    const listening = useStateHook(false);
+    const recognizer = useReferenceHook<SpeechRecognizerHandle | null>(null);
+    const speechDraft = useReferenceHook<string>('');
+
+    // Unmount cleanup: discard a still-live voice session so the speech
+    // engine keeps delivering nothing to a dead component. dispose() detaches
+    // the engine's callbacks and settles silently (src/api/speech.ts); the
+    // ref accessor's handle identity is stable for the component lifetime
+    // (@presource/react reference contract, see the listJump effect note).
+    useEffect(() => () => {
+        recognizer()?.dispose();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Load the provider model catalog once on mount. The provider needs no API key
     // from the browser, so no credentials are handled here.
@@ -2466,6 +2529,69 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [baseUrl, cancelEdit, chats, editingIndex, error, savingEdit, selected]);
 
+    // Voice toggle (rendered by the VoiceButton in ComposerField): one tap
+    // starts a single-utterance session whose transcript fills the SAME input
+    // draft the user would have typed — pre-typed words survive because every
+    // frame appends onto the draft snapshot taken at start (appendTranscript
+    // owns the one-space separator); the glyph becomes a stop X, and a second
+    // tap DISCARDS the session (silent dispose — no onEnd on purpose: the UI
+    // state we are about to clear would be noise) while the partial
+    // transcript already written into the input stays for review/editing.
+    // After the session the user reviews and sends exactly like a typed
+    // message (the "send while still listening" race is owned by the
+    // session-stop guard at the top of submit below).
+    const startListening = useCallback(() => {
+        // Toggle off: discard the live session and clear the listening
+        // chrome; the recognized text stays in the input.
+        if (listening()) {
+            recognizer()?.dispose();
+            recognizer(null);
+            listening(false);
+            return;
+        }
+        // API-less browsers (Firefox, jsdom): explicit non-blocking error —
+        // the conversation remains fully usable with typing, no banner-less
+        // dead button.
+        if (!speechRecognitionSupported()) {
+            error('Voice input is not supported in this browser.');
+            return;
+        }
+        // Draft capture: the transcript's append base for every frame (the
+        // ref write keeps interim delivery out of the re-render race —
+        // message() above already holds the pre-session text).
+        speechDraft(message());
+        listening(true);
+        error('');
+        recognizer(createSpeechRecognizer({
+            onTranscript: (transcript) => {
+                // Interim frames are CUMULATIVE from the session start, each
+                // replacing the previous, so the input always reads
+                // draft + latest recognized text — nothing doubles up.
+                message(appendTranscript(speechDraft(), transcript));
+            },
+            onError: (detail) => {
+                // Real engine failure (denied permission, no microphone,
+                // network): the session is over and the display-ready label
+                // lands in the non-modal error banner.
+                listening(false);
+                error(detail);
+            },
+            onEnd: () => {
+                // Terminal for any reason (final result, engine stop, silent
+                // no-speech): the listening chrome comes off; the transcript
+                // stays in the input for review before sending.
+                listening(false);
+            }
+        }));
+        // The constructor resolved at the probe above, yet start() can still be
+        // refused by the engine (e.g. microphone busy): surface a generic
+        // error instead of a session that looks live but never hears.
+        if (!recognizer()?.start()) {
+            listening(false);
+            error('Voice input could not be started.');
+        }
+    }, [error, listening, message, recognizer, speechDraft]);
+
     // Send flow: (1) stream the assistant turn from the provider using the ENTIRE
     // conversation history — system prompt included — plus the new user message,
     // rendering deltas live, (2) only after the stream completes, persist the
@@ -2482,6 +2608,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // type follows the styledComponent form's FormEventHandler<HTMLElement>.
     const submit = useCallback(async (event?: React.FormEvent<HTMLElement>) => {
         event?.preventDefault();
+        // Voice session still live: end it (dispose = silent, no onEnd) so the transcript already written into the input is exactly what gets sent, and the engine stops rewriting the draft during the provider round-trip.
+        if (listening()) {
+            recognizer()?.dispose();
+            recognizer(null);
+            listening(false);
+        }
         const text = message().trim();
         const chosenModel = model();
         // A prompt blur save owns the conversation write until it completes;
@@ -2578,7 +2710,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         } finally {
             loading(false);
         }
-    }, [baseUrl, providerUrl, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, pendingUser, savingSystemPrompt, selected, streaming, systemPrompt]);
+    }, [baseUrl, listening, pendingUser, providerUrl, recognizer, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, savingSystemPrompt, selected, streaming, systemPrompt]);
 
     // Fold/unfold one message turn. Pure view state: adds the index to the
     // collapsed set or removes it; no network call is ever involved.
@@ -3017,6 +3149,21 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 // empty composer at two rows
                                 rows={1}
                             />
+                            {/* Voice input: the mic docks at the input's LEFT edge (always visible —
+                                the send arrow's mirror); while listening it is a red stop X. The
+                                transcript arrives as the input's value, so review + send work
+                                exactly like a typed message (see startListening above). */}
+                            <VoiceButton
+                                type="button"
+                                listening={listening()}
+                                onClick={startListening}
+                                aria-label={listening() ? 'Stop voice input' : 'Start voice input'}
+                                aria-pressed={listening()}
+                                title={listening() ? 'Stop voice input' : 'Start voice input'}
+                                data-testid="voice-input-button"
+                            >
+                                {listening() ? <CloseIcon size={16} /> : <MicIcon size={16} />}
+                            </VoiceButton>
                             {/* The ">" send arrow lives INSIDE the input box at
                                 its right edge, vertically centered in the box,
                                 and exists ONLY while the composer is focused

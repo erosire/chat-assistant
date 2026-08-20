@@ -52,7 +52,11 @@
 // visible, the native dropdown select overlaying it invisibly), and the send
 // button is a circular ">" arrow EMBEDDED in the input at its right edge,
 // vertically centered in the box — rendered ONLY while the composer has focus
-// (focus-within, including the arrow and the model select). The input's Scroll JUMPS are SECTION-LOCAL: every user/assistant/system
+// (focus-within, including the arrow and the model select). The
+// voice-to-text toggle (mic glyph docked at the input's LEFT edge, ALWAYS
+// visible and a red stop X while listening) fills the SAME input with the
+// transcript (draft preserved, one-space separator); unsupported browsers get
+// a non-blocking "not supported" banner. The input's Scroll JUMPS are SECTION-LOCAL: every user/assistant/system
 // turn's own controls panel (the strip under its bubble — transient
 // pending/streaming turns have none) carries an up/down chevron pair at its
 // left edge: "^" fast-animates the list (fixed 200ms ease-out) until THAT
@@ -262,6 +266,43 @@ const sendFirstTurn = async () => {
     fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
     fireEvent.click(screen.getByTestId('send-chat-button'));
     await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
+};
+
+// Fake Web Speech engine for the voice tests: a constructor installed on the
+// SpeechRecognition global (the exact structural surface src/api/speech.ts
+// consumes), one instance per recognizer start. `start()` records itself;
+// `stop()` fires the stored onend because a real engine settles the session
+// that way. The wrapper assigns onresult/onerror/onend AFTER construction,
+// so the test fires them manually at the moments it wants, through the live
+// recorded instance.
+type VoiceEngineEvent = {
+    resultIndex: number;
+    results: Array<{ isFinal: boolean; 0: { transcript: string } }>;
+};
+class FakeSpeechEngine {
+    started = 0;
+    onresult: ((event: VoiceEngineEvent) => void) | null = null;
+    onerror: ((event: { error: string }) => void) | null = null;
+    onend: (() => void) | null = null;
+    start = (): void => {
+        this.started += 1;
+    };
+    stop = (): void => {
+        this.onend?.();
+    };
+}
+const installVoiceEngine = () => {
+    const engines: FakeSpeechEngine[] = [];
+    // A plain constructor function: `new` in the wrapper returns the recorded
+    // engine object itself (a constructor return value replaces `this`), so
+    // engines[N] IS the exact instance the wrapper drives.
+    const FakeRecognitionConstructor = function (this: unknown) {
+        const engine = new FakeSpeechEngine();
+        engines.push(engine);
+        return engine;
+    };
+    vi.stubGlobal('SpeechRecognition', FakeRecognitionConstructor);
+    return { engines };
 };
 
 describe('ChatAssistantApp', () => {
@@ -576,14 +617,15 @@ describe('ChatAssistantApp', () => {
             .join('\n');
 
         // MessageInput is the only resize:none element; its rule must carry
-        // the border-box one-row height AND the deepened RIGHT padding that
-        // keeps text clear of the embedded arrow (32px circle at right:8px).
+        // the border-box one-row height AND the deepened HORIZONTAL padding
+        // that keeps text clear of BOTH embedded circles (the send arrow at
+        // right:8px and the voice toggle at left:8px).
         const inputRule = /\.css-[^{]+\{[^}]*resize:none;[^}]*\}/.exec(css)?.[0];
         expect(inputRule).toBeDefined();
         expect(inputRule).toContain('box-sizing:border-box');
         expect(inputRule).toContain('height:calc(1.4em + 26px)');
         expect(inputRule).toContain('max-height:calc(1.4em * 8 + 26px)');
-        expect(inputRule).toContain('padding:12px 52px 12px 14px');
+        expect(inputRule).toContain('padding:12px 52px 12px 52px');
 
         // The arrow: a 32px circle pinned absolute to the field's right edge,
         // vertically CENTERED in the box (top:50% + translateY(-50%) — it must
@@ -599,6 +641,18 @@ describe('ChatAssistantApp', () => {
         expect(arrowRule).toContain('width:32px');
         expect(arrowRule).toContain('height:32px');
         expect(arrowRule).toContain('background-color:#5f82f0');
+
+        // The voice toggle is the arrow's LEFT-edge mirror: unique in the
+        // sheet by left:8px + the static 16px radius (a 32px square is
+        // geometrically circular) — the static px keeps the arrow's
+        // border-radius:50% the only 50% marker in the sheet.
+        const micRule = /\.css-[^{]+\{[^}]*left:8px;[^}]*\}/.exec(css)?.[0];
+        expect(micRule).toBeDefined();
+        expect(micRule).toContain('position:absolute');
+        expect(micRule).toContain('top:50%');
+        expect(micRule).toContain('transform:translateY(-50%)');
+        expect(micRule).toContain('width:32px');
+        expect(micRule).toContain('border-radius:16px');
 
         // The model selection is plain muted TEXT (no button chrome): the
         // exact declaration sequence identifies its rule.
@@ -3062,5 +3116,142 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
         expect(screen.getByTestId('chat-title').getAttribute('contenteditable')).toBeNull();
         expect(screen.getByTestId('empty-chat-state')).toBeDefined();
+    });
+
+    // Voice-to-text toggle (src/api/speech.ts): the mic sits inside the input
+    // field at its left edge, ALWAYS visible (unlike the focus-gated send
+    // arrow); the transcript fills the SAME input draft, the final result
+    // ends the session, and sending then works like a typed message.
+    describe('voice input', () => {
+        it('renders the mic toggle docked inside the input at the left edge, visible without focus', async () => {
+            renderApp();
+
+            // ALREADY visible before any focus: the send arrow is not.
+            expect(screen.queryByTestId('send-chat-button')).toBeNull();
+            const mic = screen.getByTestId('voice-input-button');
+            const field = screen.getByTestId('chat-input-field');
+            expect(field.contains(mic)).toBe(true);
+            // DOM order inside the field: input first (the existing contract),
+            // mic last while unfocused...
+            expect(field.firstElementChild).toBe(screen.getByTestId('chat-input'));
+            expect(field.lastElementChild).toBe(mic);
+            expect(mic.getAttribute('aria-label')).toBe('Start voice input');
+            expect(mic.getAttribute('aria-pressed')).toBe('false');
+            expect(mic.querySelector('svg[data-icon="mic"]')).not.toBeNull();
+
+            // Focus reveals the send arrow AFTER the mic (field last child).
+            fireEvent.focus(screen.getByTestId('chat-input'));
+            expect(field.lastElementChild).toBe(screen.getByTestId('send-chat-button'));
+        });
+
+        it('reports a non-blocking "not supported" error when the browser has no speech API', async () => {
+            renderApp();
+
+            // jsdom ships no SpeechRecognition: the click surfaces the exact
+            // banner text, no listening state appears, and the composer stays
+            // fully usable (typing remains the fallback).
+            fireEvent.click(screen.getByTestId('voice-input-button'));
+            expect(screen.getByTestId('chat-error').textContent).toBe('Voice input is not supported in this browser.');
+            expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
+            const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+            expect(input.disabled).toBe(false);
+            expect(input.value).toBe('');
+        });
+
+        it('fills the input with the live transcript and ends the session on the final result', async () => {
+            const { engines } = installVoiceEngine();
+            renderApp();
+            await waitForModelSelection();
+
+            const mic = screen.getByTestId('voice-input-button');
+            fireEvent.click(mic);
+            expect(engines).toHaveLength(1);
+            expect(engines[0].started).toBe(1);
+            expect(mic.getAttribute('aria-pressed')).toBe('true');
+            expect(mic.getAttribute('aria-label')).toBe('Stop voice input');
+            // Listening glyph: the mic swaps to the stop X.
+            expect(mic.querySelector('svg[data-icon="close"]')).not.toBeNull();
+            const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+
+            // Interim frame: the input mirrors the partial text live.
+            act(() => {
+                engines[0].onresult?.({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'Hello' } }] });
+            });
+            expect(input.value).toBe('Hello');
+            expect(mic.getAttribute('aria-pressed')).toBe('true');
+
+            // Final frame: the settled text lands, the session ends, the
+            // listening chrome comes back to the mic (the engine's own onend
+            // after the final stop is a guarded no-op).
+            act(() => {
+                engines[0].onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'Hello world' } }] });
+            });
+            expect(input.value).toBe('Hello world');
+            expect(mic.getAttribute('aria-pressed')).toBe('false');
+            expect(mic.getAttribute('aria-label')).toBe('Start voice input');
+            expect(mic.querySelector('svg[data-icon="mic"]')).not.toBeNull();
+        });
+
+        it('appends the transcript to the existing draft with one separating space', async () => {
+            const { engines } = installVoiceEngine();
+            renderApp();
+            await waitForModelSelection();
+
+            // Pre-typed draft survives the session start (the draft snapshot
+            // the transcript appends onto)...
+            const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+            fireEvent.change(input, { target: { value: 'Draft text' } });
+            fireEvent.click(screen.getByTestId('voice-input-button'));
+
+            act(() => {
+                engines[0].onresult?.({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'Hello' } }] });
+            });
+            expect(input.value).toBe('Draft text Hello');
+
+            act(() => {
+                engines[0].onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'Hello world' } }] });
+            });
+            expect(input.value).toBe('Draft text Hello world');
+            expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
+        });
+
+        it('shows the engine failure label and ends the session when recognition errors', async () => {
+            const { engines } = installVoiceEngine();
+            renderApp();
+            await waitForModelSelection();
+
+            fireEvent.click(screen.getByTestId('voice-input-button'));
+            // The display-ready label (src/api/speech.ts speechErrorLabel)
+            // lands in the non-modal banner and the listening chrome drops.
+            act(() => {
+                engines[0].onerror?.({ error: 'network' });
+            });
+            expect(screen.getByTestId('chat-error').textContent).toBe('Voice input failed: network problem.');
+            expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
+        });
+
+        it('stops the session when the toggle is clicked again, keeping the partial transcript', async () => {
+            const { engines } = installVoiceEngine();
+            renderApp();
+            await waitForModelSelection();
+
+            const mic = screen.getByTestId('voice-input-button');
+            fireEvent.click(mic);
+            const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+            act(() => {
+                engines[0].onresult?.({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'Hello' } }] });
+            });
+            expect(input.value).toBe('Hello');
+
+            // Second tap DISCARDS the live session: the engine callbacks are
+            // detached (a late frame reaches nothing, no onEnd fires)...
+            fireEvent.click(mic);
+            expect(mic.getAttribute('aria-pressed')).toBe('false');
+            expect(engines[0].onresult).toBeNull();
+            expect(engines[0].onerror).toBeNull();
+            expect(engines[0].onend).toBeNull();
+            // ...and the recognized text stays in the input for review.
+            expect(input.value).toBe('Hello');
+        });
     });
 });

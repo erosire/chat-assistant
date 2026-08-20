@@ -5,7 +5,10 @@
 // hosts like GitHub Pages serve no API routes, so relative paths 404 there).
 // config = raw host/port for the database API server and inference provider
 // (single source of truth the assembled URLs in server-url/provider derive from).
+// speech = Web Speech API wrapper (feature probe, session handle, transcript
+// append + error label) for the composer's voice-to-text toggle.
 export * from './config';
 export * from './chat-assistant';
 export * from './provider';
 export * from './server-url';
+export * from './speech';

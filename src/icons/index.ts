@@ -3,6 +3,7 @@
 export { IconBase } from './IconBase';
 export type { IconBaseProps, IconProps } from './IconBase';
 export { MenuIcon } from './MenuIcon';
+export { MicIcon } from './MicIcon';
 export { CloseIcon } from './CloseIcon';
 export { EditIcon } from './EditIcon';
 export { CopyIcon } from './CopyIcon';

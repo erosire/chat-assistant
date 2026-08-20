@@ -15,6 +15,7 @@ import {
     EditIcon,
     ForkIcon,
     MenuIcon,
+    MicIcon,
     SwitchIcon
 } from '.';
 
@@ -23,6 +24,9 @@ import {
 // lives in exactly one place.
 const family: ReadonlyArray<readonly [string, ComponentType<{ size?: number }>, string]> = [
     ['menu', MenuIcon, '<path d="M3 6h18M3 12h18M3 18h18"></path>'],
+    // Voice input toggle glyph (composer mic): capsule body + cradle arc +
+    // stand stroke, all in the family's path-only path-data convention.
+    ['mic', MicIcon, '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path>'],
     ['close', CloseIcon, '<path d="M6 6l12 12M18 6L6 18"></path>'],
     ['edit', EditIcon, '<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>'],
     [
