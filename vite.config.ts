@@ -18,7 +18,13 @@ export default defineConfig({
     plugins: [react()],
     base: './',
     server: {
-        port: 4500
+        port: 4500,
+        // Never watch the service's shared writable data root: chokidar
+        // holding files under temporary/database while the underload service
+        // writes them surfaces as sporadic EPERM failures on Windows.
+        watch: {
+            ignored: ['**/temporary/**']
+        }
     },
     build: {
         outDir: 'dist'
