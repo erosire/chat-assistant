@@ -26,21 +26,23 @@
 //   origin; either relax mixed-content blocking or terminate HTTPS in front of
 //   the backend port.
 
+import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_DATABASE_PORT } from '@config/environment';
+
 // Host (IPv4 or hostname) of the shared backend. LAN address of the machine
 // running the runtime service; kept as a bare string so it can be reused both
 // to build the absolute origin and to be displayed/inspected by tooling.
-export const DATABASE_API_HOST = '192.168.8.128';
+export const DATABASE_API_HOST = LOCAL_AREA_NETWORK_HOST_NAME;
 
 // Port the database API server listens on. The runtime service exposes the
 // conversation storage routes (/v1/chat-assistant/...) on this same port.
-export const DATABASE_API_PORT = 5000;
+export const DATABASE_API_PORT = LOCAL_AREA_NETWORK_DATABASE_PORT;
 
 // Inference provider currently shares the backend origin with the database API
 // (the private provider routes /providers/private/v1 are mounted on the same
 // runtime service). These mirror the database values so that if the provider
 // is ever split onto its own host/port, only this section needs to change.
-export const INFERENCE_PROVIDER_HOST = '192.168.8.128';
-export const INFERENCE_PROVIDER_PORT = 5000;
+export const INFERENCE_PROVIDER_HOST = LOCAL_AREA_NETWORK_HOST_NAME;
+export const INFERENCE_PROVIDER_PORT = LOCAL_AREA_NETWORK_DATABASE_PORT;
 
 // Assembled absolute origins. `server-url.ts` re-exports `DEFAULT_SERVER_URL`
 // for backwards compatibility with existing imports; that constant is now built

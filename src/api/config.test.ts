@@ -2,6 +2,7 @@
 // the single source of truth that server-url.ts and provider.ts assemble the
 // default API URLs from; if they regress, the assembled URLs break too.
 import { describe, expect, it } from 'vitest';
+import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_DATABASE_PORT } from '@config/environment';
 import {
     DATABASE_API_HOST,
     DATABASE_API_PORT,
@@ -14,21 +15,21 @@ import { DEFAULT_SERVER_URL } from './server-url';
 
 describe('deployment config host/port', () => {
     it('exposes the database API server host and port', () => {
-        expect(DATABASE_API_HOST).toBe('192.168.8.128');
-        expect(DATABASE_API_PORT).toBe(5000);
+        expect(DATABASE_API_HOST).toBe(LOCAL_AREA_NETWORK_HOST_NAME);
+        expect(DATABASE_API_PORT).toBe(LOCAL_AREA_NETWORK_DATABASE_PORT);
     });
 
     it('exposes the inference provider host and port', () => {
-        expect(INFERENCE_PROVIDER_HOST).toBe('192.168.8.128');
-        expect(INFERENCE_PROVIDER_PORT).toBe(5000);
+        expect(INFERENCE_PROVIDER_HOST).toBe(LOCAL_AREA_NETWORK_HOST_NAME);
+        expect(INFERENCE_PROVIDER_PORT).toBe(LOCAL_AREA_NETWORK_DATABASE_PORT);
     });
 
     it('assembles the database API absolute origin from host+port', () => {
-        expect(DATABASE_API_URL).toBe('http://192.168.8.128:5000');
+        expect(DATABASE_API_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}`);
     });
 
     it('assembles the inference provider absolute origin from host+port', () => {
-        expect(INFERENCE_PROVIDER_URL).toBe('http://192.168.8.128:5000');
+        expect(INFERENCE_PROVIDER_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}`);
     });
 
     it('keeps DEFAULT_SERVER_URL in sync with the database API origin', () => {
