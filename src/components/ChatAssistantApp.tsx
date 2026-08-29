@@ -15,7 +15,14 @@
 // - with nothing remembered, a selected chat's recorded model applies;
 // - otherwise the first catalog entry sorted by MODEL NAME applies — provider /
 //   organisation prefixes are stripped from labels ("zai-org/GLM-5.2-NVFP4" shows
-//   as "GLM-5.2-NVFP4") but kept in values for provider routing.
+//   as "GLM-5.2-NVFP4") but kept in values for provider routing. STRIPPED
+//   LABELS THAT COLLIDE widen back to the FULL id (uniqueModelLabels): the
+//   private registry serves one base model through several providers
+//   ("modal/glm-5.3-flash" + "telnyx/glm-5.3-flash" + "makora/glm-5.3-flash"),
+//   and bare stripping rendered the dropdown as a list of identical
+//   "glm-5.3-flash" entries — ids sharing a stripped name display
+//   "provider/base" so every option reads distinctly. The same map drives the
+//   composer text, both attribution labels, and the dropdown options.
 // Per-message attribution (the assistant turn's top-left label) already marks
 // WHICH model produced each reply, so no separate "Model: ..." strip exists.
 // Conversation management lives ENTIRELY in the sidebar: "New chat" sits at
@@ -1075,6 +1082,35 @@ export const modelLabel = (id: string): string => {
     return slash >= 0 ? id.slice(slash + 1) : id;
 };
 
+// Display labels for a whole catalog with COLLIDING stripped names resolved.
+// The private registry legitimately serves the same base model through several
+// providers — e.g. "modal/glm-5.3-flash", "telnyx/glm-5.3-flash", and
+// "makora/glm-5.3-flash" (see @agentic/provider registry.ts) — and bare
+// modelLabel() collapses all of them to the identical "glm-5.3-flash", which
+// rendered the dropdown as the reported "glm-5.3-flash ×3" duplicate list.
+// Rule: a stripped label used by EXACTLY ONE catalog id keeps the short form;
+// every id sharing a stripped label displays its FULL provider-routed id
+// (provider/base is already the natural disambiguator). Values always stay
+// the full ids — only labels shorten. Returned as an id → label Map so the
+// composer text, the dropdown options, the streaming attribution, and the
+// persisted-turn labels all resolve IDENTICAL display names for one id.
+export const uniqueModelLabels = (ids: string[]): Map<string, string> => {
+    // First pass: count how many ids share each stripped label.
+    const strippedCounts = new Map<string, number>();
+    arrayEach(ids, (entry) => {
+        const stripped = modelLabel(entry.value);
+        strippedCounts.set(stripped, (strippedCounts.get(stripped) ?? 0) + 1);
+    });
+    // Second pass: unique stripped labels stay short; shared ones widen to the
+    // full routing id so each option reads distinctly.
+    const labels = new Map<string, string>();
+    arrayEach(ids, (entry) => {
+        const stripped = modelLabel(entry.value);
+        labels.set(entry.value, (strippedCounts.get(stripped) ?? 0) > 1 ? entry.value : stripped);
+    });
+    return labels;
+};
+
 // Storage access is guarded so locked-down or embedded browsers degrade to
 // session-only model selection instead of crashing the dashboard.
 const readRememberedModel = (): string => {
@@ -1140,6 +1176,12 @@ type MessageListOptions = {
     // turn's top/bottom edge docks on the list's corresponding padding line.
     // The wrapper is addressed by testid (message-turn-N / system-prompt-turn).
     onJumpTurnEdge: (testId: string, toTop: boolean) => void;
+    // id → display label map for the CURRENT catalog + chosen model (see
+    // uniqueModelLabels): assistant turns produced by a model whose stripped
+    // name is shared by several providers attribute with the full routing id,
+    // matching what the dropdown and composer show for the same id.
+    // Historical models missing from the map fall back to the stripped label.
+    modelLabels: Map<string, string>;
 };
 
 // Read the text of a contentEditable bubble while preserving line structure.
@@ -1393,12 +1435,15 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
             title: editable ? 'Click to edit' : undefined,
             'data-testid': `message-content-${index}`
         };
-        // Top-left attribution text: the producing model's stripped name for
-        // assistant turns WITH per-message attribution (ChatMessage.model);
+        // Top-left attribution text: the producing model's display name for
+        // assistant turns WITH per-message attribution (ChatMessage.model) —
+        // the dedupe-aware lookup (options.modelLabels) keeps the label in
+        // sync with the dropdown for colliding stripped names, falling back
+        // to the bare stripped name for historical ids outside the catalog;
         // the literal role name otherwise ("user" / "system" for now — a real
         // speaker identity can replace these labels later).
         const speakerLabel = message.role === 'assistant' && message.model !== undefined
-            ? modelLabel(message.model)
+            ? options.modelLabels.get(message.model) ?? modelLabel(message.model)
             : message.role;
         // Header row above the bubble: the attribution label (+ first-line
         // preview STACKED BELOW it while collapsed — label line over preview
@@ -2838,6 +2883,16 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const catalog = models();
     const chosenModel = model();
     const modelOptions = chosenModel && !catalog.includes(chosenModel) ? [chosenModel, ...catalog] : catalog;
+    // id → display label for the WHOLE option set (see uniqueModelLabels): ids
+    // whose stripped names collide (the same base model served by several
+    // providers) display the full provider-routed id so the dropdown never
+    // lists identical-looking entries. Resolved once per render and reused by
+    // the composer text, the option labels, and both attribution surfaces.
+    const modelLabels = uniqueModelLabels(modelOptions);
+    // Lookup with graceful fallback: a historical ChatMessage.model that is no
+    // longer in the catalog misses the map and degrades to the plain stripped
+    // label (the pre-dedupe behavior) instead of rendering undefined.
+    const modelDisplayName = (id: string): string => modelLabels.get(id) ?? modelLabel(id);
 
     // Render only the selected record; a new chat remains an empty composer until submitted.
     const currentMessages = selected()?.messages ?? [];
@@ -2881,7 +2936,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // syncStickyControls); mirrors collapsedTurns as a per-render list.
         stickyTurns: stickyTurns(),
         // Section-local scroll chevrons: each turn's own panel drives the flight.
-        onJumpTurnEdge: jumpTurnEdge
+        onJumpTurnEdge: jumpTurnEdge,
+        // Dedupe-aware model display names (see uniqueModelLabels) so the
+        // per-turn attribution labels match the dropdown for colliding ids.
+        modelLabels
     };
 
     return (
@@ -3124,7 +3182,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                         <TurnHeaderRow>
                                             <TurnHeaderLead>
                                                 {/* The in-flight response is marked in its top-left corner with the model currently producing it. */}
-                                                <TurnLabelText data-testid="streaming-message-model">{modelLabel(chosenModel)}</TurnLabelText>
+                                                <TurnLabelText data-testid="streaming-message-model">{modelDisplayName(chosenModel)}</TurnLabelText>
                                             </TurnHeaderLead>
                                         </TurnHeaderRow>
                                         <AssistantMessage data-testid="streaming-message">{streaming()}</AssistantMessage>
@@ -3162,7 +3220,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             the real dropdown on click. Always visible. */}
                         <ModelPicker data-testid="model-picker">
                             <ModelText data-testid="model-label">
-                                {chosenModel ? modelLabel(chosenModel) : catalog.length === 0 ? 'No models available' : 'Select model'}
+                                {chosenModel ? modelDisplayName(chosenModel) : catalog.length === 0 ? 'No models available' : 'Select model'}
                             </ModelText>
                             <ModelSelect
                                 value={chosenModel}
@@ -3181,8 +3239,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 {catalog.length === 0
                                     ? <option value="">No models available</option>
                                     : modelOptions.map((id) => (
-                                        // Values keep the full provider-routed id; labels strip the prefix.
-                                        <option key={id} value={id}>{modelLabel(id)}</option>
+                                        // Values keep the full provider-routed id; labels strip the
+                                        // prefix UNLESS the stripped name is shared by several ids
+                                        // (same base model through multiple providers) — those
+                                        // display the full id so every option reads distinctly.
+                                        <option key={id} value={id}>{modelDisplayName(id)}</option>
                                     ))}
                             </ModelSelect>
                         </ModelPicker>

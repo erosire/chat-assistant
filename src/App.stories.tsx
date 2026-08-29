@@ -1,10 +1,11 @@
 // Storybook stories for the public application shell (src/App.tsx).
 //
 // No mocks, no fixtures: App renders exactly as deployed and talks to the
-// REAL backends through the defaults in src/api (DEFAULT_CHAT_ASSISTANT_URL /
-// DEFAULT_PROVIDER_URL → DATABASE_API_HOST:DATABASE_API_PORT in
-// src/api/config.ts), so the canvas exercises the actual storage service and
-// model provider. Nothing network-dependent is asserted — the plays only
+// REAL backends through the defaults in src/api (DEFAULT_CHAT_ASSISTANT_URL →
+// DATABASE_API_HOST:DATABASE_API_PORT and DEFAULT_PROVIDER_URL →
+// INFERENCE_PROVIDER_HOST:INFERENCE_PROVIDER_PORT in src/api/config.ts), so
+// the canvas exercises the actual storage service and model provider. Nothing
+// network-dependent is asserted — the plays only
 // verify the shell LOADS: the root surface, fallback header title, and
 // composer all render synchronously, before the mount effects' catalog GET
 // (fetchProviderModels) and history GET (listConversations) settle. An

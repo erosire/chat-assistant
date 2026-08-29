@@ -5,15 +5,24 @@
 import { isString } from '@presource/core';
 import type { ChatMessage, ConversationRecord } from './chat-assistant';
 
-// Absolute deployment-independent backend origin: relative defaults resolved
-// against the STATIC host (github.io) and 404ed — see ./server-url.ts.
-import { DEFAULT_SERVER_URL } from './server-url';
+// Provider origin (http://<host>:<PROVIDER port>). The provider is a SEPARATE
+// service from the conversation storage: every runtime endpoint under
+// /providers/private declares `port: LOCAL_AREA_NETWORK_PROVIDER_PORT`
+// (runtime/endpoint/provider/private/models/service-route.ts:36 and siblings),
+// so the provider base must be assembled from INFERENCE_PROVIDER_URL — not
+// from DEFAULT_SERVER_URL (the DATABASE origin, which the conversation-storage
+// client in ./chat-assistant.ts still uses). Deriving the provider base from
+// the database origin pointed the model dropdown at
+// http://<host>:5000/providers/private/v1/models, where nothing listens — the
+// catalog GET failed and the dropdown showed "No models available" (the
+// broken-dropdown report).
+import { INFERENCE_PROVIDER_URL } from './config';
 
 // Default provider base matches BASE_URL in runtime/endpoint/provider/private/constant.ts,
-// pinned to the real backend origin (not the static hosting origin) so GitHub
-// Pages deployments reach the LAN server; embedders can still override via the
-// ChatAssistantApp providerUrl prop.
-export const DEFAULT_PROVIDER_URL = `${DEFAULT_SERVER_URL}/providers/private/v1`;
+// pinned to the real provider service origin (not the static hosting origin and
+// not the database origin) so GitHub Pages deployments reach the LAN provider;
+// embedders can still override via the ChatAssistantApp providerUrl prop.
+export const DEFAULT_PROVIDER_URL = `${INFERENCE_PROVIDER_URL}/providers/private/v1`;
 
 // One entry of the OpenAI-compatible /models catalog; only `id` is consumed by the UI.
 export type ProviderModel = {

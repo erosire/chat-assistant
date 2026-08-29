@@ -1,13 +1,19 @@
-// Single source of truth for the chat-assistant backend server origin.
+// Single source of truth for the chat-assistant STORAGE server origin.
 //
 // DEPLOYMENT CONTEXT: this distribution is deployed as STATIC files (GitHub
 // Pages under a repository path, e.g. https://<user>.github.io/chat-assistant/).
 // Origin-relative API paths ('/v1/chat-assistant/...', '/providers/private/v1')
 // resolve against the STATIC HOST'S ORIGIN at runtime — github.io serves no API
-// routes, so every request answered 404 there. The defaults in ./chat-assistant
-// (DEFAULT_CHAT_ASSISTANT_URL) and ./provider (DEFAULT_PROVIDER_URL) are built
-// from this absolute origin so the UI reaches the real backend NO MATTER WHERE
-// THE STATIC FILES ARE HOSTED (GitHub Pages, LAN file server, vite dev, etc.).
+// routes, so every request answered 404 there. The default in ./chat-assistant
+// (DEFAULT_CHAT_ASSISTANT_URL) is built from this absolute origin so the UI
+// reaches the real storage backend NO MATTER WHERE THE STATIC FILES ARE HOSTED
+// (GitHub Pages, LAN file server, vite dev, etc.).
+//
+// NOTE — the MODEL PROVIDER default (DEFAULT_PROVIDER_URL in ./provider.ts)
+// does NOT derive from this origin: the provider routes are a separate service
+// listening on LOCAL_AREA_NETWORK_PROVIDER_PORT, so that URL is assembled from
+// INFERENCE_PROVIDER_URL in ./config.ts. Deriving it here (the database port)
+// pointed the model dropdown's catalog GET at a port nothing listens on.
 //
 // The matching OpenAPI spec server entry is
 // src/server/endpoints/chat-assistant.yml (`servers[0].url`), and the vite dev
@@ -27,7 +33,7 @@
 // editing this constant.
 //
 // The host/port themselves live in ./config.ts (DATABASE_API_HOST/PORT); this
-// constant is the assembled origin the rest of the api layer consumes, kept
-// here as the historical import surface for existing callers.
+// constant is the assembled STORAGE origin consumed by ./chat-assistant.ts,
+// kept here as the historical import surface for existing callers.
 import { DATABASE_API_URL } from './config';
 export const DEFAULT_SERVER_URL = DATABASE_API_URL;

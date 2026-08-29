@@ -3,14 +3,14 @@
 // This module is the SINGLE SOURCE OF TRUTH for the host and port of the two
 // backend services the UI talks to:
 //   1. Database API server  — conversation storage (CRUD) served at /v1/chat-assistant
-//   2. Inference provider   — OpenAI-compatible model endpoints at /providers/private/v1
+//      on the DATABASE port.
+//   2. Inference provider   — OpenAI-compatible model endpoints at
+//      /providers/private/v1 on the (separate) PROVIDER port.
 //
-// Both services share the same backend origin today (the runtime service hosts
-// both the conversation storage routes and the private provider routes behind
-// one port), so they are described by a common host/port pair here. Keeping the
-// raw host+port separate from the assembled URL lets embedders or tooling
-// override just the network location without rewriting full URLs, and makes the
-// deployment target obvious in one place.
+// The two services listen on DIFFERENT ports (see the section comments below);
+// keeping the raw host+port separate from the assembled URL lets embedders or
+// tooling override just the network location without rewriting full URLs, and
+// makes the deployment target obvious in one place.
 //
 // DEPLOYMENT CONTEXT (see ./server-url.ts for the full rationale):
 // - This distribution ships as STATIC files (GitHub Pages under a repo path).
@@ -26,7 +26,11 @@
 //   origin; either relax mixed-content blocking or terminate HTTPS in front of
 //   the backend port.
 
-import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_DATABASE_PORT } from '@config/environment';
+import {
+    LOCAL_AREA_NETWORK_HOST_NAME,
+    LOCAL_AREA_NETWORK_DATABASE_PORT,
+    LOCAL_AREA_NETWORK_PROVIDER_PORT
+} from '@config/environment';
 
 // Host (IPv4 or hostname) of the shared backend. LAN address of the machine
 // running the runtime service; kept as a bare string so it can be reused both
@@ -37,12 +41,19 @@ export const DATABASE_API_HOST = LOCAL_AREA_NETWORK_HOST_NAME;
 // conversation storage routes (/v1/chat-assistant/...) on this same port.
 export const DATABASE_API_PORT = LOCAL_AREA_NETWORK_DATABASE_PORT;
 
-// Inference provider currently shares the backend origin with the database API
-// (the private provider routes /providers/private/v1 are mounted on the same
-// runtime service). These mirror the database values so that if the provider
-// is ever split onto its own host/port, only this section needs to change.
+// Inference provider host + port. The provider routes are a SEPARATE service
+// from the conversation storage: every runtime endpoint under /providers/private
+// declares `port: LOCAL_AREA_NETWORK_PROVIDER_PORT` (see
+// runtime/endpoint/provider/private/models/service-route.ts:36,
+// .../chat-completion/service-route.ts:7, .../responses/service-route.ts:9,
+// .../stats/service-route.ts:22) and the provider clients' Standard URLs agree
+// (runtime/secret/private/telnyx.ts:11 pins :5500/providers/private/v1).
+// Pinning the UI to the DATABASE port here left the model dropdown fetching
+// http://<host>:5000/providers/private/v1/models — nothing listens there, the
+// mount effect's catalog GET failed, and the picker degraded to
+// "No models available" (the broken-dropdown report).
 export const INFERENCE_PROVIDER_HOST = LOCAL_AREA_NETWORK_HOST_NAME;
-export const INFERENCE_PROVIDER_PORT = LOCAL_AREA_NETWORK_DATABASE_PORT;
+export const INFERENCE_PROVIDER_PORT = LOCAL_AREA_NETWORK_PROVIDER_PORT;
 
 // Assembled absolute origins. `server-url.ts` re-exports `DEFAULT_SERVER_URL`
 // for backwards compatibility with existing imports; that constant is now built

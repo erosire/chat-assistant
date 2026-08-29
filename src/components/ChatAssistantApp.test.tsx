@@ -77,7 +77,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage, ConversationRecord } from '../api';
-import { ChatAssistantApp, controlsShouldFloat } from './ChatAssistantApp';
+import { ChatAssistantApp, controlsShouldFloat, uniqueModelLabels } from './ChatAssistantApp';
 
 const BASE_URL = 'http://test.local/v1/chat-assistant/conversation';
 const PROVIDER_URL = 'http://test.local/providers/private/v1';
@@ -564,6 +564,55 @@ describe('ChatAssistantApp', () => {
         // chevron (the authored ">" identity drawn as an SVG icon).
         expect(screen.getByTestId('send-chat-button').querySelector('svg[data-icon="chevron-right"]')).not.toBeNull();
         expect(screen.getByTestId('send-chat-button').textContent).toBe('');
+    });
+
+    it('widens colliding stripped model names to the full provider id in the dropdown', async () => {
+        // The private registry serves ONE base model through SEVERAL providers
+        // (modal + telnyx + makora all offer "glm-5.3-flash") — the exact shape
+        // behind the reported "glm-5.3-flash ×3" duplicate dropdown. Bare label
+        // stripping collapsed all three into identical entries; the dedupe rule
+        // (uniqueModelLabels) must show the FULL id for each colliding option
+        // while the lone unique model keeps its short stripped label.
+        const collidingCatalog = {
+            object: 'list',
+            data: [
+                { id: 'modal/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
+                { id: 'telnyx/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
+                { id: 'makora/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
+                { id: 'lightning/gpt-5.6-luna', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 }
+            ]
+        };
+        vi.stubGlobal('fetch', vi.fn((url: string) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, collidingCatalog));
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+
+        // Fresh-browser default = first entry sorted by STRIPPED name. All
+        // three "glm-5.3-flash" ids tie on the sort key and keep their catalog
+        // order (stable sort), so 'modal/glm-5.3-flash' is selected.
+        await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('modal/glm-5.3-flash'));
+
+        // The composer text mirrors the dropdown label of the selected id:
+        // the colliding default widens to its full provider-routed id.
+        expect(screen.getByTestId('model-label').textContent).toBe('modal/glm-5.3-flash');
+
+        // Options: every colliding id displays its full id (three DISTINCT
+        // labels instead of three identical "glm-5.3-flash" rows); the unique
+        // id keeps the short stripped label. Values stay the full ids — the
+        // provider routes by them.
+        const select = screen.getByTestId('model-select') as HTMLSelectElement;
+        expect(Array.from(select.options).map((option) => ({ value: option.value, label: option.textContent }))).toEqual([
+            { value: 'modal/glm-5.3-flash', label: 'modal/glm-5.3-flash' },
+            { value: 'telnyx/glm-5.3-flash', label: 'telnyx/glm-5.3-flash' },
+            { value: 'makora/glm-5.3-flash', label: 'makora/glm-5.3-flash' },
+            { value: 'lightning/gpt-5.6-luna', label: 'gpt-5.6-luna' }
+        ]);
+
+        // Picking the unique model returns the label to the short stripped form.
+        fireEvent.change(select, { target: { value: 'lightning/gpt-5.6-luna' } });
+        expect(screen.getByTestId('model-label').textContent).toBe('gpt-5.6-luna');
+        expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('lightning/gpt-5.6-luna');
     });
 
     it('remembers the explicitly chosen model across remounts', async () => {
@@ -1877,6 +1926,54 @@ describe('ChatAssistantApp', () => {
         expect(controlsShouldFloat(1000, 370.5, 400, 30)).toBe(true);
         // Epsilon edge on the end clause: 0.5px below the line is not enough.
         expect(controlsShouldFloat(400.5, 50, 400, 30)).toBe(false);
+    });
+
+    it('uniqueModelLabels: keeps unique stripped names short and widens collisions to the full id', () => {
+        // Fixture mirrors the REAL private registry shape: one base model
+        // served by several providers collides after stripping, unique models
+        // do not. Registry order (@agentic/provider registry.ts) is preserved
+        // so the map keys follow the dropdown's option order.
+        const ids = [
+            'makora/glm-5.2',            // unique stripped: "glm-5.2"
+            'makora/deepseek-v4-flash',  // collides with nvidia below
+            'modal/glm-5.3-flash',       // ┐
+            'telnyx/glm-5.3-flash',      // ├ three-way stripped collision
+            'makora/glm-5.3-flash',      // ┘
+            'modal/kimi-k3',             // collides with nvidia below
+            'local/qwen3.8-27b',         // collides with daytona below
+            'lightning/gpt-5.6-luna',    // unique stripped
+            'lightning/gpt-5.6-sol',     // unique stripped
+            'nvidia/glm-5.3',            // ┌ three-way stripped collision
+            'telnyx/glm-5.3',            // │ (nvidia + telnyx + token-router)
+            'token-router/glm-5.3',      // ┘
+            'nvidia/deepseek-v4-flash',
+            'nvidia/kimi-k3',
+            'daytona/qwen3.8-27b',
+            'digital-ocean/deepseek-r1'  // unique stripped
+        ];
+        expect(uniqueModelLabels(ids)).toEqual(new Map([
+            ['makora/glm-5.2', 'glm-5.2'],
+            ['makora/deepseek-v4-flash', 'makora/deepseek-v4-flash'],
+            ['modal/glm-5.3-flash', 'modal/glm-5.3-flash'],
+            ['telnyx/glm-5.3-flash', 'telnyx/glm-5.3-flash'],
+            ['makora/glm-5.3-flash', 'makora/glm-5.3-flash'],
+            ['modal/kimi-k3', 'modal/kimi-k3'],
+            ['local/qwen3.8-27b', 'local/qwen3.8-27b'],
+            ['lightning/gpt-5.6-luna', 'gpt-5.6-luna'],
+            ['lightning/gpt-5.6-sol', 'gpt-5.6-sol'],
+            ['nvidia/glm-5.3', 'nvidia/glm-5.3'],
+            ['telnyx/glm-5.3', 'telnyx/glm-5.3'],
+            ['token-router/glm-5.3', 'token-router/glm-5.3'],
+            ['nvidia/deepseek-v4-flash', 'nvidia/deepseek-v4-flash'],
+            ['nvidia/kimi-k3', 'nvidia/kimi-k3'],
+            ['daytona/qwen3.8-27b', 'daytona/qwen3.8-27b'],
+            ['digital-ocean/deepseek-r1', 'deepseek-r1']
+        ]));
+
+        // Prefixless ids (no "/" at all) pass through unchanged, and a lone id
+        // is always its own stripped label.
+        expect(uniqueModelLabels(['bare-model'])).toEqual(new Map([['bare-model', 'bare-model']]));
+        expect(uniqueModelLabels([])).toEqual(new Map());
     });
 
     it('flips only the eligible turn\'s strip to sticky on scroll, leaving the visible-end turn anchored', async () => {

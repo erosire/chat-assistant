@@ -2,8 +2,16 @@
 // URLs pinned to the LAN backend. If these ever regress to origin-relative
 // paths, a GitHub Pages build resolves them against github.io (no API routes)
 // and every request 404s — the bug this module fixed (see ./server-url.ts).
+// The provider default additionally pins to the PROVIDER port (not the
+// database port): the runtime /providers/private routes bind
+// LOCAL_AREA_NETWORK_PROVIDER_PORT, so a database-port default 404s the model
+// dropdown's catalog GET (the broken-dropdown regression this guards).
 import { describe, expect, it } from 'vitest';
-import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_DATABASE_PORT } from '@config/environment';
+import {
+    LOCAL_AREA_NETWORK_HOST_NAME,
+    LOCAL_AREA_NETWORK_DATABASE_PORT,
+    LOCAL_AREA_NETWORK_PROVIDER_PORT
+} from '@config/environment';
 import { DEFAULT_SERVER_URL } from './server-url';
 import { DEFAULT_CHAT_ASSISTANT_URL } from './chat-assistant';
 import { DEFAULT_PROVIDER_URL } from './provider';
@@ -17,7 +25,7 @@ describe('deployment-independent default API URLs', () => {
         expect(DEFAULT_CHAT_ASSISTANT_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}/v1/chat-assistant/conversation`);
     });
 
-    it('pins the runtime provider default to the absolute LAN endpoint', () => {
-        expect(DEFAULT_PROVIDER_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}/providers/private/v1`);
+    it('pins the runtime provider default to the absolute LAN endpoint on the provider port', () => {
+        expect(DEFAULT_PROVIDER_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_PROVIDER_PORT}/providers/private/v1`);
     });
 });
