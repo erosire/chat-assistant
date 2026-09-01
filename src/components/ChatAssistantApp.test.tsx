@@ -1934,7 +1934,7 @@ describe('ChatAssistantApp', () => {
         // do not. Registry order (@agentic/provider registry.ts) is preserved
         // so the map keys follow the dropdown's option order.
         const ids = [
-            'makora/glm-5.2',            // unique stripped: "glm-5.2"
+            'makora/glm-5.3',            // unique stripped: "glm-5.3"
             'makora/deepseek-v4-flash',  // collides with nvidia below
             'modal/glm-5.3-flash',       // ┐
             'telnyx/glm-5.3-flash',      // ├ three-way stripped collision
@@ -1952,7 +1952,7 @@ describe('ChatAssistantApp', () => {
             'digital-ocean/deepseek-r1'  // unique stripped
         ];
         expect(uniqueModelLabels(ids)).toEqual(new Map([
-            ['makora/glm-5.2', 'glm-5.2'],
+            ['makora/glm-5.3', 'glm-5.3'],
             ['makora/deepseek-v4-flash', 'makora/deepseek-v4-flash'],
             ['modal/glm-5.3-flash', 'modal/glm-5.3-flash'],
             ['telnyx/glm-5.3-flash', 'telnyx/glm-5.3-flash'],
