@@ -18,15 +18,16 @@ import { DEFAULT_PROVIDER_URL } from './provider';
 
 describe('deployment-independent default API URLs', () => {
     it('pins the backend origin to the LAN server on port 5000', () => {
-        expect(DEFAULT_SERVER_URL).toBe(`https://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}`);
+        expect(DEFAULT_SERVER_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}`);
     });
 
     it('pins the conversation storage default to the absolute LAN endpoint', () => {
-        expect(DEFAULT_CHAT_ASSISTANT_URL).toBe(`https://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}/v1/chat-assistant/conversation`);
+        expect(DEFAULT_CHAT_ASSISTANT_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}/v1/chat-assistant/conversation`);
     });
 
     it('pins the runtime provider default to the absolute LAN endpoint on the provider port', () => {
-        expect(DEFAULT_PROVIDER_URL).toBe(`https://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_PROVIDER_PORT}/providers/private/v1`);
+        expect(DEFAULT_PROVIDER_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_PROVIDER_PORT}/providers/private/v1`);
     });
 });
+
 

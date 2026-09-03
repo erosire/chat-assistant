@@ -63,5 +63,6 @@ export const INFERENCE_PROVIDER_PORT = LOCAL_AREA_NETWORK_PROVIDER_PORT;
 // plain-http request from this browser UI never reaches the backend. It also
 // resolves the mixed-content problem documented in server-url.ts: an
 // HTTPS-hosted page (GitHub Pages) can only fetch() HTTPS origins.
-export const DATABASE_API_URL = `https://${DATABASE_API_HOST}:${DATABASE_API_PORT}`;
-export const INFERENCE_PROVIDER_URL = `https://${INFERENCE_PROVIDER_HOST}:${INFERENCE_PROVIDER_PORT}`;
+export const DATABASE_API_URL = `http://${DATABASE_API_HOST}:${DATABASE_API_PORT}`;
+export const INFERENCE_PROVIDER_URL = `http://${INFERENCE_PROVIDER_HOST}:${INFERENCE_PROVIDER_PORT}`;
+
