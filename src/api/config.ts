@@ -58,5 +58,10 @@ export const INFERENCE_PROVIDER_PORT = LOCAL_AREA_NETWORK_PROVIDER_PORT;
 // Assembled absolute origins. `server-url.ts` re-exports `DEFAULT_SERVER_URL`
 // for backwards compatibility with existing imports; that constant is now built
 // from the host+port here so the network location has exactly one definition.
-export const DATABASE_API_URL = `http://${DATABASE_API_HOST}:${DATABASE_API_PORT}`;
-export const INFERENCE_PROVIDER_URL = `http://${INFERENCE_PROVIDER_HOST}:${INFERENCE_PROVIDER_PORT}`;
+// HTTPS is REQUIRED for the LAN origins: the underload service enforces TLS
+// for non-loopback peers (packages/underload/service/src/server/start.ts) — a
+// plain-http request from this browser UI never reaches the backend. It also
+// resolves the mixed-content problem documented in server-url.ts: an
+// HTTPS-hosted page (GitHub Pages) can only fetch() HTTPS origins.
+export const DATABASE_API_URL = `https://${DATABASE_API_HOST}:${DATABASE_API_PORT}`;
+export const INFERENCE_PROVIDER_URL = `https://${INFERENCE_PROVIDER_HOST}:${INFERENCE_PROVIDER_PORT}`;

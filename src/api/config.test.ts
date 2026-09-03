@@ -36,11 +36,13 @@ describe('deployment config host/port', () => {
     });
 
     it('assembles the database API absolute origin from host+port', () => {
-        expect(DATABASE_API_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}`);
+        // https: the underload service enforces TLS for LAN peers
+        expect(DATABASE_API_URL).toBe(`https://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}`);
     });
 
     it('assembles the inference provider absolute origin from host+port', () => {
-        expect(INFERENCE_PROVIDER_URL).toBe(`http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_PROVIDER_PORT}`);
+        // https: the underload service enforces TLS for LAN peers
+        expect(INFERENCE_PROVIDER_URL).toBe(`https://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_PROVIDER_PORT}`);
     });
 
     it('keeps DEFAULT_SERVER_URL in sync with the database API origin', () => {
