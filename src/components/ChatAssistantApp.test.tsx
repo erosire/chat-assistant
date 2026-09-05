@@ -1933,18 +1933,22 @@ describe('ChatAssistantApp', () => {
         // served by several providers collides after stripping, unique models
         // do not. Registry order (@agentic/provider registry.ts) is preserved
         // so the map keys follow the dropdown's option order.
+        // 'makora/glm-5.3' collides with nvidia + telnyx + token-router since
+        // the makora GLM-5.3 client joined the registry (packages/agentic/
+        // provider/src/makora/makora-glm-5-3.ts) — its stripped name widens
+        // to the full id like every other colliding entry.
         const ids = [
-            'makora/glm-5.3',            // unique stripped: "glm-5.3"
-            'makora/deepseek-v4-flash',  // collides with nvidia below
-            'modal/glm-5.3-flash',       // ┐
-            'telnyx/glm-5.3-flash',      // ├ three-way stripped collision
-            'makora/glm-5.3-flash',      // ┘
-            'modal/kimi-k3',             // collides with nvidia below
-            'local/qwen3.8-27b',         // collides with daytona below
-            'lightning/gpt-5.6-luna',    // unique stripped
-            'lightning/gpt-5.6-sol',     // unique stripped
-            'nvidia/glm-5.3',            // ┌ three-way stripped collision
-            'telnyx/glm-5.3',            // │ (nvidia + telnyx + token-router)
+            'makora/glm-5.3',            // ┌ four-way stripped collision
+            'makora/deepseek-v4-flash',  // │ collides with nvidia below
+            'modal/glm-5.3-flash',       // │ ┐
+            'telnyx/glm-5.3-flash',      // │ ├ three-way stripped collision
+            'makora/glm-5.3-flash',      // │ ┘
+            'modal/kimi-k3',             // │ collides with nvidia below
+            'local/qwen3.8-27b',         // │ collides with daytona below
+            'lightning/gpt-5.6-luna',    // │ unique stripped
+            'lightning/gpt-5.6-sol',     // │ unique stripped
+            'nvidia/glm-5.3',            // │ four-way stripped collision
+            'telnyx/glm-5.3',            // │ (makora + nvidia + telnyx + token-router)
             'token-router/glm-5.3',      // ┘
             'nvidia/deepseek-v4-flash',
             'nvidia/kimi-k3',
@@ -1952,7 +1956,7 @@ describe('ChatAssistantApp', () => {
             'digital-ocean/deepseek-r1'  // unique stripped
         ];
         expect(uniqueModelLabels(ids)).toEqual(new Map([
-            ['makora/glm-5.3', 'glm-5.3'],
+            ['makora/glm-5.3', 'makora/glm-5.3'],
             ['makora/deepseek-v4-flash', 'makora/deepseek-v4-flash'],
             ['modal/glm-5.3-flash', 'modal/glm-5.3-flash'],
             ['telnyx/glm-5.3-flash', 'telnyx/glm-5.3-flash'],
