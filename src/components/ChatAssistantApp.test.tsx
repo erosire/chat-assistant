@@ -571,8 +571,8 @@ describe('ChatAssistantApp', () => {
         // (modal + telnyx + makora all offer "glm-5.3-flash") — the exact shape
         // behind the reported "glm-5.3-flash ×3" duplicate dropdown. Bare label
         // stripping collapsed all three into identical entries; the dedupe rule
-        // (uniqueModelLabels) must show the FULL id for each colliding option
-        // while the lone unique model keeps its short stripped label.
+        // (uniqueModelLabels) must show "base (provider)" for each colliding
+        // option while the lone unique model keeps its short stripped label.
         const collidingCatalog = {
             object: 'list',
             data: [
@@ -594,18 +594,18 @@ describe('ChatAssistantApp', () => {
         await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('modal/glm-5.3-flash'));
 
         // The composer text mirrors the dropdown label of the selected id:
-        // the colliding default widens to its full provider-routed id.
-        expect(screen.getByTestId('model-label').textContent).toBe('modal/glm-5.3-flash');
+        // the colliding default shows "base (provider)".
+        expect(screen.getByTestId('model-label').textContent).toBe('glm-5.3-flash (modal)');
 
-        // Options: every colliding id displays its full id (three DISTINCT
-        // labels instead of three identical "glm-5.3-flash" rows); the unique
-        // id keeps the short stripped label. Values stay the full ids — the
-        // provider routes by them.
+        // Options: every colliding id displays "base (provider)" (three
+        // DISTINCT labels instead of three identical "glm-5.3-flash" rows);
+        // the unique id keeps the short stripped label. Values stay the full
+        // ids — the provider routes by them.
         const select = screen.getByTestId('model-select') as HTMLSelectElement;
         expect(Array.from(select.options).map((option) => ({ value: option.value, label: option.textContent }))).toEqual([
-            { value: 'modal/glm-5.3-flash', label: 'modal/glm-5.3-flash' },
-            { value: 'telnyx/glm-5.3-flash', label: 'telnyx/glm-5.3-flash' },
-            { value: 'makora/glm-5.3-flash', label: 'makora/glm-5.3-flash' },
+            { value: 'modal/glm-5.3-flash', label: 'glm-5.3-flash (modal)' },
+            { value: 'telnyx/glm-5.3-flash', label: 'glm-5.3-flash (telnyx)' },
+            { value: 'makora/glm-5.3-flash', label: 'glm-5.3-flash (makora)' },
             { value: 'lightning/gpt-5.6-luna', label: 'gpt-5.6-luna' }
         ]);
 
@@ -1928,15 +1928,14 @@ describe('ChatAssistantApp', () => {
         expect(controlsShouldFloat(400.5, 50, 400, 30)).toBe(false);
     });
 
-    it('uniqueModelLabels: keeps unique stripped names short and widens collisions to the full id', () => {
+    it('uniqueModelLabels: keeps unique stripped names short and suffixes collisions with the provider', () => {
         // Fixture mirrors the REAL private registry shape: one base model
         // served by several providers collides after stripping, unique models
         // do not. Registry order (@agentic/provider registry.ts) is preserved
         // so the map keys follow the dropdown's option order.
-        // 'makora/glm-5.3' collides with nvidia + telnyx + token-router since
-        // the makora GLM-5.3 client joined the registry (packages/agentic/
-        // provider/src/makora/makora-glm-5-3.ts) — its stripped name widens
-        // to the full id like every other colliding entry.
+        // Colliding ids display "base (provider)" — the stripped model name
+        // plus the provider prefix in parentheses — so every option reads
+        // distinctly while still leading with the model name.
         const ids = [
             'makora/glm-5.3',            // ┌ four-way stripped collision
             'makora/deepseek-v4-flash',  // │ collides with nvidia below
@@ -1956,26 +1955,27 @@ describe('ChatAssistantApp', () => {
             'digital-ocean/deepseek-r1'  // unique stripped
         ];
         expect(uniqueModelLabels(ids)).toEqual(new Map([
-            ['makora/glm-5.3', 'makora/glm-5.3'],
-            ['makora/deepseek-v4-flash', 'makora/deepseek-v4-flash'],
-            ['modal/glm-5.3-flash', 'modal/glm-5.3-flash'],
-            ['telnyx/glm-5.3-flash', 'telnyx/glm-5.3-flash'],
-            ['makora/glm-5.3-flash', 'makora/glm-5.3-flash'],
-            ['modal/kimi-k3', 'modal/kimi-k3'],
-            ['local/qwen3.8-27b', 'local/qwen3.8-27b'],
+            ['makora/glm-5.3', 'glm-5.3 (makora)'],
+            ['makora/deepseek-v4-flash', 'deepseek-v4-flash (makora)'],
+            ['modal/glm-5.3-flash', 'glm-5.3-flash (modal)'],
+            ['telnyx/glm-5.3-flash', 'glm-5.3-flash (telnyx)'],
+            ['makora/glm-5.3-flash', 'glm-5.3-flash (makora)'],
+            ['modal/kimi-k3', 'kimi-k3 (modal)'],
+            ['local/qwen3.8-27b', 'qwen3.8-27b (local)'],
             ['lightning/gpt-5.6-luna', 'gpt-5.6-luna'],
             ['lightning/gpt-5.6-sol', 'gpt-5.6-sol'],
-            ['nvidia/glm-5.3', 'nvidia/glm-5.3'],
-            ['telnyx/glm-5.3', 'telnyx/glm-5.3'],
-            ['token-router/glm-5.3', 'token-router/glm-5.3'],
-            ['nvidia/deepseek-v4-flash', 'nvidia/deepseek-v4-flash'],
-            ['nvidia/kimi-k3', 'nvidia/kimi-k3'],
-            ['daytona/qwen3.8-27b', 'daytona/qwen3.8-27b'],
+            ['nvidia/glm-5.3', 'glm-5.3 (nvidia)'],
+            ['telnyx/glm-5.3', 'glm-5.3 (telnyx)'],
+            ['token-router/glm-5.3', 'glm-5.3 (token-router)'],
+            ['nvidia/deepseek-v4-flash', 'deepseek-v4-flash (nvidia)'],
+            ['nvidia/kimi-k3', 'kimi-k3 (nvidia)'],
+            ['daytona/qwen3.8-27b', 'qwen3.8-27b (daytona)'],
             ['digital-ocean/deepseek-r1', 'deepseek-r1']
         ]));
 
-        // Prefixless ids (no "/" at all) pass through unchanged, and a lone id
-        // is always its own stripped label.
+        // Prefixless ids (no "/" at all) pass through unchanged (there is no
+        // provider to disambiguate with), and a lone id is always its own
+        // stripped label.
         expect(uniqueModelLabels(['bare-model'])).toEqual(new Map([['bare-model', 'bare-model']]));
         expect(uniqueModelLabels([])).toEqual(new Map());
     });

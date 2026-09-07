@@ -16,13 +16,14 @@
 // - otherwise the first catalog entry sorted by MODEL NAME applies — provider /
 //   organisation prefixes are stripped from labels ("zai-org/GLM-5.2-NVFP4" shows
 //   as "GLM-5.2-NVFP4") but kept in values for provider routing. STRIPPED
-//   LABELS THAT COLLIDE widen back to the FULL id (uniqueModelLabels): the
+//   LABELS THAT COLLIDE gain a provider suffix (uniqueModelLabels): the
 //   private registry serves one base model through several providers
 //   ("modal/glm-5.3-flash" + "telnyx/glm-5.3-flash" + "makora/glm-5.3-flash"),
 //   and bare stripping rendered the dropdown as a list of identical
 //   "glm-5.3-flash" entries — ids sharing a stripped name display
-//   "provider/base" so every option reads distinctly. The same map drives the
-//   composer text, both attribution labels, and the dropdown options.
+//   "base (provider)" (e.g. "glm-5.3-flash (modal)") so every option reads
+//   distinctly. The same map drives the composer text, both attribution
+//   labels, and the dropdown options.
 // Per-message attribution (the assistant turn's top-left label) already marks
 // WHICH model produced each reply, so no separate "Model: ..." strip exists.
 // Conversation management lives ENTIRELY in the sidebar: "New chat" sits at
@@ -1089,11 +1090,15 @@ export const modelLabel = (id: string): string => {
 // modelLabel() collapses all of them to the identical "glm-5.3-flash", which
 // rendered the dropdown as the reported "glm-5.3-flash ×3" duplicate list.
 // Rule: a stripped label used by EXACTLY ONE catalog id keeps the short form;
-// every id sharing a stripped label displays its FULL provider-routed id
-// (provider/base is already the natural disambiguator). Values always stay
-// the full ids — only labels shorten. Returned as an id → label Map so the
-// composer text, the dropdown options, the streaming attribution, and the
-// persisted-turn labels all resolve IDENTICAL display names for one id.
+// every id sharing a stripped label displays "base (provider)" — the stripped
+// base name followed by the provider prefix in parentheses, e.g.
+// "glm-5.3-flash (modal)" / "glm-5.3-flash (telnyx)" — so every option reads
+// distinctly while still leading with the model name the user recognises.
+// Prefixless ids (no "/") always keep the bare form: there is no provider to
+// disambiguate. Values always stay the full ids — only labels shorten.
+// Returned as an id → label Map so the composer text, the dropdown options,
+// the streaming attribution, and the persisted-turn labels all resolve
+// IDENTICAL display names for one id.
 export const uniqueModelLabels = (ids: string[]): Map<string, string> => {
     // First pass: count how many ids share each stripped label.
     const strippedCounts = new Map<string, number>();
@@ -1101,12 +1106,17 @@ export const uniqueModelLabels = (ids: string[]): Map<string, string> => {
         const stripped = modelLabel(entry.value);
         strippedCounts.set(stripped, (strippedCounts.get(stripped) ?? 0) + 1);
     });
-    // Second pass: unique stripped labels stay short; shared ones widen to the
-    // full routing id so each option reads distinctly.
+    // Second pass: unique stripped labels stay short; shared ones gain the
+    // "base (provider)" suffix so each option reads distinctly. The provider
+    // is the id's prefix before the final "/" — ids without a "/" cannot
+    // collide with a prefixed id's stripped label AND have no provider to
+    // show, so they always keep the bare form.
     const labels = new Map<string, string>();
     arrayEach(ids, (entry) => {
         const stripped = modelLabel(entry.value);
-        labels.set(entry.value, (strippedCounts.get(stripped) ?? 0) > 1 ? entry.value : stripped);
+        const collides = (strippedCounts.get(stripped) ?? 0) > 1;
+        const slash = entry.value.lastIndexOf('/');
+        labels.set(entry.value, collides && slash >= 0 ? `${stripped} (${entry.value.slice(0, slash)})` : stripped);
     });
     return labels;
 };
@@ -2885,8 +2895,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const modelOptions = chosenModel && !catalog.includes(chosenModel) ? [chosenModel, ...catalog] : catalog;
     // id → display label for the WHOLE option set (see uniqueModelLabels): ids
     // whose stripped names collide (the same base model served by several
-    // providers) display the full provider-routed id so the dropdown never
-    // lists identical-looking entries. Resolved once per render and reused by
+    // providers) display "base (provider)" so the dropdown never lists
+    // identical-looking entries. Resolved once per render and reused by
     // the composer text, the option labels, and both attribution surfaces.
     const modelLabels = uniqueModelLabels(modelOptions);
     // Lookup with graceful fallback: a historical ChatMessage.model that is no
@@ -3242,7 +3252,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                         // Values keep the full provider-routed id; labels strip the
                                         // prefix UNLESS the stripped name is shared by several ids
                                         // (same base model through multiple providers) — those
-                                        // display the full id so every option reads distinctly.
+                                        // display "base (provider)" so every option reads distinctly.
                                         <option key={id} value={id}>{modelDisplayName(id)}</option>
                                     ))}
                             </ModelSelect>
