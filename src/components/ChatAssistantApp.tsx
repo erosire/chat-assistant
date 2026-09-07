@@ -1835,6 +1835,22 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // (or when the stream fails, after the composer text is restored).
     const pendingUser = useStateHook('');
     const streaming = useStateHook('');
+    // Snapshot of the in-flight send: the conversation surface it started from
+    // (null = the new-chat surface, which has no server record yet) and the model
+    // producing the reply. The pending/streaming bubbles render ONLY while the
+    // selected surface still matches this snapshot — switching chats mid-stream
+    // must not flood the newly opened chat with the generating response (the
+    // reported bug: the bubbles rendered purely from pendingUser()/streaming(),
+    // which are surface-agnostic). The snapshot also pins the streaming turn's
+    // attribution label to the SENDING model even when the user picks another
+    // chat (whose applyModelMemory may change the model selection) mid-stream.
+    // Cleared when the send completes or fails; the stream itself keeps running
+    // in the background and persists server-side regardless of navigation.
+    // Also doubles as the one-send-at-a-time gate: selectChat's transient
+    // loading(true→false) churn would otherwise re-open the submit guard while
+    // a stream is still in flight and let a second send interleave into the
+    // same pendingUser/streaming buffers.
+    const activeSend = useStateHook<{ conversationId: string | null; model: string } | null>(null);
     // The split send control renders ONLY while focus is inside the composer
     // (focus-within on the form: input, both button halves, and the model
     // select all count). Hidden otherwise, keeping the idle composer a bare
@@ -2398,7 +2414,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // auto-focused by the editing effect above). The offset restores the caret
     // to the clicked word; null (unresolvable click point) lands at the text
     // end.
-    const startEdit = useCallback((index: number, offset: number | null = null) => {
+    const startEdit = useCallback((index: number | null, offset: number | null = null) => {
         caretOffset(offset);
         editingIndex(index);
     }, [caretOffset, editingIndex]);
@@ -2626,11 +2642,19 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         const chosenModel = model();
         // A prompt blur save owns the conversation write until it completes;
         // blocking send prevents a concurrent append from omitting the prompt
-        // or racing the prompt PUT/create response.
-        if (!text || !chosenModel || loading() || savingSystemPrompt()) return;
+        // or racing the prompt PUT/create response. activeSend additionally
+        // rejects a second send while a stream is still generating (loading()
+        // alone cannot: selectChat's transient loading(true→false) would
+        // re-open the gate mid-stream).
+        if (!text || !chosenModel || loading() || savingSystemPrompt() || activeSend()) return;
 
         loading(true);
         error('');
+        // Snapshot the sending surface BEFORE any await: the pending/streaming
+        // bubbles render only on THIS surface (see activeSend), and the
+        // completion path verifies the surface still matches before applying.
+        const sendConversationId = selected()?.conversationId ?? null;
+        activeSend({ conversationId: sendConversationId, model: chosenModel });
         // Hand the composer text to the pending turn so it renders while streaming.
         pendingUser(text);
         streaming('');
@@ -2689,20 +2713,33 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 });
                 result = (await fetchConversation(baseUrl, record.conversationId)).conversation;
             }
-            selected(result);
-            // The draft prompt is now persisted (or was never needed) — clear
-            // it and its editor, returning the system turn to the persisted
-            // message's chrome (or the "no prompt" placeholder).
-            systemPrompt('');
-            cancelSystemPromptDraft();
-            // A fresh record replaced the history (the PUT prepend path can
-            // even shift indices), so re-seed turn collapse: the just-finished
-            // assistant reply stays expanded, every earlier turn folds.
-            collapsedTurns(defaultCollapsedIndices(result.messages));
+            // SURFACE GUARD: apply the fresh record ONLY while the user has not
+            // navigated away mid-stream. selected(result) on a switched surface
+            // would yank the view back to the sending chat (and the follow
+            // effect would pin it to the bottom); the sidebar summary below
+            // still updates regardless so the completed turn is discoverable.
+            const sendStillSelected = (selected()?.conversationId ?? null) === sendConversationId;
+            if (sendStillSelected) {
+                selected(result);
+                // A fresh record replaced the history (the PUT prepend path can
+                // even shift indices), so re-seed turn collapse: the just-finished
+                // assistant reply stays expanded, every earlier turn folds.
+                collapsedTurns(defaultCollapsedIndices(result.messages));
+                // The draft prompt is now persisted (or was never needed) — clear
+                // it and its editor, returning the system turn to the persisted
+                // message's chrome (or the "no prompt" placeholder). Only on the
+                // owning surface: a switched-away chat owns its own draft.
+                systemPrompt('');
+                cancelSystemPromptDraft();
+            }
             // A completed turn makes this model the browser's remembered last-used one.
             rememberModel(chosenModel);
+            // The in-flight bubbles disappear from the sending surface (they
+            // only ever rendered there — see activeSend); clear the shared
+            // buffers and release the one-send-at-a-time gate.
             pendingUser('');
             streaming('');
+            activeSend(null);
             const summary = summaryFromRecord(result);
             const current = chats();
             const next = current.some((chat) => chat.conversationId === summary.conversationId)
@@ -2711,14 +2748,17 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             chats(next);
         } catch (reason) {
             error(reason instanceof Error ? reason.message : String(reason));
-            // Restore the draft so a failed stream can be retried without retyping.
-            message(text);
+            // Restore the draft so a failed stream can be retried without
+            // retyping — only on the surface that sent it; a navigated-away
+            // surface must not receive the old draft text.
+            if ((selected()?.conversationId ?? null) === sendConversationId) message(text);
             pendingUser('');
             streaming('');
+            activeSend(null);
         } finally {
             loading(false);
         }
-    }, [baseUrl, listening, pendingUser, providerUrl, recognizer, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, savingSystemPrompt, selected, streaming, systemPrompt]);
+    }, [activeSend, baseUrl, listening, pendingUser, providerUrl, recognizer, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, savingSystemPrompt, selected, streaming, systemPrompt]);
 
     // Voice toggle (rendered by the VoiceButton in ComposerField): one tap
     // starts a single-utterance session whose transcript fills the SAME input
@@ -2906,8 +2946,20 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
 
     // Render only the selected record; a new chat remains an empty composer until submitted.
     const currentMessages = selected()?.messages ?? [];
-    // A pending turn (sent but not yet persisted) renders after the stored messages.
-    const hasPendingTurn = pendingUser().length > 0;
+    // The in-flight pair belongs to ONE surface only: it renders while the
+    // selected conversation matches the send's snapshot (activeSend — see its
+    // comment). Switching chats mid-stream leaves the generating turn on the
+    // sending chat; it re-appears there when the user navigates back, and the
+    // completed pair is applied to whichever surface owns it at completion
+    // (the sidebar summary always updates).
+    const send = activeSend();
+    const sendSurfaceMatches = send !== null
+        && (selected()?.conversationId ?? null) === send.conversationId;
+    const hasPendingTurn = sendSurfaceMatches && pendingUser().length > 0;
+    // The in-flight response is marked in its top-left corner with the model
+    // producing it — the send snapshot's model, not the live model() selection
+    // (which another chat's applyModelMemory may have changed mid-stream).
+    const streamingModel = send?.model ?? chosenModel;
     // The local-draft system turn yields to the RENDERED system message turn
     // once the record leads with a persisted system message.
     const hasPersistedSystemPrompt = selected()?.messages[0]?.role === 'system';
@@ -3191,8 +3243,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                     <AssistantTurn>
                                         <TurnHeaderRow>
                                             <TurnHeaderLead>
-                                                {/* The in-flight response is marked in its top-left corner with the model currently producing it. */}
-                                                <TurnLabelText data-testid="streaming-message-model">{modelDisplayName(chosenModel)}</TurnLabelText>
+                                                {/* The in-flight response is marked in its top-left corner with the model producing it — the send snapshot's model, not the live model() selection (which another chat's applyModelMemory may have changed mid-stream). */}
+                                                <TurnLabelText data-testid="streaming-message-model">{modelDisplayName(streamingModel)}</TurnLabelText>
                                             </TurnHeaderLead>
                                         </TurnHeaderRow>
                                         <AssistantMessage data-testid="streaming-message">{streaming()}</AssistantMessage>

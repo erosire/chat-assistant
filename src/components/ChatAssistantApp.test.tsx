@@ -899,6 +899,123 @@ describe('ChatAssistantApp', () => {
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBe(DEFAULT_MODEL);
     });
 
+    it('keeps the generating turn on its own chat while switching: the other chat is never flooded and the pair lands on the sender', async () => {
+        // Regression for the reported bug: mid-stream chat switching rendered the
+        // surface-agnostic pendingUser()/streaming() buffers on EVERY opened
+        // chat, flooding it with the generating response, and the completion
+        // swap yanked the view back to the sending chat. The send snapshot
+        // (activeSend) must scope the in-flight bubbles to the SENDING surface
+        // only, and the completion must apply only while that surface is still
+        // selected (the sidebar summary updates regardless).
+        const stream = controlledStream();
+        // Two pre-existing chats: the sender (conversation-1) and the switch
+        // target (conversation-2). Each carries a distinct completed pair so
+        // the assertions cannot pass by text coincidence.
+        const sender = conversation;
+        const other = {
+            ...conversation,
+            conversationId: 'conversation-2',
+            title: 'Second chat',
+            model: DEFAULT_MODEL,
+            messages: [
+                { role: 'user' as const, content: 'Second chat question' },
+                { role: 'assistant' as const, content: 'Second chat answer', model: DEFAULT_MODEL }
+            ],
+            usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
+        };
+        // The canonical sender record after the append: the pair gains the
+        // follow-up user turn and the streamed assistant reply, attributed to
+        // the model that produced it (the sender chat's inherited ALT_MODEL).
+        const completedSender = {
+            ...sender,
+            messageCount: 4,
+            messages: [
+                ...sender.messages,
+                { role: 'user' as const, content: 'Follow up' },
+                { role: 'assistant' as const, content: 'Hello from the assistant', model: ALT_MODEL }
+            ],
+            updatedAt: '2026-08-06T00:00:03.000Z'
+        };
+        const summaryOf = (record: typeof sender) => ({
+            conversationId: record.conversationId,
+            title: record.title,
+            model: record.model,
+            status: record.status,
+            messageCount: record.messageCount,
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt
+        });
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
+            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(200, { conversations: [summaryOf(sender), summaryOf(other)] }));
+            }
+            if (init?.method === 'POST') return Promise.resolve(response(200, { conversationId: sender.conversationId }));
+            if (init?.method === 'GET' && url.endsWith('/conversation-2')) {
+                return Promise.resolve(response(200, { conversationId: other.conversationId, conversation: other }));
+            }
+            if (init?.method === 'GET') {
+                return Promise.resolve(response(200, { conversationId: completedSender.conversationId, conversation: completedSender }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+
+        // Open the sender chat and send a follow-up turn (the chat's recorded
+        // model is inherited because nothing is remembered yet — so the stream
+        // runs on ALT_MODEL).
+        fireEvent.click(screen.getByTestId('chat-tab-conversation-1'));
+        // The latest assistant reply (index 1) starts expanded by default; the
+        // user turn (index 0) renders as its collapsed label + preview line.
+        await waitFor(() => expect(screen.getByTestId('message-label-0').textContent).toBe('user'));
+        await waitFor(() => expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model'));
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Follow up' } });
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect(screen.getByTestId('pending-user-message')).toBeDefined());
+        await act(async () => stream.push(completionFrames[0]));
+        await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello'));
+        // The in-flight reply is attributed to the SENDING model.
+        expect(screen.getByTestId('streaming-message-model').textContent).toBe('zeta-model');
+
+        // MID-STREAM SWITCH: opening the other chat must NOT flood it with the
+        // generating pair — its own persisted history renders alone.
+        fireEvent.click(screen.getByTestId('chat-tab-conversation-2'));
+        await waitFor(() => expect(screen.getByText('Second chat answer')).toBeDefined());
+        expect(screen.queryByTestId('pending-user-message')).toBeNull();
+        expect(screen.queryByTestId('streaming-message')).toBeNull();
+        expect(screen.queryByTestId('streaming-message-model')).toBeNull();
+        expect(screen.getByTestId('chat-title').textContent).toBe('Second chat');
+
+        // Switching BACK to the sender mid-stream re-reveals the in-flight
+        // pair exactly where it belongs (same buffers, same surface).
+        fireEvent.click(screen.getByTestId('chat-tab-conversation-1'));
+        await waitFor(() => expect(screen.getByTestId('pending-user-message').textContent).toBe('Follow up'));
+        expect(screen.getByTestId('streaming-message').textContent).toBe('Hello');
+        expect(screen.getByTestId('streaming-message-model').textContent).toBe('zeta-model');
+
+        // Completion: the pair persists and lands on the sender's surface
+        // (still selected), the in-flight bubbles clear, and the sidebar
+        // summary grows to four messages.
+        await act(async () => {
+            stream.push(completionFrames[1]);
+            stream.push(completionFrames[2]);
+            stream.push(completionFrames[3]);
+            stream.close();
+        });
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1').textContent).toBe('Hello assistant4 messages · complete'));
+        expect(screen.queryByTestId('pending-user-message')).toBeNull();
+        expect(screen.queryByTestId('streaming-message')).toBeNull();
+        // The surface was NOT yanked away: the sender chat stays open with its
+        // four persisted turns, the newest reply attributed to its model.
+        expect(screen.getByTestId('chat-title').textContent).toBe('Hello assistant');
+        expect(screen.getByTestId('message-model-3').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-content-3').textContent).toBe('Hello from the assistant');
+        // The other chat was never touched by the generation.
+        expect(screen.getByTestId('chat-tab-conversation-2').textContent).toBe('Second chat2 messages · complete');
+    });
+
     it('keeps existing turn icons mounted and interactive while a reply is generating', async () => {
         // A controlled stream leaves the persisted user and assistant turns in
         // place while the transient pending/streaming pair is rendered, which
