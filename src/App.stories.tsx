@@ -28,7 +28,7 @@ import { App } from './App';
 // parent; in a regular document that parent is #root (index.html pins
 // html/body/#root to height:100%), but the Storybook canvas has no such
 // rule — this surface fills the canvas iframe instead (same CSS as the
-// FullScreen helper other dashboard stories import from @react/headless,
+// FullScreen helper other dashboard stories import from @reloaded/headless,
 // defined locally so this distribution keeps its dependency surface).
 const StorySurface = styledComponent('div', {
     position: 'absolute',
