@@ -1,6 +1,6 @@
 {
     "name": "@erosire/chat-assistant",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "description": "AI Chat Assistant for Deployment",
     "type": "module",
     "main": "src/main.tsx",
