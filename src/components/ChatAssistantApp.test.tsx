@@ -1415,7 +1415,12 @@ describe('ChatAssistantApp', () => {
         const sidebar = screen.getByTestId('chat-sidebar');
         const workspace = screen.getByTestId('agent-workspace');
         expect(sidebar.contains(workspace)).toBe(false);
-        expect(screen.getByTestId('agent-tools-empty').textContent).toBe('No tools available yet.');
+        // The seeded native registry renders one checkbox per tool in the
+        // editor's "Allowed tools" group (no empty note anymore).
+        expect(screen.queryByTestId('agent-tools-empty')).toBeNull();
+        expect(screen.getByTestId('agent-tool-web-search')).toBeDefined();
+        expect(screen.getByTestId('agent-tool-code-interpreter')).toBeDefined();
+        expect((screen.getByTestId('agent-tool-web-search') as HTMLInputElement).checked).toBe(false);
         expect(screen.getByTestId('agent-title').textContent).toBe('New agent');
 
         // Name + prompt edits write straight into the definition (no
@@ -1427,10 +1432,16 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('agent-tab-agent-1').textContent).toContain('0 tools');
         expect(screen.getByTestId('agent-title').textContent).toBe('Researcher');
 
+        // Toggling an allowed tool writes the id into the definition live:
+        // the checkbox reflects the state and the entry metadata counts it.
+        fireEvent.click(screen.getByTestId('agent-tool-web-search'));
+        expect((screen.getByTestId('agent-tool-web-search') as HTMLInputElement).checked).toBe(true);
+        expect(screen.getByTestId('agent-tab-agent-1').textContent).toContain('1 tools');
+
         // The registry persisted under the documented key with the edited
-        // values and no tools.
+        // values and the toggled tool id.
         expect(JSON.parse(window.localStorage.getItem(AGENT_STORAGE_KEY)!)).toEqual([
-            { id: 'agent-1', name: 'Researcher', systemPrompt: 'You are a careful researcher.', tools: [] }
+            { id: 'agent-1', name: 'Researcher', systemPrompt: 'You are a careful researcher.', tools: ['web-search'] }
         ]);
     });
 
@@ -1520,18 +1531,34 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are a careful researcher.');
     });
 
-    it('shows the empty Tool registry and keeps the header action as New chat', async () => {
+    it('lists the native tool registry on the Tool tab without implementations', async () => {
         renderApp();
         await waitForModelSelection();
         fireEvent.click(screen.getByTestId('sidebar-tab-tool'));
         expect(screen.getByTestId('sidebar-tab-tool').getAttribute('aria-selected')).toBe('true');
-        // The sidebar list is empty, and the CONTENT AREA shows the tool
-        // empty state (the chat surface is unmounted on this tab).
-        expect(screen.getByTestId('empty-tool-list').textContent).toBe('No tools yet.');
-        expect(screen.getByTestId('empty-tool-state').textContent).toContain('No tools yet');
+        // The sidebar lists every seeded native tool with its kind label —
+        // a tool is its NAME plus (only for custom tools) its JavaScript/
+        // TypeScript source; native tools carry neither.
+        expect(screen.getByTestId('tool-entry-web-search')).toBeDefined();
+        expect(screen.getByTestId('tool-entry-code-interpreter')).toBeDefined();
+        expect(screen.getByTestId('tool-tab-web-search').textContent).toBe('Web searchNative — no implementation shown');
+        expect(screen.getByTestId('tool-tab-code-interpreter').textContent).toBe('Code interpreterNative — no implementation shown');
         expect(screen.queryByTestId('message-list')).toBeNull();
         expect(screen.queryByTestId('empty-chat-list')).toBeNull();
         expect(screen.queryByTestId('empty-agent-list')).toBeNull();
+        // No selection yet: the content area prompts for the required action.
+        expect(screen.getByTestId('empty-tool-state').textContent).toBe('No tool selectedPick a tool from the sidebar to inspect it here.');
+
+        // Selecting a native tool opens its panel: name + native note, and
+        // NEVER a code block (the runtime provides the implementation).
+        fireEvent.click(screen.getByTestId('tool-tab-web-search'));
+        const workspace = screen.getByTestId('tool-workspace');
+        expect(workspace.textContent).toContain('Web search');
+        expect(screen.getByTestId('tool-workspace-kind-web-search').textContent).toBe('Native — no implementation shown');
+        expect(screen.getByTestId('tool-native-note').textContent)
+            .toBe('This tool is already available natively — the runtime provides it, so its implementation is not shown.');
+        expect(screen.queryByTestId('tool-code')).toBeNull();
+
         // The header falls back to the product name and keeps the action as
         // "New chat" (only the Agent tab swaps it).
         expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');

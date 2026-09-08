@@ -6,10 +6,9 @@
 // conversation storage — see ../api/chat-assistant.ts), so definitions persist
 // best-effort in window.localStorage under AGENT_STORAGE_KEY, exactly like the
 // remembered model selection (MODEL_STORAGE_KEY in components/ChatAssistantApp.tsx).
-// Tools have no runtime implementation yet either: AVAILABLE_TOOLS is the
-// (currently empty) registry the Agent editor's "allowed tools" checkboxes and
-// the sidebar's Tool tab render from, so both surfaces light up automatically
-// once the first tool lands.
+// Tools have no runtime execution yet: AVAILABLE_TOOLS seeds the NATIVE
+// registry entries the Tool tab and the Agent editor render from, and the
+// coded-tool shape (language + source) is ready for custom tools.
 
 // One agent definition. `tools` holds tool IDS (not names) so renames of the
 // tool registry never orphan an agent's configuration.
@@ -20,22 +19,44 @@ export type AgentDefinition = {
     tools: string[];
 };
 
-// One tool exposed to agents. The chat provider pipeline does not execute
-// tools yet — the type exists so the UI (Agent tab list, editor checkboxes)
-// and future wiring share one shape.
+// One tool exposed to agents. A tool is simply its NAME plus its source:
+// `code` holds the JavaScript/TypeScript implementation. Tools that are
+// ALREADY AVAILABLE NATIVELY (provided by the runtime/chat provider) carry
+// `native: true` and never expose code — `language`/`code` are absent, and
+// the Tool tab shows them without an implementation panel. Non-native tools
+// MUST carry both `language` and `code` (exactly one of the two shapes
+// exists — see isNativeTool/isCodedTool).
+export type ToolLanguage = 'javascript' | 'typescript';
+
 export type ToolDefinition = {
     id: string;
     name: string;
-    description: string;
+    native: boolean;
+    language?: ToolLanguage;
+    code?: string;
 };
+
+// Type guards discriminating the two tool shapes the UI renders:
+// native tools (metadata only, no implementation shown) and coded tools
+// (name + JavaScript/TypeScript source).
+export const isNativeTool = (tool: ToolDefinition): boolean => tool.native;
+export const isCodedTool = (tool: ToolDefinition): boolean =>
+    !tool.native && typeof tool.code === 'string' && tool.code.length > 0
+    && (tool.language === 'javascript' || tool.language === 'typescript');
 
 // localStorage key for the persisted agent list (JSON array of AgentDefinition).
 export const AGENT_STORAGE_KEY = 'chat-assistant:agents';
 
-// The tool registry. Intentionally EMPTY for now ("there are no tools yet"):
-// the Tool tab shows its empty state and the agent editor reports "no tools"
-// while this array stays empty; adding entries here lights up both surfaces.
-export const AVAILABLE_TOOLS: ToolDefinition[] = [];
+// The tool registry. Native tools are ALREADY provided by the runtime (web
+// search and code interpretation ship with the chat provider), so they are
+// listed without an implementation: the Tool tab renders their name and a
+// "native" badge, never their source. Custom coded tools (name + JavaScript/
+// TypeScript source) append here and light up their code panel in the Tool
+// tab and their checkbox in the Agent editor automatically.
+export const AVAILABLE_TOOLS: ToolDefinition[] = [
+    { id: 'web-search', name: 'Web search', native: true },
+    { id: 'code-interpreter', name: 'Code interpreter', native: true }
+];
 
 // Guard for one persisted agent entry: only well-shaped objects survive a
 // localStorage round-trip (older/partial writes must not crash the dashboard).

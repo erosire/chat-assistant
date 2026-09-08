@@ -36,9 +36,10 @@
 // an agent swaps the MAIN CONTENT AREA to the agent's configuration to set
 // the agent's NAME, SYSTEM PROMPT, and
 // ALLOWED TOOLS; the selected agent is the ACTIVE agent whose system prompt
-// seeds new chats), and "Tool" (the intentionally EMPTY tool registry — no
-// tools exist yet; a selected tool's panel would take the content area the
-// same way). The header's top-right action follows the tab: "New chat"
+// seeds new chats), and "Tool" (the tool registry — a tool is its name plus,
+// for custom tools, its JavaScript/TypeScript source; NATIVE tools provided
+// by the runtime list without any implementation. A selected tool's panel
+// takes the content area the same way). The header's top-right action follows the tab: "New chat"
 // everywhere except the Agent tab, where it becomes "New agent" (creates +
 // selects an agent; no conversation state is touched). The header title mirrors
 // the selected chat's title
@@ -216,15 +217,17 @@ import {
 } from '../icons';
 // Client-side agent + tool registry (src/agents): agents are named chat
 // presets (name + system prompt + allowed tool ids) persisted best-effort in
-// localStorage; AVAILABLE_TOOLS is the intentionally empty tool registry the
-// Agent tab's "allowed tools" group and the Tool tab render from.
+// localStorage; AVAILABLE_TOOLS is the tool registry (native entries without
+// source, custom entries with JavaScript/TypeScript code) the Agent tab's
+// "allowed tools" group and the Tool tab render from.
 import {
     AVAILABLE_TOOLS,
     createAgentDefinition,
     readStoredAgents,
     storeAgents,
     toggleAgentTool,
-    type AgentDefinition
+    type AgentDefinition,
+    type ToolDefinition
 } from '../agents';
 
 // Palette is local to this distribution so the component has no dependency on a larger theme package.
@@ -454,9 +457,11 @@ const AgentWorkspace = styledComponent('section', {
 });
 
 // The Tool configuration workspace: the selected tool's panel in the content
-// area (same contract as AgentWorkspace). The registry is empty for now, so
-// this panel never renders yet — it exists so a future tool definition only
-// needs registry entries, not new layout.
+// area (same contract as AgentWorkspace). NATIVE tools show only their name
+// and a "provided by the runtime" note — their implementation is never
+// rendered; CODED tools show their JavaScript/TypeScript source in a mono
+// code block. flex:1 + overflowY:auto lets long sources scroll inside the
+// workspace; the maxWidth keeps lines readable on wide screens.
 const ToolWorkspace = styledComponent('section', {
     flex: 1,
     minHeight: 0,
@@ -470,6 +475,32 @@ const ToolWorkspace = styledComponent('section', {
     paddingLeft: () => ({ xs: '12px', md: '24px' }),
     paddingRight: () => ({ xs: '12px', md: '24px' })
 });
+
+// The coded tool's source panel: a mono pre block on the panelStrong surface
+// (the same field treatment as the agent editor inputs). pre-wrap keeps long
+// lines readable without horizontal scrolling on narrow workspaces.
+const ToolCodeBlock = styledComponent('pre', {
+    margin: 0,
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: 12,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 8,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    font: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    fontSize: 12,
+    lineHeight: 1.5,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    overflowX: 'auto'
+});
+
+// Sidebar/workspace label for a tool's kind: native entries read as
+// platform-provided (no implementation shown), coded entries carry their
+// JavaScript/TypeScript language tag.
+const toolKindLabel = (tool: ToolDefinition): string =>
+    tool.native ? 'Native — no implementation shown' : tool.language === 'javascript' ? 'JavaScript' : 'TypeScript';
 
 // Agent name field: a plain single-line input at content-area scale (larger
 // than the retired sidebar editor's sizing). width:100% + border-box keeps it
@@ -3549,32 +3580,30 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     )}
                     {sidebarTab() === 'tool' && (
                         // The TOOL tab: the tool registry list. Selecting an
-                        // entry opens its configuration in the content area
-                        // (ToolWorkspace); there are no tools yet, so the
-                        // empty state renders.
+                        // entry opens its panel in the content area
+                        // (ToolWorkspace). Each entry shows the tool NAME and
+                        // its kind: native tools (no implementation shown)
+                        // vs. the JavaScript/TypeScript language of coded
+                        // tools.
                         <>
                             <SidebarHeading>
                                 <span>Tools</span>
                                 <Metadata>{AVAILABLE_TOOLS.length}</Metadata>
                             </SidebarHeading>
-                            {AVAILABLE_TOOLS.length > 0 ? (
-                                AVAILABLE_TOOLS.map((tool) => (
-                                    <ChatEntry key={tool.id} data-testid={`tool-entry-${tool.id}`}>
-                                        <ChatButton
-                                            type="button"
-                                            selected={selectedToolId() === tool.id}
-                                            onClick={() => selectedToolId(tool.id)}
-                                            aria-pressed={selectedToolId() === tool.id}
-                                            data-testid={`tool-tab-${tool.id}`}
-                                        >
-                                            <strong>{tool.name}</strong>
-                                            <Metadata>{tool.description}</Metadata>
-                                        </ChatButton>
-                                    </ChatEntry>
-                                ))
-                            ) : (
-                                <Metadata data-testid="empty-tool-list">No tools yet.</Metadata>
-                            )}
+                            {AVAILABLE_TOOLS.map((tool) => (
+                                <ChatEntry key={tool.id} data-testid={`tool-entry-${tool.id}`}>
+                                    <ChatButton
+                                        type="button"
+                                        selected={selectedToolId() === tool.id}
+                                        onClick={() => selectedToolId(tool.id)}
+                                        aria-pressed={selectedToolId() === tool.id}
+                                        data-testid={`tool-tab-${tool.id}`}
+                                    >
+                                        <strong>{tool.name}</strong>
+                                        <Metadata data-testid={`tool-kind-${tool.id}`}>{toolKindLabel(tool)}</Metadata>
+                                    </ChatButton>
+                                </ChatEntry>
+                            ))}
                         </>
                     )}
                 </Sidebar>
@@ -3634,18 +3663,27 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             <span>Pick an agent from the sidebar or create one with "New agent".</span>
                         </EmptyState>
                     )}
-                    {/* TOOL surface: the selected tool's configuration panel,
-                        or the registry's empty state (there are no tools yet). */}
+                    {/* TOOL surface: the selected tool's panel — NATIVE tools
+                        show only their name + "provided by the runtime" note
+                        (their implementation is never rendered); CODED tools
+                        show their JavaScript/TypeScript source. No selection
+                        on the Tool tab: a prompt for the required action. */}
                     {contentSurface === 'tool' && (selectedTool ? (
                         <ToolWorkspace data-testid="tool-workspace">
                             <strong>{selectedTool.name}</strong>
-                            <Metadata>{selectedTool.description}</Metadata>
-                            <Metadata>Tools are not executable yet — configuration arrives with the first implementation.</Metadata>
+                            <Metadata data-testid={`tool-workspace-kind-${selectedTool.id}`}>{toolKindLabel(selectedTool)}</Metadata>
+                            {selectedTool.native ? (
+                                <Metadata data-testid="tool-native-note">
+                                    This tool is already available natively — the runtime provides it, so its implementation is not shown.
+                                </Metadata>
+                            ) : (
+                                <ToolCodeBlock data-testid="tool-code">{selectedTool.code}</ToolCodeBlock>
+                            )}
                         </ToolWorkspace>
                     ) : (
                         <EmptyState data-testid="empty-tool-state">
-                            <strong>No tools yet</strong>
-                            <span>Tools will appear here once the registry defines them.</span>
+                            <strong>No tool selected</strong>
+                            <span>Pick a tool from the sidebar to inspect it here.</span>
                         </EmptyState>
                     ))}
                     {/* CHAT surface: the conversation column exactly as before

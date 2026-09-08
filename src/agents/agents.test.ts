@@ -2,15 +2,19 @@
 // The registry persists agent definitions best-effort in localStorage and
 // allocates ids deterministically (lowest free `agent-N`), so every assertion
 // below pins exact values.
+import { arrayEach } from '@presource/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
     AGENT_STORAGE_KEY,
     AVAILABLE_TOOLS,
     createAgentDefinition,
+    isCodedTool,
+    isNativeTool,
     readStoredAgents,
     storeAgents,
     toggleAgentTool,
-    type AgentDefinition
+    type AgentDefinition,
+    type ToolDefinition
 } from './index';
 
 describe('agents registry', () => {
@@ -21,8 +25,39 @@ describe('agents registry', () => {
         window.localStorage.clear();
     });
 
-    it('starts with an EMPTY tool registry (no tools exist yet)', () => {
-        expect(AVAILABLE_TOOLS).toEqual([]);
+    it('seeds the registry with the NATIVE runtime tools (name only — no source)', () => {
+        // Native tools are provided by the runtime: they carry no language
+        // and no code, so the Tool tab never renders an implementation.
+        expect(AVAILABLE_TOOLS).toEqual([
+            { id: 'web-search', name: 'Web search', native: true },
+            { id: 'code-interpreter', name: 'Code interpreter', native: true }
+        ]);
+        // arrayEach passes a rich context object; the entry rides `value`.
+        arrayEach(AVAILABLE_TOOLS, (tool) => {
+            expect(isNativeTool(tool.value)).toBe(true);
+            expect(isCodedTool(tool.value)).toBe(false);
+            expect(tool.value.code).toBeUndefined();
+            expect(tool.value.language).toBeUndefined();
+        });
+    });
+
+    it('classifies coded tools (name + JavaScript/TypeScript source) against native ones', () => {
+        const native: ToolDefinition = { id: 'web-search', name: 'Web search', native: true };
+        const coded: ToolDefinition = {
+            id: 'greeting',
+            name: 'Greeting',
+            native: false,
+            language: 'typescript',
+            code: 'export const greeting = (name: string): string => `Hello ${name}`;'
+        };
+        expect(isNativeTool(native)).toBe(true);
+        expect(isCodedTool(native)).toBe(false);
+        expect(isNativeTool(coded)).toBe(false);
+        expect(isCodedTool(coded)).toBe(true);
+        // A non-native entry without source is neither shape: the UI would
+        // render it as coded-but-empty, which the guard must reject.
+        expect(isCodedTool({ id: 'broken', name: 'Broken', native: false })).toBe(false);
+        expect(isCodedTool({ id: 'broken', name: 'Broken', native: false, language: 'javascript' })).toBe(false);
     });
 
     it('creates the first agent as agent-1 with the default name and empty prompt/tools', () => {
