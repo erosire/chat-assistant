@@ -1,18 +1,5 @@
-// Chat assistant endpoint barrel exposes resource handlers and the durable store seam.
-// The service is pure storage, so no provider/upstream helpers are exported here.
-export {
-    chatAssistantCreate,
-    chatAssistantDelete,
-    chatAssistantGet,
-    chatAssistantList,
-    chatAssistantPost,
-    chatAssistantPut,
-    conversationCreate,
-    conversationDelete,
-    conversationGet,
-    conversationList,
-    conversationPost,
-    conversationPut
-} from './chat-assistant';
-export { createChatStore } from './chat-store';
-export type { ChatStore } from './chat-store';
+// Endpoint barrel keeps handler imports stable when more assistant routes are added.
+export * from './chat-assistant';
+export * from './registry';
+export { createRegistryStore } from './registry-store';
+export type { RegistryStore } from './registry-store';

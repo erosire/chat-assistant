@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Chat Assistant API
-  description: AI chat assistant conversation storage API with create, read, append, and delete operations. Model calls are performed by clients against the runtime provider endpoints; this API only persists completed turns.
+  description: AI chat assistant storage API. Conversations persist completed turns; the agent and tool registries persist agent definitions (name, system prompt, allowed tool ids) and tool definitions (name plus optional JavaScript/TypeScript source — native runtime tools carry no implementation). Model calls are performed by clients against the runtime provider endpoints.
   version: 1.0.0
 servers:
   - url: http://127.0.0.1:5000
@@ -126,6 +126,214 @@ paths:
                 $ref: '#/components/schemas/ConversationIdResponse'
         '404':
           description: Conversation identifier was not found.
+  /v1/chat-assistant/agent:
+    get:
+      operationId: listAgents
+      summary: List agents
+      description: Returns every persisted agent ordered by most recent activity so a reloaded client can restore its agent registry.
+      responses:
+        '200':
+          description: Persisted agent records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentListResponse'
+    post:
+      operationId: createAgent
+      summary: Create an agent
+      description: Creates an agent from the supplied definition (defaults name to "New agent" with an empty prompt and no allowed tools) and returns its identifier for the identified agent resource.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentPutRequest'
+      responses:
+        '201':
+          description: Agent identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIdResponse'
+        '400':
+          description: Invalid agent definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/chat-assistant/agent/{agent_id}:
+    parameters:
+      - name: agent_id
+        in: path
+        required: true
+        description: The agent identifier returned by collection POST.
+        schema:
+          type: string
+    get:
+      operationId: getAgent
+      summary: Get an agent
+      responses:
+        '200':
+          description: Complete agent record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '404':
+          description: Agent identifier was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      operationId: replaceAgentDefinition
+      summary: Replace an agent's definition
+      description: Persists the supplied name, system prompt, and allowed tool ids verbatim, recomputing updatedAt. Returned record is the full updated agent so callers can re-sync without a follow-up GET.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentPutRequest'
+      responses:
+        '200':
+          description: Updated agent record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '400':
+          description: Invalid agent definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent identifier was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteAgent
+      summary: Delete an agent
+      responses:
+        '200':
+          description: Deleted agent identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIdResponse'
+        '404':
+          description: Agent identifier was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/chat-assistant/tool:
+    get:
+      operationId: listTools
+      summary: List tools
+      description: Returns every persisted tool ordered by most recent activity so a reloaded client can restore its tool registry, including the JavaScript/TypeScript source of coded tools.
+      responses:
+        '200':
+          description: Persisted tool records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolListResponse'
+    post:
+      operationId: createTool
+      summary: Create a tool
+      description: Creates a tool from the supplied definition (native tools carry no implementation; coded tools carry language plus source) and returns its identifier for the identified tool resource.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolPutRequest'
+      responses:
+        '201':
+          description: Tool identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolIdResponse'
+        '400':
+          description: Invalid tool definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/chat-assistant/tool/{tool_id}:
+    parameters:
+      - name: tool_id
+        in: path
+        required: true
+        description: The tool identifier returned by collection POST.
+        schema:
+          type: string
+    get:
+      operationId: getTool
+      summary: Get a tool
+      responses:
+        '200':
+          description: Complete tool record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolResponse'
+        '404':
+          description: Tool identifier was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      operationId: replaceToolDefinition
+      summary: Replace a tool's definition
+      description: Persists the supplied name and implementation shape verbatim, recomputing updatedAt. Native tools never carry language or code; coded tools must declare one of the two documented languages. Returned record is the full updated tool so callers can re-sync without a follow-up GET.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolPutRequest'
+      responses:
+        '200':
+          description: Updated tool record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolResponse'
+        '400':
+          description: Invalid tool definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tool identifier was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteTool
+      summary: Delete a tool
+      responses:
+        '200':
+          description: Deleted tool identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolIdResponse'
+        '404':
+          description: Tool identifier was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   schemas:
     ConversationPostRequest:
@@ -226,6 +434,99 @@ components:
         conversationId: { type: string }
         conversation:
           $ref: '#/components/schemas/ConversationRecord'
+    AgentPutRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Agent label; collection POST defaults to "New agent" when omitted.
+        systemPrompt: { type: string }
+        tools:
+          type: array
+          items: { type: string }
+          description: Allowed tool ids (references into the tool registry, not foreign keys).
+      description: Agent definition fields shared by creation and replacement; replacement retains omitted fields.
+    AgentRecord:
+      type: object
+      required: [agentId, name, systemPrompt, tools, createdAt, updatedAt]
+      properties:
+        agentId: { type: string }
+        name: { type: string }
+        systemPrompt: { type: string }
+        tools:
+          type: array
+          items: { type: string }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    AgentIdResponse:
+      type: object
+      required: [agentId]
+      properties:
+        agentId: { type: string }
+    AgentListResponse:
+      type: object
+      required: [agents]
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentRecord'
+    AgentResponse:
+      type: object
+      required: [agentId, agent]
+      properties:
+        agentId: { type: string }
+        agent:
+          $ref: '#/components/schemas/AgentRecord'
+    ToolPutRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        native:
+          type: boolean
+          description: True when the runtime provides the tool; native tools never carry source.
+        language:
+          type: string
+          enum: [javascript, typescript]
+          description: Source language of a coded tool; required whenever code is present on a non-native tool.
+        code:
+          type: string
+          description: JavaScript/TypeScript implementation of a coded tool.
+      description: Tool definition fields shared by creation and replacement; replacement retains omitted fields.
+    ToolRecord:
+      type: object
+      required: [toolId, name, native, createdAt, updatedAt]
+      properties:
+        toolId: { type: string }
+        name: { type: string }
+        native: { type: boolean }
+        language:
+          type: string
+          enum: [javascript, typescript]
+        code: { type: string }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    ToolIdResponse:
+      type: object
+      required: [toolId]
+      properties:
+        toolId: { type: string }
+    ToolListResponse:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolRecord'
+    ToolResponse:
+      type: object
+      required: [toolId, tool]
+      properties:
+        toolId: { type: string }
+        tool:
+          $ref: '#/components/schemas/ToolRecord'
     ErrorResponse:
       type: object
       required: [error]
