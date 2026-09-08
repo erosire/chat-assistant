@@ -6,8 +6,14 @@
 // canonical record GET. Model selection rules: remembered last-used model wins (localStorage),
 // else the selected chat's recorded model, else the first catalog entry sorted by stripped
 // model name (organisation prefixes are stripped from labels only).
-// Conversation management covered here: "New chat" lives at the sidebar's
-// top-left, EVERY sidebar entry carries an "x" delete control at its top-right
+// Conversation management covered here: the sidebar is a TABBED registry
+// column ("Chat" = the conversation list, default; "Agent" = chat presets —
+// selecting an agent opens its editor for name + system prompt + allowed
+// tools, and the selected agent's prompt seeds new chats; "Tool" = the
+// intentionally empty tool registry). The header's top-right action follows
+// the tab: "New chat" everywhere except the Agent tab, where it becomes
+// "New agent". EVERY sidebar chat entry carries an "x" delete control at its
+// top-right
 // corner (identified DELETE on that conversation; deleting the OPEN chat also
 // resets the surface), the sidebar drawer is
 // toggleable on mobile, and the header title mirrors the selected chat's title
@@ -83,6 +89,8 @@ const BASE_URL = 'http://test.local/v1/chat-assistant/conversation';
 const PROVIDER_URL = 'http://test.local/providers/private/v1';
 // Must match MODEL_STORAGE_KEY in ChatAssistantApp.tsx.
 const MODEL_STORAGE_KEY = 'chat-assistant:model';
+// Must match AGENT_STORAGE_KEY in src/agents (the client-side agent registry).
+const AGENT_STORAGE_KEY = 'chat-assistant:agents';
 
 // Two-entry catalog whose raw order follows ORGANISATION names (alpha-org first).
 // Sorting by stripped model name must therefore pick 'zeta-org/test-model' first,
@@ -1338,16 +1346,18 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('empty-chat-state')).toBeNull();
     });
 
-    it('places the new chat action at the sidebar top-left and resets the surface', async () => {
+    it('places the new chat action at the header top-right corner and resets the surface', async () => {
         renderApp();
         await waitForModelSelection();
         const sidebar = screen.getByTestId('chat-sidebar');
         const newChat = screen.getByTestId('new-chat-button');
-        // The button must live IN the sidebar now (moved out of the header),
-        // leading the column so it stays pinned to the sidebar's top-left.
-        expect(sidebar.contains(newChat)).toBe(true);
-        expect(sidebar.firstElementChild).toBe(newChat);
-        expect(screen.getByTestId('chat-assistant').querySelector('header')!.contains(newChat)).toBe(false);
+        const header = screen.getByTestId('chat-assistant').querySelector('header')!;
+        // The button must live IN the header now (moved out of the sidebar) and
+        // must be the header's LAST child: the Header's
+        // justifyContent:space-between then docks it at the top-right corner.
+        expect(header.contains(newChat)).toBe(true);
+        expect(header.lastElementChild).toBe(newChat);
+        expect(sidebar.contains(newChat)).toBe(false);
         await sendFirstTurn();
 
         fireEvent.click(newChat);
@@ -1358,6 +1368,129 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
         expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(DEFAULT_MODEL);
         expect(screen.getByTestId('model-label').textContent).toBe('test-model');
+    });
+
+    it('renders the three sidebar tabs with Chat active by default', async () => {
+        renderApp();
+        await waitForModelSelection();
+        // The tab strip is the sidebar's FIRST child, a tablist of exactly
+        // three tabs; Chat is selected.
+        const tabs = screen.getByTestId('sidebar-tabs');
+        expect(tabs.getAttribute('role')).toBe('tablist');
+        expect(tabs.getAttribute('aria-label')).toBe('Sidebar sections');
+        expect(screen.getByTestId('sidebar-tab-chat').textContent).toBe('Chat');
+        expect(screen.getByTestId('sidebar-tab-agent').textContent).toBe('Agent');
+        expect(screen.getByTestId('sidebar-tab-tool').textContent).toBe('Tool');
+        expect(screen.getByTestId('sidebar-tab-chat').getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByTestId('sidebar-tab-agent').getAttribute('aria-selected')).toBe('false');
+        expect(screen.getByTestId('sidebar-tab-tool').getAttribute('aria-selected')).toBe('false');
+        // The Chat tab shows the conversation registry.
+        expect(screen.getByTestId('empty-chat-list').textContent).toBe('No chats yet.');
+        // The Agent and Tool registries stay hidden until their tab is picked.
+        expect(screen.queryByTestId('empty-agent-list')).toBeNull();
+        expect(screen.queryByTestId('empty-tool-list')).toBeNull();
+        // The header action defaults to "New chat" on the Chat tab.
+        expect(screen.getByTestId('new-chat-button').textContent).toBe('New chat');
+        expect(screen.queryByTestId('new-agent-button')).toBeNull();
+    });
+
+    it('creates and edits an agent from the Agent tab, persisting it to localStorage', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
+        expect(screen.getByTestId('sidebar-tab-agent').getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByTestId('empty-agent-list').textContent).toBe('No agents yet.');
+        expect(screen.queryByTestId('empty-chat-list')).toBeNull();
+        // The header action swapped to "New agent" on this tab.
+        expect(screen.getByTestId('new-agent-button').textContent).toBe('New agent');
+        expect(screen.queryByTestId('new-chat-button')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+
+        // The agent lands in the sidebar list selected (aria-pressed) and its
+        // configuration fills the MAIN CONTENT AREA (like an open chat) — the
+        // sidebar holds only the list, and the header title mirrors the name.
+        expect(screen.getByTestId('agent-entry-agent-1')).toBeDefined();
+        expect(screen.getByTestId('agent-tab-agent-1').getAttribute('aria-pressed')).toBe('true');
+        const sidebar = screen.getByTestId('chat-sidebar');
+        const workspace = screen.getByTestId('agent-workspace');
+        expect(sidebar.contains(workspace)).toBe(false);
+        expect(screen.getByTestId('agent-tools-empty').textContent).toBe('No tools available yet.');
+        expect(screen.getByTestId('agent-title').textContent).toBe('New agent');
+
+        // Name + prompt edits write straight into the definition (no
+        // draft/commit split): the sidebar entry AND the header title
+        // re-render live.
+        fireEvent.change(screen.getByTestId('agent-name-input'), { target: { value: 'Researcher' } });
+        fireEvent.change(screen.getByTestId('agent-prompt-input'), { target: { value: 'You are a careful researcher.' } });
+        expect(screen.getByTestId('agent-tab-agent-1').textContent).toContain('Researcher');
+        expect(screen.getByTestId('agent-tab-agent-1').textContent).toContain('0 tools');
+        expect(screen.getByTestId('agent-title').textContent).toBe('Researcher');
+
+        // The registry persisted under the documented key with the edited
+        // values and no tools.
+        expect(JSON.parse(window.localStorage.getItem(AGENT_STORAGE_KEY)!)).toEqual([
+            { id: 'agent-1', name: 'Researcher', systemPrompt: 'You are a careful researcher.', tools: [] }
+        ]);
+    });
+
+    it('swaps the content area between the agent editor and the chat surface', async () => {
+        renderApp();
+        await waitForModelSelection();
+        // Agent tab without a selection: an explicit empty state, no composer.
+        fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
+        expect(screen.getByTestId('empty-agent-state').textContent).toContain('No agent selected');
+        expect(screen.queryByTestId('message-list')).toBeNull();
+        expect(screen.queryByTestId('chat-composer')).toBeNull();
+
+        // Selecting the (new) agent swaps the content area to its editor.
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+        expect(screen.getByTestId('agent-workspace')).toBeDefined();
+        expect(screen.queryByTestId('message-list')).toBeNull();
+
+        // Back to the Chat tab: the chat surface remounts (message list +
+        // composer) and the header title returns to the chat's product name.
+        fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
+        expect(screen.getByTestId('message-list')).toBeDefined();
+        expect(screen.getByTestId('chat-composer')).toBeDefined();
+        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.queryByTestId('agent-workspace')).toBeNull();
+    });
+
+    it('seeds a new chat from the selected agent system prompt', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+        fireEvent.change(screen.getByTestId('agent-prompt-input'), { target: { value: 'You are a careful researcher.' } });
+        // Back to the Chat tab: the header action is "New chat" again.
+        fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
+        expect(screen.getByTestId('new-chat-button').textContent).toBe('New chat');
+
+        fireEvent.click(screen.getByTestId('new-chat-button'));
+
+        // The draft system turn is prefilled with the ACTIVE agent's prompt
+        // (still editable inline before the first send).
+        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are a careful researcher.');
+    });
+
+    it('shows the empty Tool registry and keeps the header action as New chat', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-tab-tool'));
+        expect(screen.getByTestId('sidebar-tab-tool').getAttribute('aria-selected')).toBe('true');
+        // The sidebar list is empty, and the CONTENT AREA shows the tool
+        // empty state (the chat surface is unmounted on this tab).
+        expect(screen.getByTestId('empty-tool-list').textContent).toBe('No tools yet.');
+        expect(screen.getByTestId('empty-tool-state').textContent).toContain('No tools yet');
+        expect(screen.queryByTestId('message-list')).toBeNull();
+        expect(screen.queryByTestId('empty-chat-list')).toBeNull();
+        expect(screen.queryByTestId('empty-agent-list')).toBeNull();
+        // The header falls back to the product name and keeps the action as
+        // "New chat" (only the Agent tab swaps it).
+        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.getByTestId('new-chat-button').textContent).toBe('New chat');
+        expect(screen.queryByTestId('new-agent-button')).toBeNull();
     });
 
     it('toggles the sidebar drawer through the header button and the scrim', async () => {

@@ -26,11 +26,21 @@
 //   labels, and the dropdown options.
 // Per-message attribution (the assistant turn's top-left label) already marks
 // WHICH model produced each reply, so no separate "Model: ..." strip exists.
-// Conversation management lives ENTIRELY in the sidebar: "New chat" sits at
-// its top-left and EVERY conversation entry carries an "x" delete control at
+// Conversation management lives in the sidebar: EVERY conversation entry
+// carries an "x" delete control at
 // its top-right corner that permanently deletes THAT conversation (identified
 // DELETE) without entering it — deleting the currently selected chat also
-// resets the surface to the empty new-chat state. The header title mirrors
+// resets the surface to the empty new-chat state. The sidebar is a TABBED
+// registry column (src/agents supplies the agent/tool client registry):
+// "Chat" (the conversation list, default), "Agent" (chat presets — selecting
+// an agent swaps the MAIN CONTENT AREA to the agent's configuration to set
+// the agent's NAME, SYSTEM PROMPT, and
+// ALLOWED TOOLS; the selected agent is the ACTIVE agent whose system prompt
+// seeds new chats), and "Tool" (the intentionally EMPTY tool registry — no
+// tools exist yet; a selected tool's panel would take the content area the
+// same way). The header's top-right action follows the tab: "New chat"
+// everywhere except the Agent tab, where it becomes "New agent" (creates +
+// selects an agent; no conversation state is touched). The header title mirrors
 // the selected chat's title
 // (derived server-side from the trimmed first line of the first user message)
 // and is renameable by clicking the title itself — INLINE: the h1 becomes
@@ -204,6 +214,18 @@ import {
     MicIcon,
     SwitchIcon
 } from '../icons';
+// Client-side agent + tool registry (src/agents): agents are named chat
+// presets (name + system prompt + allowed tool ids) persisted best-effort in
+// localStorage; AVAILABLE_TOOLS is the intentionally empty tool registry the
+// Agent tab's "allowed tools" group and the Tool tab render from.
+import {
+    AVAILABLE_TOOLS,
+    createAgentDefinition,
+    readStoredAgents,
+    storeAgents,
+    toggleAgentTool,
+    type AgentDefinition
+} from '../agents';
 
 // Palette is local to this distribution so the component has no dependency on a larger theme package.
 const COLORS = {
@@ -372,6 +394,127 @@ const SidebarHeading = styledComponent('div', {
     fontWeight: 700,
     letterSpacing: 1,
     textTransform: 'uppercase'
+});
+
+// Sidebar navigation TABS: the sidebar hosts three registries — "Chat" (the
+// conversation list, the default), "Agent" (chat presets: name + system
+// prompt + allowed tools), and "Tool" (the currently empty tool registry).
+// The active tab decides which list renders below the strip AND which action
+// the header's top-right button performs ("New chat" everywhere except the
+// Agent tab, where it becomes "New agent").
+const SidebarTabs = styledComponent('div', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0
+});
+
+// One tab of the strip. `active` swaps the muted surface for the accent-
+// bordered one (mirroring ChatButton's selected treatment); role="tab" +
+// aria-selected are set at the render site. Dynamic backgroundColor/borderColor
+// serialize under @media (min-width: 0px) per variant — the same mechanism
+// ChatButton's `selected` prop uses.
+const SidebarTabButton = styledComponent<{ active?: boolean }>('button', {
+    flex: 1,
+    padding: '8px 10px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 6,
+    backgroundColor: ({ active }) => (active ? COLORS.user : COLORS.panelStrong),
+    borderColor: ({ active }) => (active ? COLORS.accentStrong : COLORS.border),
+    color: COLORS.text,
+    cursor: 'pointer',
+    font: 'inherit',
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.3
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }>;
+
+// The Agent editor WORKSPACE: the selected agent's configuration fills the
+// MAIN CONTENT AREA (exactly like an open chat does — selecting an agent in
+// the sidebar's Agent tab swaps the conversation column over to this panel).
+// The name input and system prompt textarea write straight into the agent
+// definition on every change (persisted to localStorage immediately — there
+// is no draft/commit split); the tools group renders one checkbox per
+// AVAILABLE_TOOLS entry, but the registry is EMPTY for now, so the muted
+// "No tools available yet." note renders instead. flex:1 + overflowY:auto
+// lets long prompts scroll inside the workspace; the maxWidth keeps input
+// lines readable on wide screens (left-aligned, matching the chat column).
+const AgentWorkspace = styledComponent('section', {
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
+    maxWidth: 760,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    padding: 24,
+    paddingLeft: () => ({ xs: '12px', md: '24px' }),
+    paddingRight: () => ({ xs: '12px', md: '24px' })
+});
+
+// The Tool configuration workspace: the selected tool's panel in the content
+// area (same contract as AgentWorkspace). The registry is empty for now, so
+// this panel never renders yet — it exists so a future tool definition only
+// needs registry entries, not new layout.
+const ToolWorkspace = styledComponent('section', {
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
+    maxWidth: 760,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: 24,
+    paddingLeft: () => ({ xs: '12px', md: '24px' }),
+    paddingRight: () => ({ xs: '12px', md: '24px' })
+});
+
+// Agent name field: a plain single-line input at content-area scale (larger
+// than the retired sidebar editor's sizing). width:100% + border-box keeps it
+// inside the workspace's padded box.
+const AgentNameInput = styledComponent('input', {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '10px 12px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 8,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    font: 'inherit',
+    fontSize: 16,
+    fontWeight: 700,
+    lineHeight: 1.4,
+    outline: 'none'
+}) as unknown as React.FC<React.InputHTMLAttributes<HTMLInputElement>>;
+
+// Agent system prompt field: a multi-line textarea (the prompt can be long);
+// resize:vertical lets the user grow it without breaking the workspace layout.
+const AgentPromptTextarea = styledComponent('textarea', {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '10px 12px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 8,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    font: 'inherit',
+    fontSize: 14,
+    lineHeight: 1.5,
+    resize: 'vertical',
+    outline: 'none'
+}) as unknown as React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>>;
+
+// One "allowed tools" checkbox row. Only rendered once AVAILABLE_TOOLS has
+// entries; the wrapping label makes the whole row clickable.
+const AgentToolOption = styledComponent('label', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 13,
+    lineHeight: 1.4,
+    cursor: 'pointer'
 });
 
 // Each sidebar conversation ENTRY is a positioning context: the select button
@@ -1031,12 +1174,12 @@ const SecondaryButton = styledComponent('button', {
     fontSize: 12
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
-// "New chat" lives at the sidebar's top-left so all conversation management
-// stays in one column; align-self keeps the compact button from stretching
-// across the sidebar's full width.
-const NewChatButton = styledComponent(SecondaryButton, {
-    alignSelf: 'flex-start'
-}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+// The header's top-right action button: the Header's justifyContent:space-
+// between pushes the trailing child there, so the button needs no positioning
+// of its own — the base SecondaryButton styling suffices. It renders as
+// "New chat" (startNewChat) on every sidebar tab except Agent, where the
+// render site swaps the label to "New agent" and the handler to startNewAgent.
+const NewChatButton = styledComponent(SecondaryButton, {}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Small metadata labels keep model/status details available without competing with message text.
 const Metadata = styledComponent('span', {
@@ -1859,6 +2002,43 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // Mobile drawer state; at md+ the sidebar is a permanent column and this
     // state is ignored by CSS (the toggle button is display:none there).
     const sidebarOpen = useStateHook(false);
+    // Sidebar TAB state: which registry the sidebar column shows — 'chat'
+    // (the conversation list, the default), 'agent' (chat presets), or 'tool'
+    // (the empty tool registry). The header's top-right action follows it:
+    // "New chat" on every tab except 'agent', where it becomes "New agent".
+    const sidebarTab = useStateHook<'chat' | 'agent' | 'tool'>('chat');
+    // Client-side agent registry (src/agents): loaded once from localStorage
+    // on mount, rewritten AND re-persisted on every create/edit through
+    // persistAgents. No server resource exists for agents — definitions live
+    // in the browser only.
+    const agents = useStateHook<AgentDefinition[]>([]);
+    // The agent selected in the Agent tab. Selecting an agent opens its
+    // editor in the MAIN CONTENT AREA (like an open chat) AND makes it the
+    // ACTIVE agent whose system prompt seeds new chats (startNewChat prefills
+    // the draft prompt from it).
+    const selectedAgentId = useStateHook<string | null>(null);
+    // The tool selected in the Tool tab — its configuration panel would open
+    // in the content area the same way. The registry is empty for now, so the
+    // selection can never resolve to a tool yet; the state exists so the
+    // content-area swap is already wired for the first tool.
+    const selectedToolId = useStateHook<string | null>(null);
+
+    // Content-surface derivation (needed BEFORE the effects below: the scroll-
+    // listener attach effect must re-run when the chat surface unmounts/remounts).
+    // The agent whose editor fills the content area on the Agent tab (also the
+    // active agent for new chats); the tool whose panel fills it on the Tool tab.
+    const selectedAgent = agents().find((agent) => agent.id === selectedAgentId()) ?? null;
+    const selectedTool = AVAILABLE_TOOLS.find((tool) => tool.id === selectedToolId()) ?? null;
+    // Which surface the content column shows: the agent view (Agent tab — a
+    // selected agent's editor, or its empty state), the tool view (Tool tab —
+    // a selected tool's panel or its empty state), or the chat surface (the
+    // Chat tab's conversation column, the default).
+    const contentSurface: 'chat' | 'agent' | 'tool' =
+        sidebarTab() === 'agent' ? 'agent' : sidebarTab() === 'tool' ? 'tool' : 'chat';
+    // Boolean projection for effect deps: the chat surface (message list +
+    // composer) is only MOUNTED while this is true, so listeners that attach
+    // to the message-list element must re-attach when it flips back.
+    const chatSurface = contentSurface === 'chat';
     // Inline history editing: index of the message whose bubble currently IS
     // the editor (contentEditable). `savingEdit` guards the identified PUT
     // that replaces the history on blur-commit.
@@ -1958,6 +2138,14 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // handles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [baseUrl]);
+
+    // Restore the persisted agent registry once on mount (localStorage; see
+    // src/agents). Mount-only: every later edit rewrites the whole list
+    // through persistAgents, which re-persists by itself.
+    useEffect(() => {
+        agents(readStoredAgents());
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Keep the editor synchronized with programmatic clears and restored values;
     // the input handler performs the same calculation immediately after typing.
@@ -2070,9 +2258,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         if (next.join(',') !== stickyTurns().join(',')) stickyTurns(next);
     }, [listAtBottom, stickyTurns]);
 
-    // Scroll + resize drive the gate: mount-only listener attach (the message
-    // list element is permanent — it renders on every surface, empty chats
-    // included). Passive: the handler only reads geometry and flips state.
+    // Scroll + resize drive the gate: listener attach. The message-list
+    // element is permanent WHILE THE CHAT SURFACE IS MOUNTED — but the agent
+    // / tool content surfaces unmount it (the content column swaps to the
+    // agent editor or tool panel), so the effect re-runs on the chatSurface
+    // flip and re-attaches to the FRESH element when the chat surface
+    // returns. Passive: the handler only reads geometry and flips state.
     useEffect(() => {
         const list = document.querySelector<HTMLElement>('[data-testid="message-list"]');
         list?.addEventListener('scroll', syncStickyControls, { passive: true });
@@ -2081,7 +2272,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             list?.removeEventListener('scroll', syncStickyControls);
             window.removeEventListener('resize', syncStickyControls);
         };
-    }, [syncStickyControls]);
+    }, [syncStickyControls, chatSurface]);
 
     // Geometry also changes WITHOUT a scroll event: collapse toggles shift
     // turn heights, streamed tokens grow the live bubble, record loads swap
@@ -2360,23 +2551,65 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         }
     }, [applyModelMemory, baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, loading, selected, selectionPin, sidebarOpen, systemPrompt]);
 
+    // Rewrite the agent registry AND persist it (localStorage best-effort;
+    // src/agents storeAgents). Every agent mutation funnels through here so
+    // the sidebar state and the persisted copy never diverge.
+    const persistAgents = useCallback((next: AgentDefinition[]) => {
+        agents(next);
+        storeAgents(next);
+    }, [agents]);
+
+    // Switch the sidebar registry tab (Chat / Agent / Tool). Switching swaps
+    // the CONTENT surface too (agent editor / tool panel vs. the chat column),
+    // so any open chat editor — bubble edit, title rename, prompt draft — is
+    // abandoned here; the keyed remounts revert their DOM text on return.
+    const selectSidebarTab = useCallback((tab: 'chat' | 'agent' | 'tool') => {
+        sidebarTab(tab);
+        cancelEdit();
+        cancelTitleEdit();
+        cancelSystemPromptDraft();
+    }, [cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, sidebarTab]);
+
+    // Header action while the Agent tab is active ("New agent"): create an
+    // agent definition, select it (its editor opens below the list), and keep
+    // the sidebar on the Agent tab. UNLIKE New chat this touches no
+    // conversation state — no server record, no composer reset.
+    const startNewAgent = useCallback(() => {
+        const agent = createAgentDefinition(agents());
+        persistAgents([...agents(), agent]);
+        selectedAgentId(agent.id);
+        sidebarTab('agent');
+    }, [agents, persistAgents, selectedAgentId, sidebarTab]);
+
+    // Live-edit one agent definition (name input, prompt textarea, tool
+    // checkboxes) and persist each change immediately. `patch` never carries
+    // the id — identities are immutable.
+    const updateAgent = useCallback((id: string, patch: Partial<Omit<AgentDefinition, 'id'>>) => {
+        persistAgents(agents().map((agent) => (agent.id === id ? { ...agent, ...patch } : agent)));
+    }, [agents, persistAgents]);
+
     // Reset the surface without creating a server record until the first provider
     // turn completes. The model selection intentionally survives a new chat so the
-    // last-used model stays preselected. The button lives in the sidebar, so the
+    // last-used model stays preselected. The button lives in the header, so the
     // mobile drawer closes when a fresh chat starts.
     const startNewChat = useCallback(() => {
         selected(null);
         message('');
-        // A fresh chat starts the system prompt draft back at its "no prompt"
-        // placeholder (editor closed), with no collapsed turns yet.
-        systemPrompt('');
+        // A fresh chat seeds the system prompt draft from the ACTIVE agent
+        // (the one selected in the Agent tab — an agent is "available for use
+        // in chat" by being selected): its saved system prompt prefills the
+        // draft turn, still editable inline before the first send. With no
+        // active agent the draft starts back at its "no prompt" placeholder
+        // (editor closed), with no collapsed turns yet.
+        const agent = agents().find((candidate) => candidate.id === selectedAgentId());
+        systemPrompt(agent?.systemPrompt ?? '');
         cancelSystemPromptDraft();
         collapsedTurns([]);
         error('');
         sidebarOpen(false);
         cancelEdit();
         cancelTitleEdit();
-    }, [cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, message, selected, sidebarOpen, systemPrompt]);
+    }, [agents, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, message, selected, selectedAgentId, sidebarOpen, systemPrompt]);
 
     // Permanently delete ONE conversation from its sidebar entry's "x"
     // (identified DELETE): drop its summary from the list. Only when the
@@ -3018,14 +3251,18 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     >
                         <MenuIcon size={16} />
                     </SidebarToggle>
-                    {/* The header title is the SELECTED chat's title; the product
-                        name is the new-chat fallback (non-interactive). Clicking
-                        the title itself turns the h1 CONTENTEDITABLE (inline
-                        rename — no dialog, no input): BLUR or ENTER commits the
-                        trimmed text through the identified PUT, ESCAPE cancels
-                        (keyed remount reverts the DOM). Titles are single-line,
-                        so Enter commits instead of inserting a break. */}
-                    {selected() === null ? (
+                    {/* The header title mirrors the content surface: an open
+                        agent's editor shows the agent's NAME (live — it edits
+                        through the same definition the title reads), while
+                        the tool surface and the agent tab's empty state fall
+                        back to the plain product name. The chat surface keeps
+                        its existing title logic below (selected title /
+                        inline rename). */}
+                    {contentSurface === 'agent' && selectedAgent ? (
+                        <HeaderTitle data-testid="agent-title">{selectedAgent.name}</HeaderTitle>
+                    ) : contentSurface !== 'chat' ? (
+                        <HeaderTitle data-testid="chat-title">Chat Assistant</HeaderTitle>
+                    ) : selected() === null ? (
                         <HeaderTitle data-testid="chat-title">Chat Assistant</HeaderTitle>
                     ) : editingTitle() ? (
                         <HeaderTitle
@@ -3063,25 +3300,213 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                         </HeaderTitle>
                     )}
                 </HeaderLead>
-                {/* No header actions: conversation deletion lives on each sidebar
-                    entry's "x" (top-right corner of the entry) and the model
-                    picker is the clickable text above the composer input. */}
+                {/* The header's trailing action follows the sidebar tab: "New
+                    chat" everywhere except the Agent tab, where it becomes
+                    "New agent" (creating + selecting an agent definition
+                    instead of resetting the conversation surface). With the
+                    Header's justifyContent:space-between either button docks
+                    at the top-right corner of the app frame. */}
+                {sidebarTab() === 'agent' ? (
+                    <NewChatButton type="button" onClick={startNewAgent} data-testid="new-agent-button">
+                        New agent
+                    </NewChatButton>
+                ) : (
+                    <NewChatButton type="button" onClick={startNewChat} data-testid="new-chat-button">
+                        New chat
+                    </NewChatButton>
+                )}
+                {/* No other header actions: conversation deletion lives on each
+                    sidebar entry's "x" (top-right corner of the entry) and the
+                    model picker is the clickable text above the composer input. */}
             </Header>
             <Workspace>
                 {/* Scrim sits before the sidebar so the drawer paints above it. */}
                 <SidebarScrim open={sidebarOpen()} onClick={() => sidebarOpen(false)} data-testid="sidebar-scrim" />
                 {/* `open` slides the mobile drawer; md+ CSS ignores it (static column). */}
                 <Sidebar open={sidebarOpen()} id="chat-sidebar-panel" data-open={sidebarOpen()} data-testid="chat-sidebar">
-                    <NewChatButton type="button" onClick={startNewChat} data-testid="new-chat-button">
-                        New chat
-                    </NewChatButton>
-                    <SidebarHeading>
-                        <span>Conversations</span>
-                        <Metadata>{chats().length}</Metadata>
-                    </SidebarHeading>
-                    {chatNodes.length > 0 ? chatNodes : <Metadata data-testid="empty-chat-list">No chats yet.</Metadata>}
+                    {/* Registry tabs: Chat / Agent / Tool. The active tab swaps
+                        the list below AND the header's top-right action. */}
+                    <SidebarTabs role="tablist" aria-label="Sidebar sections" data-testid="sidebar-tabs">
+                        <SidebarTabButton
+                            type="button"
+                            active={sidebarTab() === 'chat'}
+                            role="tab"
+                            aria-selected={sidebarTab() === 'chat'}
+                            onClick={() => selectSidebarTab('chat')}
+                            data-testid="sidebar-tab-chat"
+                        >
+                            Chat
+                        </SidebarTabButton>
+                        <SidebarTabButton
+                            type="button"
+                            active={sidebarTab() === 'agent'}
+                            role="tab"
+                            aria-selected={sidebarTab() === 'agent'}
+                            onClick={() => selectSidebarTab('agent')}
+                            data-testid="sidebar-tab-agent"
+                        >
+                            Agent
+                        </SidebarTabButton>
+                        <SidebarTabButton
+                            type="button"
+                            active={sidebarTab() === 'tool'}
+                            role="tab"
+                            aria-selected={sidebarTab() === 'tool'}
+                            onClick={() => selectSidebarTab('tool')}
+                            data-testid="sidebar-tab-tool"
+                        >
+                            Tool
+                        </SidebarTabButton>
+                    </SidebarTabs>
+                    {sidebarTab() === 'chat' && (
+                        // The CHAT tab: the conversation list exactly as before
+                        // the tabs existed (the default tab).
+                        <>
+                            <SidebarHeading>
+                                <span>Conversations</span>
+                                <Metadata>{chats().length}</Metadata>
+                            </SidebarHeading>
+                            {chatNodes.length > 0 ? chatNodes : <Metadata data-testid="empty-chat-list">No chats yet.</Metadata>}
+                        </>
+                    )}
+                    {sidebarTab() === 'agent' && (
+                        // The AGENT tab: the agent registry list ONLY — the
+                        // selected agent's configuration renders in the MAIN
+                        // CONTENT AREA (AgentWorkspace), exactly like an open
+                        // chat.
+                        <>
+                            <SidebarHeading>
+                                <span>Agents</span>
+                                <Metadata>{agents().length}</Metadata>
+                            </SidebarHeading>
+                            {agents().length > 0 ? (
+                                agents().map((agent) => (
+                                    // Entries reuse the conversation entry chrome
+                                    // (ChatEntry positioning context + ChatButton
+                                    // selected treatment) — no delete control yet.
+                                    <ChatEntry key={agent.id} data-testid={`agent-entry-${agent.id}`}>
+                                        <ChatButton
+                                            type="button"
+                                            selected={selectedAgentId() === agent.id}
+                                            onClick={() => selectedAgentId(agent.id)}
+                                            aria-pressed={selectedAgentId() === agent.id}
+                                            data-testid={`agent-tab-${agent.id}`}
+                                        >
+                                            <strong>{agent.name}</strong>
+                                            <Metadata>{agent.tools.length} tools</Metadata>
+                                        </ChatButton>
+                                    </ChatEntry>
+                                ))
+                            ) : (
+                                <Metadata data-testid="empty-agent-list">No agents yet.</Metadata>
+                            )}
+                        </>
+                    )}
+                    {sidebarTab() === 'tool' && (
+                        // The TOOL tab: the tool registry list. Selecting an
+                        // entry opens its configuration in the content area
+                        // (ToolWorkspace); there are no tools yet, so the
+                        // empty state renders.
+                        <>
+                            <SidebarHeading>
+                                <span>Tools</span>
+                                <Metadata>{AVAILABLE_TOOLS.length}</Metadata>
+                            </SidebarHeading>
+                            {AVAILABLE_TOOLS.length > 0 ? (
+                                AVAILABLE_TOOLS.map((tool) => (
+                                    <ChatEntry key={tool.id} data-testid={`tool-entry-${tool.id}`}>
+                                        <ChatButton
+                                            type="button"
+                                            selected={selectedToolId() === tool.id}
+                                            onClick={() => selectedToolId(tool.id)}
+                                            aria-pressed={selectedToolId() === tool.id}
+                                            data-testid={`tool-tab-${tool.id}`}
+                                        >
+                                            <strong>{tool.name}</strong>
+                                            <Metadata>{tool.description}</Metadata>
+                                        </ChatButton>
+                                    </ChatEntry>
+                                ))
+                            ) : (
+                                <Metadata data-testid="empty-tool-list">No tools yet.</Metadata>
+                            )}
+                        </>
+                    )}
                 </Sidebar>
                 <Conversation>
+                    {/* AGENT surface: the selected agent's configuration fills
+                        the content area exactly like an open chat (name +
+                        system prompt + allowed tools; see AgentWorkspace).
+                        Every change writes into the definition and re-persists
+                        immediately — no draft/commit split. */}
+                    {contentSurface === 'agent' && selectedAgent && (
+                        <AgentWorkspace data-testid="agent-workspace">
+                            <AgentNameInput
+                                value={selectedAgent.name}
+                                onChange={(event) => updateAgent(selectedAgent.id, { name: event.target.value })}
+                                placeholder="Agent name"
+                                aria-label="Agent name"
+                                data-testid="agent-name-input"
+                            />
+                            <AgentPromptTextarea
+                                value={selectedAgent.systemPrompt}
+                                onChange={(event) => updateAgent(selectedAgent.id, { systemPrompt: event.target.value })}
+                                placeholder="System prompt the agent uses in chat..."
+                                aria-label="Agent system prompt"
+                                rows={10}
+                                data-testid="agent-prompt-input"
+                            />
+                            {/* Allowed tools: one checkbox per registry entry
+                                (toggleAgentTool flips the id in the agent's
+                                allowed set). The registry is empty for now, so
+                                the muted note renders instead — the checkbox
+                                branch lights up once the first tool lands. */}
+                            <SidebarHeading>
+                                <span>Allowed tools</span>
+                            </SidebarHeading>
+                            {AVAILABLE_TOOLS.length === 0 ? (
+                                <Metadata data-testid="agent-tools-empty">No tools available yet.</Metadata>
+                            ) : (
+                                AVAILABLE_TOOLS.map((tool) => (
+                                    <AgentToolOption key={tool.id}>
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedAgent.tools.includes(tool.id)}
+                                            onChange={() => updateAgent(selectedAgent.id, toggleAgentTool(selectedAgent, tool.id))}
+                                            data-testid={`agent-tool-${tool.id}`}
+                                        />
+                                        <Metadata>{tool.name}</Metadata>
+                                    </AgentToolOption>
+                                ))
+                            )}
+                        </AgentWorkspace>
+                    )}
+                    {/* AGENT tab without a selection: prompt the required
+                        action instead of silently showing a chat. */}
+                    {contentSurface === 'agent' && !selectedAgent && (
+                        <EmptyState data-testid="empty-agent-state">
+                            <strong>No agent selected</strong>
+                            <span>Pick an agent from the sidebar or create one with "New agent".</span>
+                        </EmptyState>
+                    )}
+                    {/* TOOL surface: the selected tool's configuration panel,
+                        or the registry's empty state (there are no tools yet). */}
+                    {contentSurface === 'tool' && (selectedTool ? (
+                        <ToolWorkspace data-testid="tool-workspace">
+                            <strong>{selectedTool.name}</strong>
+                            <Metadata>{selectedTool.description}</Metadata>
+                            <Metadata>Tools are not executable yet — configuration arrives with the first implementation.</Metadata>
+                        </ToolWorkspace>
+                    ) : (
+                        <EmptyState data-testid="empty-tool-state">
+                            <strong>No tools yet</strong>
+                            <span>Tools will appear here once the registry defines them.</span>
+                        </EmptyState>
+                    ))}
+                    {/* CHAT surface: the conversation column exactly as before
+                        the agent/tool surfaces existed. Unmounted while an
+                        agent editor or tool panel owns the column. */}
+                    {chatSurface && (<>
                     <MessageList
                         // Hide platform scrollbar chrome at every breakpoint. The
                         // element remains a real scroll container, so touch, wheel,
@@ -3384,6 +3809,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             )}
                         </ComposerField>
                     </Composer>
+                    </>
+                    )}
                 </Conversation>
             </Workspace>
             {/* No rename dialog: renaming is INLINE — the header title h1
