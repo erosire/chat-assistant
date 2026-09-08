@@ -30,7 +30,7 @@ import {
     LOCAL_AREA_NETWORK_HOST_NAME,
     LOCAL_AREA_NETWORK_DATABASE_PORT,
     LOCAL_AREA_NETWORK_PROVIDER_PORT
-} from '@config/environment';
+} from '../config';
 
 // Host (IPv4 or hostname) of the shared backend. LAN address of the machine
 // running the runtime service; kept as a bare string so it can be reused both

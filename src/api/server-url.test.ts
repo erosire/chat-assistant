@@ -11,7 +11,7 @@ import {
     LOCAL_AREA_NETWORK_HOST_NAME,
     LOCAL_AREA_NETWORK_DATABASE_PORT,
     LOCAL_AREA_NETWORK_PROVIDER_PORT
-} from '@config/environment';
+} from '../config';
 import { DEFAULT_SERVER_URL } from './server-url';
 import { DEFAULT_CHAT_ASSISTANT_URL } from './chat-assistant';
 import { DEFAULT_PROVIDER_URL } from './provider';
