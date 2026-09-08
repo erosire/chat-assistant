@@ -489,12 +489,17 @@ const AgentNameInput = styledComponent('input', {
     outline: 'none'
 }) as unknown as React.FC<React.InputHTMLAttributes<HTMLInputElement>>;
 
-// Agent system prompt field: a multi-line textarea (the prompt can be long);
-// resize:vertical lets the user grow it without breaking the workspace layout.
+// Agent system prompt field: a multi-line textarea (the prompt can be long).
+// The NATIVE textarea resize grip is DISABLED (resize:none): the raw browser
+// grip draws unstyleable chrome that clashes with the dark panel palette and
+// the 8px rounded corners. It is replaced by the themed drag handle below
+// (AgentPromptGrip) so the user can still grow the field without breaking the
+// workspace layout. The bottom padding is deepened so the grip pill (docked
+// at the field's bottom edge) never slides under typed text.
 const AgentPromptTextarea = styledComponent('textarea', {
     width: '100%',
     boxSizing: 'border-box',
-    padding: '10px 12px',
+    padding: '10px 12px 16px',
     border: `1px solid ${COLORS.border}`,
     borderRadius: 8,
     backgroundColor: COLORS.panelStrong,
@@ -502,9 +507,149 @@ const AgentPromptTextarea = styledComponent('textarea', {
     font: 'inherit',
     fontSize: 14,
     lineHeight: 1.5,
-    resize: 'vertical',
+    resize: 'none',
+    overflowY: 'auto',
     outline: 'none'
 }) as unknown as React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>>;
+
+// Height clamps for the prompt field's drag resize (OUTER pixel heights).
+// The floor (~3 text lines at lineHeight 1.5 / fontSize 14 + padding) keeps
+// the field usable; the cap keeps the prompt from swallowing the whole
+// workspace column (AgentWorkspace itself scrolls — see its overflowY).
+const AGENT_PROMPT_MIN_HEIGHT = 96;
+const AGENT_PROMPT_MAX_HEIGHT = 480;
+// Keyboard resize increment (ArrowDown grows, ArrowUp shrinks): ~1 text line.
+const AGENT_PROMPT_RESIZE_STEP = 24;
+
+// Positioning context for the grip pill: wraps the textarea.
+const AgentPromptField = styledComponent('div', {
+    position: 'relative',
+    width: '100%'
+});
+
+// Themed replacement for the native textarea resize grip: a small pill
+// centered on the field's bottom edge (the same centered-affordance language
+// as the rest of the chrome). COLORS.muted at reduced opacity keeps it quiet
+// against the panelStrong field surface; while an active drag is in flight
+// (the `active` prop) the opacity lifts for tactile feedback. touchAction:
+// none lets pointer drags own the gesture on touch screens instead of
+// scrolling the workspace.
+const AgentPromptGrip = styledComponent<{ active: boolean }>('div', {
+    position: 'absolute',
+    left: '50%',
+    bottom: 4,
+    transform: 'translateX(-50%)',
+    width: 40,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: COLORS.muted,
+    opacity: ({ active }) => (active ? 0.9 : 0.45),
+    cursor: 'row-resize',
+    touchAction: 'none'
+});
+
+// The composed agent prompt editor: the textarea plus its themed drag handle.
+// Replaces the native resize grip (disabled above) with a pointer-driven
+// vertical resizer: dragging the grip writes clamped pixel heights straight
+// onto the textarea's inline style (React never owns that property, so the
+// height survives re-renders), and ArrowUp/ArrowDown on the focused grip
+// nudge the height by AGENT_PROMPT_RESIZE_STEP for keyboard users.
+const AgentPromptEditor: React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>> = (props) => {
+    // The textarea element (for measuring + applying heights) and the
+    // remembered drag height. The remembered value wins over live geometry so
+    // resizes survive re-renders AND stay deterministic where geometry is
+    // unavailable (jsdom reports zero-height rects).
+    const field = useReferenceHook<HTMLTextAreaElement | null>(null);
+    const height = useReferenceHook<number | null>(null);
+    // Active-drag flag driving the grip's opacity feedback.
+    const dragging = useStateHook(false);
+    // Teardown for the in-flight drag's window listeners: an unmount
+    // mid-drag must not leak listeners that would write heights into a
+    // detached node.
+    const stopDrag = useReferenceHook<(() => void) | null>(null);
+    useEffect(() => () => {
+        const finish = stopDrag();
+        if (finish) finish();
+    }, [stopDrag]);
+
+    // Clamp + apply a candidate height: the remembered value updates first
+    // (so the next interaction starts from here), then the inline style.
+    const applyHeight = useCallback((next: number) => {
+        const clamped = Math.min(AGENT_PROMPT_MAX_HEIGHT, Math.max(AGENT_PROMPT_MIN_HEIGHT, next));
+        height(clamped);
+        const element = field();
+        if (element) element.style.height = `${clamped}px`;
+    }, [field, height]);
+
+    // The current OUTER height: the remembered drag height first, else the
+    // natural rendered height (the rows=10 layout) at first interaction.
+    const currentHeight = (): number => {
+        const remembered = height();
+        if (remembered !== null) return remembered;
+        const element = field();
+        if (!element) return 0;
+        return element.getBoundingClientRect().height || element.clientHeight || 0;
+    };
+
+    // Pointer drag: window-level move/up/cancel listeners registered on
+    // pointerdown (pointer capture is unavailable in some environments, and
+    // the grip is only 4px tall — leaving the element mid-drag must NOT end
+    // the gesture). Each move re-applies startHeight + vertical delta.
+    const onGripPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        dragging(true);
+        const startY = event.clientY;
+        const startHeight = currentHeight();
+        const move = (moveEvent: PointerEvent) => {
+            applyHeight(startHeight + (moveEvent.clientY - startY));
+        };
+        const finish = () => {
+            dragging(false);
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', finish);
+            window.removeEventListener('pointercancel', finish);
+            stopDrag(null);
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', finish);
+        window.addEventListener('pointercancel', finish);
+        stopDrag(finish);
+    };
+
+    // Keyboard equivalent of the drag: ArrowDown grows, ArrowUp shrinks,
+    // every other key untouched.
+    const onGripKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        applyHeight(currentHeight() + (event.key === 'ArrowDown' ? AGENT_PROMPT_RESIZE_STEP : -AGENT_PROMPT_RESIZE_STEP));
+    };
+
+    // ref callback keeps braces so React 19 never reads a return value as a
+    // ref-cleanup function.
+    const setField = (element: HTMLTextAreaElement | null) => {
+        field(element);
+    };
+
+    return (
+        <AgentPromptField>
+            {/* The {...{ ref }} spread bypasses the React.FC typing (the ref is
+                forwarded by Emotion at runtime; see the file's styledComponent
+                cast notes) while keeping the textarea props passthrough. */}
+            <AgentPromptTextarea {...props} {...{ ref: setField }} />
+            <AgentPromptGrip
+                active={dragging()}
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize the system prompt field"
+                title="Drag to resize"
+                tabIndex={0}
+                data-testid="agent-prompt-grip"
+                onPointerDown={onGripPointerDown}
+                onKeyDown={onGripKeyDown}
+            />
+        </AgentPromptField>
+    );
+};
 
 // One "allowed tools" checkbox row. Only rendered once AVAILABLE_TOOLS has
 // entries; the wrapping label makes the whole row clickable.
@@ -3448,7 +3593,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 aria-label="Agent name"
                                 data-testid="agent-name-input"
                             />
-                            <AgentPromptTextarea
+                            <AgentPromptEditor
                                 value={selectedAgent.systemPrompt}
                                 onChange={(event) => updateAgent(selectedAgent.id, { systemPrompt: event.target.value })}
                                 placeholder="System prompt the agent uses in chat..."

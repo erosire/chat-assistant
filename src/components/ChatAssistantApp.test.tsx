@@ -1434,6 +1434,52 @@ describe('ChatAssistantApp', () => {
         ]);
     });
 
+    it('replaces the prompt field native grip with a themed drag handle that resizes the textarea', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+        const prompt = screen.getByTestId('agent-prompt-input') as HTMLTextAreaElement;
+        const grip = screen.getByTestId('agent-prompt-grip');
+
+        // The native textarea grip is gone: the field's Emotion rule carries
+        // resize:none (the same mechanism asserted for the composer input).
+        expect(window.getComputedStyle(prompt).resize).toBe('none');
+        // The themed handle renders as a keyboard-reachable separator.
+        expect(grip.getAttribute('role')).toBe('separator');
+        expect(grip.getAttribute('aria-orientation')).toBe('horizontal');
+        expect(grip.getAttribute('aria-label')).toBe('Resize the system prompt field');
+        expect(grip.getAttribute('tabindex')).toBe('0');
+
+        // jsdom reports zero geometry: stub the natural rows=10 rendered
+        // height so the drag math starts from a known value.
+        vi.spyOn(prompt, 'getBoundingClientRect').mockReturnValue({ height: 240 } as DOMRect);
+
+        // Dragging DOWN by 60px grows the field to exactly 300px.
+        fireEvent.pointerDown(grip, { clientY: 400 });
+        fireEvent.pointerMove(window, { clientY: 460 });
+        expect(prompt.style.height).toBe('300px');
+        // The same drag far past the cap clamps at AGENT_PROMPT_MAX_HEIGHT.
+        fireEvent.pointerMove(window, { clientY: 2000 });
+        expect(prompt.style.height).toBe('480px');
+        // Dragging far up clamps at AGENT_PROMPT_MIN_HEIGHT.
+        fireEvent.pointerMove(window, { clientY: 0 });
+        expect(prompt.style.height).toBe('96px');
+        // Releasing the grip ends the gesture: further moves are inert.
+        fireEvent.pointerUp(window, { clientY: 0 });
+        fireEvent.pointerMove(window, { clientY: 300 });
+        expect(prompt.style.height).toBe('96px');
+
+        // Keyboard arrows nudge by the step from the remembered height.
+        fireEvent.keyDown(grip, { key: 'ArrowDown' });
+        expect(prompt.style.height).toBe('120px');
+        fireEvent.keyDown(grip, { key: 'ArrowUp' });
+        expect(prompt.style.height).toBe('96px');
+        // Non-arrow keys leave the height untouched.
+        fireEvent.keyDown(grip, { key: 'ArrowLeft' });
+        expect(prompt.style.height).toBe('96px');
+    });
+
     it('swaps the content area between the agent editor and the chat surface', async () => {
         renderApp();
         await waitForModelSelection();
