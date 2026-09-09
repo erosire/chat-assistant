@@ -170,7 +170,10 @@
 // case the section reflowed mid-flight (see jumpTurnEdge). Sections never
 // share a chevron: each panel scrolls the page's only scrollbar relative
 // to its own block. The transient pending/streaming turns render no
-// controls panel, so they carry no chevrons.
+// controls panel, so they carry no chevrons. While the provider has not yet
+// delivered its FIRST token the in-flight assistant bubble shows a three-dot
+// typing indicator (data-testid="streaming-loading") instead of a blank box;
+// the first streamed token replaces the dots with the live text.
 // ALL control icons in this file come from the shared stroke-based SVG icon
 // family in src/icons (menu, close, copy, chevrons) — unicode text
 // glyphs were retired because their rendering depended on the system font.
@@ -838,6 +841,64 @@ const AssistantMessage = styledComponent<{ editable?: boolean }>('article', {
     lineHeight: 1.5,
     // Same click-to-edit cursor rule as UserMessage (see above).
     cursor: ({ editable }) => (editable ? 'text' : 'default')
+});
+
+// ── In-flight "working" indicator (three-dot typing pulse) ──
+// The transient streaming assistant bubble renders `streaming()` text; before
+// the provider delivers its FIRST token that text is '' and the bubble was a
+// featureless blank box. These three styled components compose the indicator
+// that fills that blank phase (rendered INSTEAD of the empty text, not beside
+// it — see the render site at the hasPendingTurn AssistantTurn below):
+//
+// - StreamingLoading hosts the three dots on the SAME assistant bubble surface
+//   (COLORS.assistant, same padding/radius/line box as AssistantMessage) so
+//   the turn's geometry does not jump when the first token replaces it.
+// - StreamingDot is one dot. Its animation is injected through Emotion's
+//   css prop-mixin form (a function value returning the object WITH the
+//   @keyframes + animation declarations) — styledComponent's static values
+//   pass through Emotion's serialization untouched, so keyframes declared in
+//   a static value reach the sheet verbatim. The per-dot stagger comes from
+//   the `delay` prop: it feeds animationDelay, which MUST stay a STRING
+//   ('0.15s') — a bare number would pass through styleStructure's number→rem
+//   conversion ((n*8)/16) and serialize as the invalid `animation-delay:...rem`
+//   (the same trap the Sidebar's static zIndex and TurnLabel's opacity
+//   document).
+// - The pulse itself (streamingDotPulse) only modulates opacity, so it is
+//   safe under prefers-reduced-motion: reduced users get static dimmed dots
+//   instead of an animation (accessibility guard, standard practice).
+const streamingDotPulse = {
+    '@keyframes streaming-dot-pulse': {
+        '0%, 80%, 100%': { opacity: '0.25' },
+        '40%': { opacity: '1' }
+    }
+};
+
+const StreamingDot = styledComponent<{ delay: string }>('span', {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    backgroundColor: COLORS.muted,
+    display: 'inline-block',
+    animation: 'streaming-dot-pulse 1.2s infinite ease-in-out',
+    animationDelay: ({ delay }) => delay,
+    ...streamingDotPulse
+}) as unknown as React.FC<React.HTMLAttributes<HTMLSpanElement> & { delay: string }>;
+
+const StreamingLoading = styledComponent('div', {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '12px 16px',
+    borderRadius: '16px 16px 16px 4px',
+    backgroundColor: COLORS.assistant,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+    // aria-hidden dots: the dots are decorative; the turn's real state
+    // ("assistant is preparing a reply") is already announced by the
+    // attribution label row above (the streaming-message-model label renders
+    // the model name). role="status" is set at the render site (it is an HTML
+    // attribute, not CSS — styledComponent's input map only accepts CSS
+    // property names).
 });
 
 // Row under a turn's bubble that holds ONLY the copy + edit action pair (the
@@ -3855,7 +3916,19 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                                 <TurnLabelText data-testid="streaming-message-model">{modelDisplayName(streamingModel)}</TurnLabelText>
                                             </TurnHeaderLead>
                                         </TurnHeaderRow>
-                                        <AssistantMessage data-testid="streaming-message">{streaming()}</AssistantMessage>
+                                        {/* LOADING STATE: before the provider delivers its first token streaming() is ''
+                                            and the bubble rendered as a featureless blank box (the reported issue). The
+                                            three-dot pulse fills that phase; the FIRST token swaps it for the live text
+                                            bubble, so the two states never render together. */}
+                                        {streaming() === '' ? (
+                                            <StreamingLoading data-testid="streaming-loading" role="status">
+                                                <StreamingDot delay="0s" />
+                                                <StreamingDot delay="0.15s" />
+                                                <StreamingDot delay="0.3s" />
+                                            </StreamingLoading>
+                                        ) : (
+                                            <AssistantMessage data-testid="streaming-message">{streaming()}</AssistantMessage>
+                                        )}
                                     </AssistantTurn>
                                 )}
                             </>

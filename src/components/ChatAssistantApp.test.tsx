@@ -883,10 +883,30 @@ describe('ChatAssistantApp', () => {
         // (stripped label of the currently selected model, in the top-left row
         // above the streaming bubble so the bubble's textContent stays exact).
         expect(screen.getByTestId('streaming-message-model').textContent).toBe('test-model');
+        // LOADING STATE: before the first token arrives the assistant side
+        // shows the three-dot typing indicator (the reported "blank box").
+        // Exactly three dots render, the live text bubble is absent, and the
+        // dots stagger through the three documented delays.
+        expect(screen.queryByTestId('streaming-message')).toBeNull();
+        const loading = screen.getByTestId('streaming-loading');
+        expect(loading.querySelectorAll('span')).toHaveLength(3);
+        // The dots style through Emotion classes (styledComponent), so the
+        // stagger lives in the sheet, not in inline styles. Each dot's class
+        // carries its own animation-delay: the three documented stagger steps.
+        const css = Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        expect(css).toContain('animation-delay:0s');
+        expect(css).toContain('animation-delay:0.15s');
+        expect(css).toContain('animation-delay:0.3s');
+        expect(css).toContain('@keyframes streaming-dot-pulse');
 
-        // First token renders live; storage stays untouched mid-stream.
+        // First token renders live; storage stays untouched mid-stream. The
+        // first token ALSO swaps the loading indicator out — the two states
+        // never render together.
         await act(async () => stream.push(completionFrames[0]));
         await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello'));
+        expect(screen.queryByTestId('streaming-loading')).toBeNull();
         expect((fetch as any).mock.calls).toHaveLength(3);
 
         await act(async () => stream.push(completionFrames[1]));
