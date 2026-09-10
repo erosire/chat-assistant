@@ -121,9 +121,12 @@
 // message and Shift+Enter inserts a newline; on MOBILE (below md) Enter always
 // inserts a newline so the on-screen keyboard's return key only grows the
 // draft — submission stays on the send button. The composer is a slim modern
-// COLUMN: the model selection is a quiet clickable TEXT line ABOVE the input
-// (the stripped model name; the native dropdown select overlays it invisibly
-// so clicking the text opens the real picker), and the send button is a
+// COLUMN: the picker line ABOVE the input is a ROW — [Agents][Model] — the
+// AGENT selection sits LEFT of the model selection (both are quiet clickable
+// TEXT lines with the native dropdown select overlaid invisibly; the agent
+// dropdown lists the persisted client-side agent registry from src/agents
+// with "None" ('' value) as the DEFAULT — the choice is session-level UI
+// state for now, not yet wired into the send path), and the send button is a
 // circular ">" arrow docked INSIDE the input box at its RIGHT EDGE, vertically
 // CENTERED in the box (top:50% + translateY(-50%)) at every height — one row
 // through the eight-row growth cap —
@@ -135,7 +138,7 @@
 // box to the browser's two-row textarea default) and auto-grows with newlines
 // up to eight rows; its right padding is deepened so text never slides under
 // the embedded arrow. The layout needs no narrow-screen shrink defenses:
-// the model text and the input stack vertically on every viewport. VOICE INPUT: a
+// the picker row and the input stack vertically on every viewport. VOICE INPUT: a
 // mic toggle docked at the input's LEFT edge (always visible — unlike the
 // focus-gated send arrow, because tapping the input first would just summon the
 // on-screen keyboard) fills the SAME input draft with the spoken words through
@@ -1278,15 +1281,29 @@ const MessageInput = styledComponent('textarea', {
     outline: 'none'
 }) as unknown as React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>>;
 
-// The model selection presentation: a quiet TEXT line sitting ABOVE the input
-// (the stripped model name as muted label text — no button chrome). Shrink-
-// wrapped (inline-flex) so the invisible select overlaying it covers exactly
-// the clickable text, and flush-left inside the composer's column.
+// The picker row sitting ABOVE the input: [Agents][Model] side by side — the
+// agent selection LEFT, the model selection RIGHT of it. inline-flex keeps
+// both quiet text lines shrink-wrapped; position:relative is the positioning
+// context both invisible overlay selects fill (inset:0 of the whole row —
+// each select still only covers its own text because the row is exactly as
+// wide as the two texts plus the gap). align-self:flex-start keeps the row
+// flush-left inside the composer's column.
 const ModelPicker = styledComponent('div', {
     position: 'relative',
     alignSelf: 'flex-start',
     display: 'inline-flex',
-    alignItems: 'center'
+    alignItems: 'center',
+    gap: 16
+});
+
+// The agent text itself: the SAME muted label typography as the model text
+// (reading as metadata, pointer cursor hinting the dropdown). Property ORDER
+// mirrors ModelText exactly so both texts read as one quiet line.
+const AgentText = styledComponent('span', {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer'
 });
 
 // The model text itself: muted label typography reading as metadata, with the
@@ -1390,6 +1407,22 @@ const VoiceButton = styledComponent<{ listening?: boolean }>('button', {
 // data-testid="model-select" contract used by the tests (fireEvent.change
 // selects a model by value).
 const ModelSelect = styledComponent('select', {
+    position: 'absolute',
+    inset: 0,
+    width: '100%',
+    height: '100%',
+    opacity: 0,
+    cursor: 'pointer',
+    font: 'inherit'
+}) as unknown as React.FC<React.SelectHTMLAttributes<HTMLSelectElement>>;
+
+// Native select layered invisibly over the AGENT text — the exact twin of
+// ModelSelect's overlay mechanics (position:absolute + inset:0 + opacity:0
+// inside the shared ModelPicker positioning context): every click on the
+// agent text lands on this select and opens the real agent dropdown, with
+// keyboard support preserved natively. data-testid="agent-select" is the
+// test contract (fireEvent.change selects an agent by value).
+const AgentSelect = styledComponent('select', {
     position: 'absolute',
     inset: 0,
     width: '100%',
@@ -2146,6 +2179,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // else the first sorted catalog entry; a selected chat's recorded model only
     // applies when nothing is remembered yet.
     const model = useStateHook('');
+    // The agent picked in the composer's [Agents][Model] picker row — the id
+    // of an AgentDefinition from the client-side registry (src/agents), or ''
+    // for the DEFAULT "None" (no agent applied to new chats). Session-level
+    // UI state for now: NOT persisted and NOT yet wired into the send path.
+    const agentChoice = useStateHook('');
     const message = useStateHook('');
     // Local text for the system prompt editor, shown ONLY while the selected
     // record lacks a leading system message. While EMPTY the turn's bubble
@@ -3414,6 +3452,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // label (the pre-dedupe behavior) instead of rendering undefined.
     const modelDisplayName = (id: string): string => modelLabels.get(id) ?? modelLabel(id);
 
+    // The agent picker's TEXT: the selected registry agent's name, or the
+    // literal "None" for the default '' choice (no agent applied). The
+    // registry (agents()) lives in localStorage — see src/agents.
+    const agentDisplay = (): string => agents().find((agent) => agent.id === agentChoice())?.name ?? 'None';
+
     // Render only the selected record; a new chat remains an empty composer until submitted.
     const currentMessages = selected()?.messages ?? [];
     // The in-flight pair belongs to ONE surface only: it renders while the
@@ -3957,11 +4000,30 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                         }}
                         data-testid="chat-composer"
                     >
-                        {/* The model selection as a TEXT line above the input:
-                            the stripped model name, clickable — the invisible
-                            native select overlays exactly this text and opens
-                            the real dropdown on click. Always visible. */}
+                        {/* The picker row above the input: [Agents][Model] —
+                            the agent selection LEFT, the model selection
+                            RIGHT of it. Both are quiet clickable TEXT lines
+                            whose invisible native select opens the real
+                            dropdown on click. Always visible. */}
                         <ModelPicker data-testid="model-picker">
+                            <AgentText data-testid="agent-label">
+                                {agentDisplay()}
+                            </AgentText>
+                            <AgentSelect
+                                value={agentChoice()}
+                                onChange={(event) => agentChoice(event.target.value)}
+                                aria-label="Select agent"
+                                data-testid="agent-select"
+                            >
+                                {/* The DEFAULT "None" entry ('' value): no
+                                    agent applies. The remaining options list
+                                    the persisted client-side agent registry
+                                    (src/agents) by name. */}
+                                <option value="">None</option>
+                                {agents().map((agent) => (
+                                    <option key={agent.id} value={agent.id}>{agent.name}</option>
+                                ))}
+                            </AgentSelect>
                             <ModelText data-testid="model-label">
                                 {chosenModel ? modelDisplayName(chosenModel) : catalog.length === 0 ? 'No models available' : 'Select model'}
                             </ModelText>

@@ -53,9 +53,12 @@
 // reply lands. Composer keyboard rules: Enter submits on desktop (md+),
 // Shift+Enter inserts a newline; on mobile (below md) Enter only inserts a
 // newline. The composer input starts at EXACTLY one row (rows=1, border-box
-// height math incl. the 2px borders); the composer is a COLUMN: the model
-// selection is a clickable TEXT line ABOVE the full-width input (always
-// visible, the native dropdown select overlaying it invisibly), and the send
+// height math incl. the 2px borders); the composer is a COLUMN: the picker
+// row ABOVE the full-width input is [Agents][Model] — the agent selection
+// LEFT (a clickable TEXT line with the native dropdown select overlaid
+// invisibly; "None" is the default and the options list the localStorage
+// agent registry from src/agents), the model selection RIGHT of it (same
+// quiet text + overlay select mechanics) — both always visible, and the send
 // button is a circular ">" arrow EMBEDDED in the input at its right edge,
 // vertically centered in the box — rendered ONLY while the composer has focus
 // (focus-within, including the arrow and the model select). The
@@ -82,6 +85,9 @@
 // stack full-width on mobile and sit in a right-aligned row on desktop.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// objectEach (@presource/core) iterates the twin overlay-select CSS rules
+// found in the Emotion sheet during the composer-styling assertions.
+import { objectEach } from '@presource/core';
 import type { ChatMessage, ConversationRecord } from '../api';
 import { ChatAssistantApp, controlsShouldFloat, uniqueModelLabels } from './ChatAssistantApp';
 
@@ -360,10 +366,11 @@ describe('ChatAssistantApp', () => {
         // The mobile sidebar drawer starts closed; the toggle lives in the header.
         expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('false');
         expect(screen.getByTestId('chat-sidebar').getAttribute('data-open')).toBe('false');
-        // The send arrow stays HIDDEN until the composer has focus; the model
-        // selection (plain text above the input) is always visible.
+        // The send arrow stays HIDDEN until the composer has focus; the picker
+        // row (agents + model, plain text above the input) is always visible.
         expect(screen.queryByTestId('send-chat-button')).toBeNull();
         expect(screen.getByTestId('model-picker')).toBeDefined();
+        expect(screen.getByTestId('agent-select')).toBeDefined();
         expect(screen.getByTestId('model-select')).toBeDefined();
         // A fresh conversation has not received provider usage yet, so the
         // top-right composer indicator is explicit rather than blank.
@@ -547,13 +554,27 @@ describe('ChatAssistantApp', () => {
         renderApp();
         await waitForModelSelection();
 
+        // The picker row above the input is [Agents][Model]: the agent text
+        // sits LEFT of the model text, both with their invisible overlay
+        // selects. With an empty registry the agent text reads the DEFAULT
+        // "None" and its dropdown offers exactly that one entry.
+        const picker = screen.getByTestId('model-picker');
+        expect(picker.firstElementChild).toBe(screen.getByTestId('agent-label'));
+        expect(screen.getByTestId('agent-label').textContent).toBe('None');
+        expect(picker.contains(screen.getByTestId('agent-label'))).toBe(true);
+        expect(picker.querySelector('[data-testid="agent-select"]')).not.toBeNull();
+        const agentSelect = screen.getByTestId('agent-select') as HTMLSelectElement;
+        expect(Array.from(agentSelect.options).map((option) => ({ value: option.value, label: option.textContent }))).toEqual([
+            { value: '', label: 'None' }
+        ]);
+        expect(agentSelect.value).toBe('');
+
         // The model selection is a plain TEXT line above the input labeled
         // with the stripped model name; the invisible dropdown select overlays it.
-        const picker = screen.getByTestId('model-picker');
         expect(screen.getByTestId('model-label').textContent).toBe('test-model');
         expect(picker.contains(screen.getByTestId('model-label'))).toBe(true);
         expect(picker.querySelector('[data-testid="model-select"]')).not.toBeNull();
-        // The picker's position context is what the overlay select fills.
+        // The picker's position context is what both overlay selects fill.
         expect(window.getComputedStyle(picker).position).toBe('relative');
 
         // Options are sorted by stripped model name, NOT by organisation prefix:
@@ -637,6 +658,43 @@ describe('ChatAssistantApp', () => {
         // DEFAULT model; the model text is always rendered, no focus needed).
         await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(ALT_MODEL));
         expect(screen.getByTestId('model-label').textContent).toBe('zeta-model');
+    });
+
+    it('lists persisted agents in the composer agent picker with None as the default', async () => {
+        // Seed the client-side registry (localStorage — see src/agents) with two
+        // agents; the composer's [Agents][Model] picker row must list them by
+        // name AFTER the default "None" entry.
+        window.localStorage.setItem(AGENT_STORAGE_KEY, JSON.stringify([
+            { id: 'agent-1', name: 'Researcher', systemPrompt: 'Be careful.', tools: [] },
+            { id: 'agent-2', name: 'Coder', systemPrompt: '', tools: ['web-search'] }
+        ]));
+        renderApp();
+        await waitForModelSelection();
+
+        // The default text is "None" (the '' value choice — no agent applied).
+        expect(screen.getByTestId('agent-label').textContent).toBe('None');
+        const agentSelect = screen.getByTestId('agent-select') as HTMLSelectElement;
+        expect(agentSelect.value).toBe('');
+        expect(Array.from(agentSelect.options).map((option) => ({ value: option.value, label: option.textContent }))).toEqual([
+            { value: '', label: 'None' },
+            { value: 'agent-1', label: 'Researcher' },
+            { value: 'agent-2', label: 'Coder' }
+        ]);
+
+        // Picking an agent updates the text to its registry name.
+        fireEvent.change(agentSelect, { target: { value: 'agent-1' } });
+        expect(screen.getByTestId('agent-label').textContent).toBe('Researcher');
+        expect(agentSelect.value).toBe('agent-1');
+
+        // Back to "None" ('' value) restores the default label.
+        fireEvent.change(agentSelect, { target: { value: '' } });
+        expect(screen.getByTestId('agent-label').textContent).toBe('None');
+        expect(agentSelect.value).toBe('');
+        // The agent choice is session-level UI state: nothing persisted.
+        expect(window.localStorage.getItem(AGENT_STORAGE_KEY)).toBe(JSON.stringify([
+            { id: 'agent-1', name: 'Researcher', systemPrompt: 'Be careful.', tools: [] },
+            { id: 'agent-2', name: 'Coder', systemPrompt: '', tools: ['web-search'] }
+        ]));
     });
 
     it('grows the message input from its content and keeps mouse resizing disabled', async () => {
@@ -728,14 +786,23 @@ describe('ChatAssistantApp', () => {
         expect(micRule).toContain('width:32px');
         expect(micRule).toContain('border-radius:16px');
 
-        // The model selection is plain muted TEXT (no button chrome): the
-        // exact declaration sequence identifies its rule.
+        // The agent + model selections are plain muted TEXT (no button chrome):
+        // AgentText and ModelText declare IDENTICAL styles, so Emotion
+        // dedupes them into ONE shared class carried by both elements —
+        // the exact declaration sequence identifies that rule.
         expect(css).toMatch(/\.css-[^{]+\{color:#9ca8b8;font-size:12px;font-weight:700;cursor:pointer;\}/);
-        // ...and the invisible overlay select fills the picker exactly.
-        const selectRule = /\.css-[^{]+\{[^}]*opacity:0;[^}]*\}/.exec(css)?.[0];
-        expect(selectRule).toBeDefined();
-        expect(selectRule).toContain('position:absolute');
-        expect(selectRule).toContain('inset:0');
+        expect(screen.getByTestId('agent-label').className).toBe(screen.getByTestId('model-label').className);
+        // ...and the invisible overlay selects fill the picker exactly. Both
+        // selects declare identical styles → ONE shared Emotion rule too.
+        // (objectEach hands the callback a rich {value,...} context object —
+        // the rule string arrives as `value`, not as the first positional arg.)
+        const selectRules = css.match(/\.css-[^{]+\{[^}]*opacity:0;[^}]*\}/g) ?? [];
+        expect(selectRules.length).toBe(1);
+        objectEach(selectRules, ({ value }) => {
+            expect(value).toContain('position:absolute');
+            expect(value).toContain('inset:0');
+        });
+        expect(screen.getByTestId('agent-select').className).toBe(screen.getByTestId('model-select').className);
     });
 
     it('keeps the send arrow hidden until the composer has focus, then shows it inside the input at the right edge, vertically centered', async () => {
@@ -743,9 +810,10 @@ describe('ChatAssistantApp', () => {
         // Catalog + history resolve regardless of focus (the mount effects).
         await waitFor(() => expect((fetch as any).mock.calls).toHaveLength(2));
 
-        // The model selection text above the input is ALWAYS there (with its
-        // overlay select); the send arrow is NOT.
+        // The picker row (agents + model text) above the input is ALWAYS
+        // there (with both overlay selects); the send arrow is NOT.
         expect(screen.getByTestId('model-picker')).toBeDefined();
+        expect(screen.getByTestId('agent-select')).toBeDefined();
         expect(screen.getByTestId('model-select')).toBeDefined();
         expect(screen.queryByTestId('send-chat-button')).toBeNull();
 
