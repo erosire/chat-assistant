@@ -597,7 +597,7 @@ describe('ChatAssistantApp', () => {
 
     it('widens colliding stripped model names to the full provider id in the dropdown', async () => {
         // The private registry serves ONE base model through SEVERAL providers
-        // (modal + telnyx + makora all offer "glm-5.3-flash") — the exact shape
+        // (modal + vultr + makora all offer "glm-5.3-flash") — the exact shape
         // behind the reported "glm-5.3-flash ×3" duplicate dropdown. Bare label
         // stripping collapsed all three into identical entries; the dedupe rule
         // (uniqueModelLabels) must show "base (provider)" for each colliding
@@ -606,7 +606,7 @@ describe('ChatAssistantApp', () => {
             object: 'list',
             data: [
                 { id: 'modal/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
-                { id: 'telnyx/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
+                { id: 'vultr/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
                 { id: 'makora/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
                 { id: 'lightning/gpt-5.6-luna', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 }
             ]
@@ -633,7 +633,7 @@ describe('ChatAssistantApp', () => {
         const select = screen.getByTestId('model-select') as HTMLSelectElement;
         expect(Array.from(select.options).map((option) => ({ value: option.value, label: option.textContent }))).toEqual([
             { value: 'modal/glm-5.3-flash', label: 'glm-5.3-flash (modal)' },
-            { value: 'telnyx/glm-5.3-flash', label: 'glm-5.3-flash (telnyx)' },
+            { value: 'vultr/glm-5.3-flash', label: 'glm-5.3-flash (vultr)' },
             { value: 'makora/glm-5.3-flash', label: 'glm-5.3-flash (makora)' },
             { value: 'lightning/gpt-5.6-luna', label: 'gpt-5.6-luna' }
         ]);
@@ -2351,37 +2351,37 @@ describe('ChatAssistantApp', () => {
             'makora/glm-5.3',            // ┌ four-way stripped collision
             'makora/deepseek-v4-flash',  // │ collides with nvidia below
             'modal/glm-5.3-flash',       // │ ┐
-            'telnyx/glm-5.3-flash',      // │ ├ three-way stripped collision
+            'vultr/glm-5.3-flash',       // │ ├ three-way stripped collision
             'makora/glm-5.3-flash',      // │ ┘
             'modal/kimi-k3',             // │ collides with nvidia below
             'local/qwen3.8-27b',         // │ collides with daytona below
             'lightning/gpt-5.6-luna',    // │ unique stripped
             'lightning/gpt-5.6-sol',     // │ unique stripped
             'nvidia/glm-5.3',            // │ four-way stripped collision
-            'telnyx/glm-5.3',            // │ (makora + nvidia + telnyx + token-router)
+            'merge/glm-5.3',             // │ (makora + nvidia + merge + token-router)
             'token-router/glm-5.3',      // ┘
             'nvidia/deepseek-v4-flash',
             'nvidia/kimi-k3',
             'daytona/qwen3.8-27b',
-            'digital-ocean/deepseek-r1'  // unique stripped
+            'merge/kimi-k2-6'            // unique stripped
         ];
         expect(uniqueModelLabels(ids)).toEqual(new Map([
             ['makora/glm-5.3', 'glm-5.3 (makora)'],
             ['makora/deepseek-v4-flash', 'deepseek-v4-flash (makora)'],
             ['modal/glm-5.3-flash', 'glm-5.3-flash (modal)'],
-            ['telnyx/glm-5.3-flash', 'glm-5.3-flash (telnyx)'],
+            ['vultr/glm-5.3-flash', 'glm-5.3-flash (vultr)'],
             ['makora/glm-5.3-flash', 'glm-5.3-flash (makora)'],
             ['modal/kimi-k3', 'kimi-k3 (modal)'],
             ['local/qwen3.8-27b', 'qwen3.8-27b (local)'],
             ['lightning/gpt-5.6-luna', 'gpt-5.6-luna'],
             ['lightning/gpt-5.6-sol', 'gpt-5.6-sol'],
             ['nvidia/glm-5.3', 'glm-5.3 (nvidia)'],
-            ['telnyx/glm-5.3', 'glm-5.3 (telnyx)'],
+            ['merge/glm-5.3', 'glm-5.3 (merge)'],
             ['token-router/glm-5.3', 'glm-5.3 (token-router)'],
             ['nvidia/deepseek-v4-flash', 'deepseek-v4-flash (nvidia)'],
             ['nvidia/kimi-k3', 'kimi-k3 (nvidia)'],
             ['daytona/qwen3.8-27b', 'qwen3.8-27b (daytona)'],
-            ['digital-ocean/deepseek-r1', 'deepseek-r1']
+            ['merge/kimi-k2-6', 'kimi-k2-6']
         ]));
 
         // Prefixless ids (no "/" at all) pass through unchanged (there is no
