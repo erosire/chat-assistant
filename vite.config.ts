@@ -5,9 +5,9 @@ import react from '@vitejs/plugin-react';
 
 // API URL strategy: the UI's defaults are ABSOLUTE. DEFAULT_CHAT_ASSISTANT_URL
 // (src/api/chat-assistant.ts) pins the storage origin
-// http://192.168.8.128:5000 (DATABASE port, via DEFAULT_SERVER_URL in
+// http://192.168.50.109:5000 (DATABASE port, via DEFAULT_SERVER_URL in
 // src/api/server-url.ts), and DEFAULT_PROVIDER_URL (src/api/provider.ts) pins
-// the provider origin http://192.168.8.128:5500 (PROVIDER port, via
+// the provider origin http://192.168.50.109:5500 (PROVIDER port, via
 // INFERENCE_PROVIDER_URL in src/api/config.ts) — the runtime /providers/private
 // routes bind LOCAL_AREA_NETWORK_PROVIDER_PORT, so the browser always talks
 // straight to the LAN backends regardless of where the static build is hosted.

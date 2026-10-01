@@ -75,7 +75,7 @@ export const speechRecognitionSupported = (): boolean => resolveRecognitionConst
 // the recognition engine capture audio) in secure contexts: https, or
 // loopback/localhost. A page served over plain HTTP from ANY other origin —
 // most importantly a LAN/private IP viewed from a phone, e.g.
-// `http://192.168.8.128:5173` — is NON-secure (window.isSecureContext === false).
+// `http://192.168.50.109:5173` — is NON-secure (window.isSecureContext === false).
 //
 // THIS is the "detects nothing on mobile but works on the desktop" trap:
 // - `speechRecognitionSupported()` still returns TRUE there (real Chrome/Edge
@@ -117,7 +117,7 @@ export const speechErrorLabel = (code: string): string =>
 // three situations, in the order checked here:
 //
 // 1. INSECURE CONTEXT — the page is served over plain http on a non-localhost
-//    origin (typical for LAN dev/static deployments, e.g. http://192.168.8.x:5000).
+//    origin (typical for LAN dev/static deployments, e.g. http://192.168.50.x:5000).
 //    Browsers refuse microphone access SILENTLY here: window.isSecureContext
 //    is false (it is only true for https or localhost) and the denial arrives
 //    as 'not-allowed' with no dialog. Only serving over HTTPS (or localhost)

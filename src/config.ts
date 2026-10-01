@@ -4,7 +4,7 @@
 // the constant names are unchanged so imports are a drop-in swap.
 
 // Standard local area network host name (config/environment/src/host.ts).
-export const LOCAL_AREA_NETWORK_HOST_NAME = '192.168.8.128';
+export const LOCAL_AREA_NETWORK_HOST_NAME = '192.168.50.109';
 
 // List of ports available (config/environment/src/port.ts).
 export const LOCAL_AREA_NETWORK_DATABASE_PORT = 5000;
