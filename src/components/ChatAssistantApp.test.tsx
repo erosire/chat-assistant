@@ -591,7 +591,7 @@ describe('ChatAssistantApp', () => {
 
         // The send button carries no model name anymore: it is the right
         // chevron (the authored ">" identity drawn as an SVG icon).
-        expect(screen.getByTestId('send-chat-button').querySelector('svg[data-icon="chevron-right"]')).not.toBeNull();
+        expect(screen.getByTestId('send-chat-button').querySelector('svg[data-icon="chevronRight"]')).not.toBeNull();
         expect(screen.getByTestId('send-chat-button').textContent).toBe('');
     });
 
@@ -3379,11 +3379,11 @@ describe('ChatAssistantApp', () => {
         // The pair is the panel's FIRST child (left edge), each button
         // hosting the matching stroke chevron with its own accessible label.
         expect(strip1.firstElementChild).toBe(top1.parentElement);
-        expect(top1.querySelector('svg[data-icon="chevron-up"]')).not.toBeNull();
-        expect(bottom1.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
+        expect(top1.querySelector('svg[data-icon="chevronUp"]')).not.toBeNull();
+        expect(bottom1.querySelector('svg[data-icon="chevronDown"]')).not.toBeNull();
         expect(top1.getAttribute('aria-label')).toBe('Scroll to section top');
         expect(bottom1.getAttribute('aria-label')).toBe('Scroll to section bottom');
-        expect(screen.getByTestId('system-prompt-jump-top').querySelector('svg[data-icon="chevron-up"]')).not.toBeNull();
+        expect(screen.getByTestId('system-prompt-jump-top').querySelector('svg[data-icon="chevronUp"]')).not.toBeNull();
         expect(screen.getByTestId('system-prompt-jump-bottom').parentElement?.parentElement).toBe(screen.getByTestId('system-prompt-controls'));
         expect(screen.queryByTestId('turn-jump-top-0')).toBeNull();
         fireEvent.click(screen.getByTestId('collapse-message-0'));
