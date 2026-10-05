@@ -29,7 +29,7 @@
 //   a browser/profile with mixed-content blocking relaxed, or an HTTPS-
 //   terminated reverse proxy in front of port 5000.
 // Embedders that need a different backend pass the baseUrl/providerUrl props on
-// ChatAssistantApp (components/ChatAssistantApp.tsx:1577-1580) instead of
+// ChatAssistantApp (components/ChatAssistantApp.tsx:1482-1483) instead of
 // editing this constant.
 //
 // The host/port themselves live in ./config.ts (DATABASE_API_HOST/PORT); this

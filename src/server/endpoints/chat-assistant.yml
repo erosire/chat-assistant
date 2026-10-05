@@ -88,7 +88,7 @@ paths:
     put:
       operationId: replaceConversationMessages
       summary: Replace the complete message history of a conversation
-      description: Persists the supplied (edited) message list verbatim, recomputing messageCount and updatedAt, re-deriving the title from the new first user turn, and dropping stale per-turn usage counters. Returned record is the full updated conversation so callers can re-sync without a follow-up GET. Backs the edit-history flow; the replaced history is exactly what the next provider turn receives.
+      description: Persists the supplied (edited) message list verbatim, recomputing messageCount and updatedAt, re-deriving the title from the new first user turn (unless an explicit title is supplied), and preserving the lifetime usage aggregate (an optional request usage is accumulated into it). Returned record is the full updated conversation so callers can re-sync without a follow-up GET. Backs the edit-history flow; the replaced history is exactly what the next provider turn receives.
       requestBody:
         required: true
         content:
@@ -493,7 +493,7 @@ components:
         code:
           type: string
           description: JavaScript/TypeScript implementation of a coded tool.
-      description: Tool definition fields shared by creation and replacement; replacement retains omitted fields.
+      description: Tool definition fields shared by creation and replacement; replacement retains omitted fields, except that an explicit native:true drops the stored coded implementation.
     ToolRecord:
       type: object
       required: [toolId, name, native, createdAt, updatedAt]

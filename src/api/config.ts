@@ -17,7 +17,7 @@
 // - Origin-relative API paths 404 on the static host, so the assembled URLs in
 //   ./server-url.ts and ./provider.ts are built from the absolute origin below.
 // - Embedders that need a different backend pass `baseUrl`/`providerUrl` props
-//   on `ChatAssistantApp` (components/ChatAssistantApp.tsx:1638-1639) rather
+//   on `ChatAssistantApp` (components/ChatAssistantApp.tsx:1482-1483) rather
 //   than editing these constants.
 //
 // CROSS-ORIGIN REQUIREMENTS (server side, not fixable from the UI):
@@ -47,7 +47,7 @@ export const DATABASE_API_PORT = LOCAL_AREA_NETWORK_DATABASE_PORT;
 // runtime/endpoint/provider/private/models/service-route.ts:36,
 // .../chat-completion/service-route.ts:7, .../responses/service-route.ts:9,
 // .../stats/service-route.ts:22) and the provider clients' Standard URLs agree
-// (runtime/secret/private/telnyx.ts:11 pins :5500/providers/private/v1).
+// (runtime/secret/private/telnyx.ts:23 pins :5500/providers/private/v1).
 // Pinning the UI to the DATABASE port here left the model dropdown fetching
 // http://<host>:5000/providers/private/v1/models — nothing listens there, the
 // mount effect's catalog GET failed, and the picker degraded to
@@ -58,11 +58,13 @@ export const INFERENCE_PROVIDER_PORT = LOCAL_AREA_NETWORK_PROVIDER_PORT;
 // Assembled absolute origins. `server-url.ts` re-exports `DEFAULT_SERVER_URL`
 // for backwards compatibility with existing imports; that constant is now built
 // from the host+port here so the network location has exactly one definition.
-// HTTPS is REQUIRED for the LAN origins: the underload service enforces TLS
-// for non-loopback peers (packages/underload/service/src/server/start.ts) — a
-// plain-http request from this browser UI never reaches the backend. It also
-// resolves the mixed-content problem documented in server-url.ts: an
-// HTTPS-hosted page (GitHub Pages) can only fetch() HTTPS origins.
+// HTTPS is NOT enforced by the backend: the underload service serves plain
+// HTTP (packages/underload/service/src/server/start.ts binds http servers
+// only, no TLS listener), so the LAN origins below stay plain-http too. The
+// mixed-content problem documented in server-url.ts therefore remains: an
+// HTTPS-hosted page (GitHub Pages) can only fetch() HTTPS origins, so the
+// deployed UI needs relaxed browser blocking or an HTTPS-terminating
+// reverse proxy.
 export const DATABASE_API_URL = `http://${DATABASE_API_HOST}:${DATABASE_API_PORT}`;
 export const INFERENCE_PROVIDER_URL = `http://${INFERENCE_PROVIDER_HOST}:${INFERENCE_PROVIDER_PORT}`;
 

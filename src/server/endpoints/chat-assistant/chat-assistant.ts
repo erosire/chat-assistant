@@ -328,7 +328,7 @@ export const conversationPut = asHandlerMethod(async (_, parameters, rawVariable
 
     const conversation = store.upsert({
         ...existing,
-        // Title priority: explicit rename (header pen flow) > first-line
+        // Title priority: explicit rename (header inline rename flow) > first-line
         // derivation from the new history > previously recorded title.
         title: body.title?.trim() ||
             (messages.some((message) => message.role === 'user') ? titleFromMessages(messages) : existing.title),

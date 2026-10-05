@@ -11,7 +11,7 @@
 // (fetchProviderModels) and history GET (listConversations) settle. An
 // unreachable backend is also a valid rendered state — both mount effects
 // catch failures into the non-modal ErrorBanner
-// (components/ChatAssistantApp.tsx:1767-1769 and 1788-1790), never into an
+// (components/ChatAssistantApp.tsx:2383-2385 and 2404-2406), never into an
 // unhandled rejection or a blank page.
 // Wrapping follows the repo's dashboard-story idiom
 // (WebstormDashboard.stories.tsx): Meta from @storybook/react with the
@@ -24,7 +24,7 @@ import { styledComponent } from '@presource/react';
 import { App } from './App';
 
 // Viewport-sized positioning context for the app shell. The shell's Page
-// (components/ChatAssistantApp.tsx:200) locks itself to height:100% of its
+// (components/ChatAssistantApp.tsx:262) locks itself to height:100% of its
 // parent; in a regular document that parent is #root (index.html pins
 // html/body/#root to height:100%), but the Storybook canvas has no such
 // rule — this surface fills the canvas iframe instead (same CSS as the

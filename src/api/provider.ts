@@ -1,7 +1,8 @@
 // Client for the runtime provider endpoints (runtime/endpoint/provider/private).
 // The provider owns every credential server-side: clients are routed by their pinned
-// `model` (runtime/endpoint/provider/private/models/index.ts), so the browser sends
-// no API key and none is ever stored in the UI.
+// `model` id against the shared client registry (privateClients.find on client.id —
+// runtime/endpoint/provider/private/chat-completion/private-chat-completion.ts:47-51),
+// so the browser sends no API key and none is ever stored in the UI.
 import { isString } from '@presource/core';
 import type { ChatMessage, ConversationRecord } from './chat-assistant';
 
@@ -156,7 +157,7 @@ export async function streamProviderChatCompletion(
                 const data = line.slice('data:'.length).trim();
                 if (data.length === 0 || data === '[DONE]') continue;
                 const parsed = JSON.parse(data) as ProviderStreamChunk;
-                // Server catch-all: stream aborted after it started (start.ts:234-243).
+                // Server catch-all: stream aborted after it started (start.ts:301-310).
                 if (parsed.error) {
                     const message = parsed.error.message;
                     throw new Error(isString(message) && message.length > 0 ? message : 'Provider stream terminated');

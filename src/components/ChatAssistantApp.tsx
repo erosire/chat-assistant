@@ -14,14 +14,14 @@
 // - the browser remembers the last model actually used (localStorage);
 // - with nothing remembered, a selected chat's recorded model applies;
 // - otherwise the first catalog entry sorted by MODEL NAME applies — provider /
-//   organisation prefixes are stripped from labels ("zai-org/GLM-5.2-NVFP4" shows
-//   as "GLM-5.2-NVFP4") but kept in values for provider routing. STRIPPED
+//   organisation prefixes are stripped from labels ("zai-org/GLM-5.3-NVFP4" shows
+//   as "GLM-5.3-NVFP4") but kept in values for provider routing. STRIPPED
 //   LABELS THAT COLLIDE gain a provider suffix (uniqueModelLabels): the
 //   private registry serves one base model through several providers
-//   ("modal/glm-5.3-flash" + "vultr/glm-5.3-flash" + "makora/glm-5.3-flash"),
+//   ("makora/glm-5.3-flash" + "vultr/glm-5.3-flash" + "merge/glm-5.3-flash"),
 //   and bare stripping rendered the dropdown as a list of identical
 //   "glm-5.3-flash" entries — ids sharing a stripped name display
-//   "base (provider)" (e.g. "glm-5.3-flash (modal)") so every option reads
+//   "base (provider)" (e.g. "glm-5.3-flash (vultr)") so every option reads
 //   distinctly. The same map drives the composer text, both attribution
 //   labels, and the dropdown options.
 // Per-message attribution (the assistant turn's top-left label) already marks
@@ -407,7 +407,7 @@ const SidebarHeading = styledComponent('div', {
 
 // Sidebar navigation TABS: the sidebar hosts three registries — "Chat" (the
 // conversation list, the default), "Agent" (chat presets: name + system
-// prompt + allowed tools), and "Tool" (the currently empty tool registry).
+// prompt + allowed tools), and "Tool" (the tool registry).
 // The active tab decides which list renders below the strip AND which action
 // the header's top-right button performs ("New chat" everywhere except the
 // Agent tab, where it becomes "New agent").
@@ -444,8 +444,9 @@ const SidebarTabButton = styledComponent<{ active?: boolean }>('button', {
 // The name input and system prompt textarea write straight into the agent
 // definition on every change (persisted to localStorage immediately — there
 // is no draft/commit split); the tools group renders one checkbox per
-// AVAILABLE_TOOLS entry, but the registry is EMPTY for now, so the muted
-// "No tools available yet." note renders instead. flex:1 + overflowY:auto
+// AVAILABLE_TOOLS entry (the muted "No tools available yet." note is the
+// empty-registry fallback and only renders while AVAILABLE_TOOLS is empty).
+// flex:1 + overflowY:auto
 // lets long prompts scroll inside the workspace; the maxWidth keeps input
 // lines readable on wide screens (left-aligned, matching the chat column).
 const AgentWorkspace = styledComponent('section', {
@@ -982,8 +983,8 @@ const TurnJumpPair = styledComponent('div', {
 // alone engages whenever the strip's NATURAL slot sits below the scrollport's
 // bottom edge, even while the whole turn is still below the fold; the
 // containing-block clamp then drags the strip to the turn's TOP edge, where
-// it paints over the turn's own header delete "x" (real-browser geometry
-// measured via sticky-probe.mjs). The component measures live rects and only
+// it paints over the turn's own header delete "x" (geometry measured in real
+// Chrome). The component measures live rects and only
 // renders `floating` (sticky) while the pinned position would clear the
 // turn's header row — otherwise the strip renders STATIC, locked to its
 // natural slot under the bubble. The two positions serialize as separate
@@ -2119,7 +2120,7 @@ const JUMP_SCROLL_DURATION = 200;
 //   Without this second clause raw CSS sticky also engages while the whole
 //   turn is BELOW the fold, and the containing-block clamp drags the strip
 //   onto the turn's TOP edge, covering the "x" (geometry verified in real
-//   Chrome via sticky-probe.mjs: turn [520,1324], x [520,542], raw strip
+//   Chrome: turn [520,1324], x [520,542], raw strip
 //   clamped to [520,550] — full overlap). With the gate the strip holds its
 //   natural (invisible, below-fold) slot until scrolling reveals enough turn
 //   that the float clears the header.
@@ -2279,7 +2280,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const sidebarOpen = useStateHook(false);
     // Sidebar TAB state: which registry the sidebar column shows — 'chat'
     // (the conversation list, the default), 'agent' (chat presets), or 'tool'
-    // (the empty tool registry). The header's top-right action follows it:
+    // (the tool registry). The header's top-right action follows it:
     // "New chat" on every tab except 'agent', where it becomes "New agent".
     const sidebarTab = useStateHook<'chat' | 'agent' | 'tool'>('chat');
     // Client-side agent registry (src/agents): loaded once from localStorage
@@ -2292,10 +2293,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // ACTIVE agent whose system prompt seeds new chats (startNewChat prefills
     // the draft prompt from it).
     const selectedAgentId = useStateHook<string | null>(null);
-    // The tool selected in the Tool tab — its configuration panel would open
-    // in the content area the same way. The registry is empty for now, so the
-    // selection can never resolve to a tool yet; the state exists so the
-    // content-area swap is already wired for the first tool.
+    // The tool selected in the Tool tab — its configuration panel opens in
+    // the content area the same way (selectedTool below resolves against
+    // AVAILABLE_TOOLS, so both the native and coded entries are selectable).
     const selectedToolId = useStateHook<string | null>(null);
 
     // Content-surface derivation (needed BEFORE the effects below: the scroll-
@@ -3736,9 +3736,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             />
                             {/* Allowed tools: one checkbox per registry entry
                                 (toggleAgentTool flips the id in the agent's
-                                allowed set). The registry is empty for now, so
-                                the muted note renders instead — the checkbox
-                                branch lights up once the first tool lands. */}
+                                allowed set); the muted note is the
+                                empty-registry fallback. */}
                             <SidebarHeading>
                                 <span>Allowed tools</span>
                             </SidebarHeading>

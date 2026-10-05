@@ -9,8 +9,8 @@
 // Conversation management covered here: the sidebar is a TABBED registry
 // column ("Chat" = the conversation list, default; "Agent" = chat presets —
 // selecting an agent opens its editor for name + system prompt + allowed
-// tools, and the selected agent's prompt seeds new chats; "Tool" = the
-// intentionally empty tool registry). The header's top-right action follows
+// tools, and the selected agent's prompt seeds new chats; "Tool" = the tool
+// registry, native entries included). The header's top-right action follows
 // the tab: "New chat" everywhere except the Agent tab, where it becomes
 // "New agent". EVERY sidebar chat entry carries an "x" delete control at its
 // top-right
@@ -81,8 +81,7 @@
 // picks, and surface resets still pin unconditionally, and the token follow
 // resumes once the user returns to the bottom.
 // All control icons render as stroke SVGs from src/icons — the old unicode
-// text glyphs are retired. The rename dialog's actions
-// stack full-width on mobile and sit in a right-aligned row on desktop.
+// text glyphs are retired.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // objectEach (@presource/core) iterates the twin overlay-select CSS rules
