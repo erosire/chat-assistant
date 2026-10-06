@@ -1,12 +1,26 @@
 # GitHub Pages deployment for the chat-assistant distribution — the CI
 # equivalent of the local `deploy` script (`vite build && gh-pages -d dist`
 # in package.json). Every push to main rebuilds the app and publishes dist/
-# to the gh-pages branch.
+# through the official artifact-based Pages flow (configure-pages →
+# upload-pages-artifact → deploy-pages), the same flow that fixed the
+# equivalent stale-site problem in distribution/story-generator
+# (.github/workflows/deploy.yml, rewritten in commit 97f56a1) and was then
+# applied to distribution/comfy-dashboard (.github/workflows/deploy.yml).
 #
-# Pages hosting: repo Settings → Pages → Source "Deploy from a branch",
-# Branch: gh-pages / (root). The deploy step below creates/updates gh-pages.
+# This REPLACES the previous publishing mechanism, which used
+# peaceiris/actions-gh-pages@v4 to force-push dist/ onto the gh-pages branch
+# and relied on the repo's Pages setting "Deploy from a branch" to pick it
+# up. Publishing dist/ directly through actions/deploy-pages@v4 does NOT
+# depend on the gh-pages branch or on "Deploy from a branch" builds at all,
+# so that branch-publishing half is removed from the pipeline entirely.
 #
-# Dependency notes:
+# ONE-TIME REPO SETTING (required, not per-deploy — must be flipped manually
+# in the repo UI; current remote setting unknown from here):
+#   Settings → Pages → Build and deployment → Source: "GitHub Actions"
+# The old gh-pages branch becomes unused once this workflow is in place
+# (it no longer receives updates from this workflow).
+#
+# Dependency notes (unchanged from the previous workflow):
 # - Environment constants (host + ports) live in the local src/config.ts —
 #   the monorepo's @config/environment package cannot be published to npm.
 # - @underload/service is unpublished and only used by server/test code —
@@ -21,12 +35,20 @@ on:
   # Allow manual runs from the Actions tab.
   workflow_dispatch:
 
-# Pushing the gh-pages branch with the default GITHUB_TOKEN needs contents write.
+# deploy-pages@v4 needs id-token (OIDC) + pages write; checkout needs read.
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; new pushes cancel in-flight deploys
+# (same concurrency guard story-generator and comfy-dashboard use).
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -53,9 +75,24 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Publishes dist/ to the gh-pages branch — same result as the
-      # `gh-pages -d dist` step of the local deploy script.
-      - uses: peaceiris/actions-gh-pages@v4
+      # Artifact-based Pages publishing (replaces the gh-pages branch push):
+      # configure-pages reads/applies repo Pages settings, upload-pages-
+      # artifact packages dist/, deploy-pages publishes it in the deploy job.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
+          path: dist
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
