@@ -7,8 +7,12 @@
 // (single source of truth the assembled URLs in server-url/provider derive from).
 // speech = Web Speech API wrapper (feature probe, session handle, transcript
 // append + error label) for the composer's voice-to-text toggle.
+// offline = the no-app-server mode (AssistantSettings + the durable
+// browser-local conversation store that mirrors the server handler semantics
+// without any request to the storage server or the private relay).
 export * from './config';
 export * from './chat-assistant';
+export * from './offline';
 export * from './provider';
 export * from './server-url';
 export * from './speech';

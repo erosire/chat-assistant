@@ -1,6 +1,11 @@
 // Deterministic tests for the runtime provider API client (models + streamed completions).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchProviderModels, streamProviderChatCompletion } from './provider';
+import {
+    fetchProviderModels,
+    fetchProviderModelsFromUrl,
+    streamProviderChatCompletion,
+    streamProviderChatCompletionFromUrl
+} from './provider';
 
 // JSON-envelope Response substitute for the catalog and pre-stream error cases.
 const response = (status: number, body: unknown) =>
@@ -183,5 +188,66 @@ describe('provider API client', () => {
         (fetch as any).mockResolvedValueOnce(response(500, { error: 'provider registry unavailable' }));
 
         await expect(fetchProviderModels('/providers/private/v1')).rejects.toThrow('provider registry unavailable');
+    });
+
+    it.each([
+        // The offline settings UI configures INDEPENDENT full endpoint URLs
+        // (not a shared base): the exact URL (trailing slashes trimmed for
+        // stability) is what reaches fetch, with no base-URL derivation.
+        'http://offline-models.test:8080/v1/models',
+        'http://offline-models.test:8080/other/path/models/'
+    ])('fetches the catalog from the independent full model-list URL %s', async (modelListUrl) => {
+        (fetch as any).mockResolvedValueOnce(response(200, catalog));
+
+        const result = await fetchProviderModelsFromUrl(modelListUrl);
+
+        expect(result).toEqual(catalog.data);
+        const [calledUrl, init] = (fetch as any).mock.calls[0];
+        expect(calledUrl).toBe(modelListUrl.replace(/\/+$/, ''));
+        expect(init).toEqual({ method: 'GET' });
+    });
+
+    it('streams the completion from the independent full stream URL', async () => {
+        // A non-standard path proves the URL is used verbatim (no
+        // /chat/completions suffix appended, no DEFAULT_PROVIDER_URL).
+        (fetch as any).mockResolvedValueOnce(sseResponse([
+            'data: {"choices":[{"index":0,"delta":{"content":"Offline"}}]}\n\n',
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\n',
+            'data: [DONE]\n\n'
+        ]));
+
+        const result = await streamProviderChatCompletionFromUrl(
+            'http://offline-stream.test:9090/custom/completions/',
+            'qwen/makora-pro',
+            [{ role: 'user', content: 'Question' }],
+            () => undefined
+        );
+
+        expect(result).toEqual({
+            content: 'Offline',
+            usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 }
+        });
+        // The POST lands on the exact configured full URL with the same
+        // OpenAI-compatible streaming payload as the base-URL variant.
+        expect(fetch).toHaveBeenCalledWith('http://offline-stream.test:9090/custom/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: 'qwen/makora-pro',
+                stream: true,
+                stream_options: { include_usage: true },
+                messages: [{ role: 'user', content: 'Question' }]
+            })
+        });
+    });
+
+    it('surfaces pre-stream and catalog failures from the independent full URLs', async () => {
+        (fetch as any).mockResolvedValueOnce(response(404, { error: "Model 'missing' not found" }));
+        await expect(
+            streamProviderChatCompletionFromUrl('http://offline-stream.test:9090/v1/chat/completions', 'missing', [{ role: 'user', content: 'Question' }], () => undefined)
+        ).rejects.toThrow("Model 'missing' not found");
+
+        (fetch as any).mockResolvedValueOnce(response(500, { error: 'endpoint unreachable' }));
+        await expect(fetchProviderModelsFromUrl('http://offline-models.test:8080/v1/models')).rejects.toThrow('endpoint unreachable');
     });
 });

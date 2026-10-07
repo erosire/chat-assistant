@@ -188,21 +188,35 @@ import { styledComponent, useReferenceHook, useStateHook } from '@presource/reac
 // transcript lands in the same input draft the user would have typed.
 import {
     addToConversation,
+    appendToLocalConversation,
     appendTranscript,
     createConversation,
+    createLocalConversation,
     createSpeechRecognizer,
     deleteConversation,
+    deleteLocalConversation,
     fetchConversation,
     fetchProviderModels,
+    fetchProviderModelsFromUrl,
+    getLocalConversation,
     listConversations,
+    listLocalConversations,
     replaceConversationMessages,
+    replaceLocalConversationMessages,
+    saveAssistantSettings,
     speechContextSecure,
     speechDeniedDetail,
     speechRecognitionSupported,
     streamProviderChatCompletion,
+    streamProviderChatCompletionFromUrl,
+    loadAssistantSettings,
     DEFAULT_CHAT_ASSISTANT_URL,
     DEFAULT_PROVIDER_URL,
+    type AssistantMode,
+    type AssistantSettings,
     type ChatMessage,
+    type ConversationPostRequest,
+    type ConversationPutRequest,
     type ConversationRecord,
     type ConversationSummary,
     type SpeechRecognizerHandle
@@ -235,6 +249,10 @@ import {
     type AgentDefinition,
     type ToolDefinition
 } from '../agents';
+// Product title with the distribution's version (src/version.ts: injected from
+// package.json as the `__APP_VERSION__` define in vite.config.ts /
+// vitest.config.ts).
+import { PRODUCT_TITLE } from '../version';
 
 // Palette is local to this distribution so the component has no dependency on a larger theme package.
 const COLORS = {
@@ -688,6 +706,69 @@ const AgentPromptEditor: React.FC<React.TextareaHTMLAttributes<HTMLTextAreaEleme
         </AgentPromptField>
     );
 };
+
+// The SETTINGS workspace: the fourth sidebar-tab content surface (the
+// conservative-minimal settings surface — one mode selector plus the
+// offline-only endpoint configuration). Same content-area contract as
+// AgentWorkspace/ToolWorkspace: flex:1 + overflowY:auto lets a long panel
+// scroll inside the column; maxWidth keeps input lines readable.
+const SettingsWorkspace = styledComponent('section', {
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
+    maxWidth: 760,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    padding: 24,
+    paddingLeft: () => ({ xs: '12px', md: '24px' }),
+    paddingRight: () => ({ xs: '12px', md: '24px' })
+});
+
+// One label + field row of the settings panel (mirrors AgentToolOption's
+// label treatment; stacked label-over-field keeps narrow drawers readable).
+const SettingsField = styledComponent('label', {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    fontSize: 13,
+    lineHeight: 1.4
+});
+
+// Settings text/select field: a single-line input at content-area scale on
+// the panelStrong surface (the same field treatment as the agent editor's
+// name input — see AgentNameInput).
+const SettingsInput = styledComponent('input', {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '10px 12px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 8,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    font: 'inherit',
+    fontSize: 14,
+    lineHeight: 1.4,
+    outline: 'none'
+}) as unknown as React.FC<React.InputHTMLAttributes<HTMLInputElement>>;
+
+// The mode selector reuses the agent select's invisible-overlay mechanics.
+// (AgentSelect is defined lower in the file; the settings select casts the
+// same base so both pickers stay visually identical.)
+const SettingsSelect = styledComponent('select', {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '10px 12px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 8,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    font: 'inherit',
+    fontSize: 14,
+    lineHeight: 1.4,
+    outline: 'none'
+}) as unknown as React.FC<React.SelectHTMLAttributes<HTMLSelectElement>>;
 
 // One "allowed tools" checkbox row. Only rendered once AVAILABLE_TOOLS has
 // entries; the wrapping label makes the whole row clickable.
@@ -2172,6 +2253,42 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
 }) => {
     // Accessor state follows @presource/react's state-hook contract: read with (), write with (value).
     const chats = useStateHook<ConversationSummary[]>([]);
+    // Assistant settings (api/offline.ts): the mode ('online' default |
+    // 'offline') plus the offline-only configuration. Loaded FROM
+    // localStorage on mount, so a reload restores the mode, the endpoints,
+    // and (through the list effect below) the conversations. EVERY edit in
+    // the settings surface persists immediately (saveAssistantSettings) so
+    // the durable state never lags the UI.
+    const settings = useStateHook<AssistantSettings>(loadAssistantSettings());
+    // Mode projection for the render + effect dispatch below: 'offline' is
+    // the no-app-server mode (durable browser-local conversations + the
+    // user-configured OpenAI-compatible endpoints); 'online' keeps the
+    // existing server-backed behavior byte-for-byte.
+    const offline = settings().mode === 'offline';
+
+    // Conversation-storage dispatch for the ACTIVE mode: every CRUD flow in
+    // this component (list / create / get / append / replace / delete) goes
+    // through this object — online routes to the remote conversation API
+    // (the unchanged existing behavior), offline to the durable
+    // browser-local store in api/offline.ts with the server's data
+    // semantics. Both shapes are identical Promise APIs, so the flows above
+    // stay mode-agnostic and a mode switch can never mix the server's
+    // records with the local ones.
+    const storage = offline ? {
+        list: () => listLocalConversations(),
+        get: (conversationId: string) => getLocalConversation(conversationId),
+        create: (request: ConversationPostRequest) => createLocalConversation(request),
+        append: (conversationId: string, request: ConversationPostRequest) => appendToLocalConversation(conversationId, request),
+        replace: (conversationId: string, request: ConversationPutRequest) => replaceLocalConversationMessages(conversationId, request),
+        remove: (conversationId: string) => deleteLocalConversation(conversationId)
+    } : {
+        list: () => listConversations(baseUrl),
+        get: (conversationId: string) => fetchConversation(baseUrl, conversationId),
+        create: (request: ConversationPostRequest) => createConversation(baseUrl, request),
+        append: (conversationId: string, request: ConversationPostRequest) => addToConversation(baseUrl, conversationId, request),
+        replace: (conversationId: string, request: ConversationPutRequest) => replaceConversationMessages(baseUrl, conversationId, request),
+        remove: (conversationId: string) => deleteConversation(baseUrl, conversationId)
+    };
     const selected = useStateHook<ConversationRecord | null>(null);
     // Available provider model ids, loaded once from GET {provider}/models and kept
     // sorted by stripped model name (NOT by organisation prefix).
@@ -2264,12 +2381,29 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // attribution label to the SENDING model even when the user picks another
     // chat (whose applyModelMemory may change the model selection) mid-stream.
     // Cleared when the send completes or fails; the stream itself keeps running
-    // in the background and persists server-side regardless of navigation.
-    // Also doubles as the one-send-at-a-time gate: selectChat's transient
-    // loading(true→false) churn would otherwise re-open the submit guard while
-    // a stream is still in flight and let a second send interleave into the
-    // same pendingUser/streaming buffers.
-    const activeSend = useStateHook<{ conversationId: string | null; model: string } | null>(null);
+    // in the background and persists server-side (or browser-locally) regardless
+    // of navigation. Also doubles as the one-send-at-a-time gate: selectChat's
+    // transient loading(true→false) churn would otherwise re-open the submit
+    // guard while a stream is still in flight and let a second send interleave
+    // into the same pendingUser/streaming buffers. The `id` is this send's
+    // monotonically increasing sequence number — the shared-buffer release
+    // (pendingUser/streaming/loading) runs only while THIS send still owns
+    // activeSend, so a superseded completion can never clear a newer send's
+    // buffers.
+    const activeSend = useStateHook<{ id: number; conversationId: string | null; model: string } | null>(null);
+    // Monotonic epoch of the ACTIVE MODE: switchMode pushes it forward once per
+    // switch. Long-running callbacks (submit's stream, selectChat's fetch,
+    // saveSystemPromptDraft's persist) snapshot the epoch before their first
+    // await; on settle they touch surface state ONLY while the epoch still
+    // matches — a mode switch away (including away-and-back, which returns the
+    // same mode string) always breaks the match, so a detached operation can
+    // never apply to a surface it no longer owns. Storage writes themselves are
+    // NEVER gated: the stream keeps persisting into the CAPTURED mode's
+    // namespace (captured `storage` closure / captured setting), so a
+    // mid-stream switch loses no history.
+    const modeEpoch = useReferenceHook(0);
+    // Per-send counter feeding the activeSend id (see the activeSend comment).
+    const sendSequence = useReferenceHook(0);
     // The split send control renders ONLY while focus is inside the composer
     // (focus-within on the form: input, both button halves, and the model
     // select all count). Hidden otherwise, keeping the idle composer a bare
@@ -2282,7 +2416,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // (the conversation list, the default), 'agent' (chat presets), or 'tool'
     // (the tool registry). The header's top-right action follows it:
     // "New chat" on every tab except 'agent', where it becomes "New agent".
-    const sidebarTab = useStateHook<'chat' | 'agent' | 'tool'>('chat');
+    const sidebarTab = useStateHook<'chat' | 'agent' | 'tool' | 'settings'>('chat');
     // Client-side agent registry (src/agents): loaded once from localStorage
     // on mount, rewritten AND re-persisted on every create/edit through
     // persistAgents. No server resource exists for agents — definitions live
@@ -2308,8 +2442,8 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // selected agent's editor, or its empty state), the tool view (Tool tab —
     // a selected tool's panel or its empty state), or the chat surface (the
     // Chat tab's conversation column, the default).
-    const contentSurface: 'chat' | 'agent' | 'tool' =
-        sidebarTab() === 'agent' ? 'agent' : sidebarTab() === 'tool' ? 'tool' : 'chat';
+    const contentSurface: 'chat' | 'agent' | 'tool' | 'settings' =
+        sidebarTab() === 'agent' ? 'agent' : sidebarTab() === 'tool' ? 'tool' : sidebarTab() === 'settings' ? 'settings' : 'chat';
     // Boolean projection for effect deps: the chat surface (message list +
     // composer) is only MOUNTED while this is true, so listeners that attach
     // to the message-list element must re-attach when it flips back.
@@ -2359,11 +2493,52 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Load the provider model catalog once on mount. The provider needs no API key
-    // from the browser, so no credentials are handled here.
+    // Load the provider model catalog. ONLINE mode keeps the existing behavior
+    // (GET {provider}/models on the private relay — no API key from the
+    // browser). OFFLINE mode fetches the catalog from the user-configured FULL
+    // model-list endpoint URL (independent of the stream URL and of the
+    // default relay); a BLANK model endpoint issues NO request at all — the
+    // catalog stays empty, the composer's manual model fallback (Settings →
+    // manualModel) keeps the chat usable, and the default app server is never
+    // called silently. The effect re-runs when the mode or the configured
+    // endpoint changes (mode switch / settings edit); the cancelled flag
+    // keeps a stale in-flight response from one configuration from landing
+    // after the switch (no cross-mode catalog mixing).
     useEffect(() => {
         let cancelled = false;
         void (async () => {
+            // The offline branch reads the LIVE settings (trimmed URLs are the
+            // canonical persisted form).
+            const offlineEndpoint = settings().mode === 'offline' ? settings().modelEndpoint.trim() : '';
+            if (offline) {
+                if (!offlineEndpoint) {
+                    // Unconfigured catalog: NO fetch (see the block comment).
+                    // Fall back to the remembered model, else the manual
+                    // model id, so blank-endpoint offline never deadlocks.
+                    if (!model()) {
+                        const initial = readRememberedModel() || settings().manualModel.trim() || '';
+                        if (initial) model(initial);
+                    }
+                    return;
+                }
+                try {
+                    const catalog = await fetchProviderModelsFromUrl(offlineEndpoint);
+                    if (cancelled) return;
+                    const ids = catalog
+                        .map((entry) => entry.id)
+                        .sort((a, b) => modelLabel(a).localeCompare(modelLabel(b)));
+                    models(ids);
+                    if (!model()) {
+                        const initial = readRememberedModel() || ids[0] || settings().manualModel.trim() || '';
+                        if (initial) model(initial);
+                    }
+                } catch (reason) {
+                    // A failed offline catalog fetch surfaces in the banner; the
+                    // manual model fallback keeps the composer usable.
+                    if (!cancelled) error(reason instanceof Error ? reason.message : String(reason));
+                }
+                return;
+            }
             try {
                 const catalog = await fetchProviderModels(providerUrl);
                 if (cancelled) return;
@@ -2387,19 +2562,24 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         return () => {
             cancelled = true;
         };
-        // Mount-only effect: the model catalog is static for the session while the
-        // accessor functions (models/model/error) are stable state-hook handles.
+        // Mode + endpoint changes reload the catalog for the active
+        // configuration; the accessor functions are stable state-hook handles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [providerUrl]);
+    }, [providerUrl, offline, settings().modelEndpoint, settings().manualModel]);
 
-    // Load the persisted conversation list once on mount so the sidebar restores
-    // the chat history after a reload. Summaries carry no message bodies; selecting
-    // a restored chat fetches its full record through the identified GET.
+    // Load the conversation list for the ACTIVE MODE so the sidebar restores
+    // its history after a reload: ONLINE reads the server collection (empty
+    // until the first completed turn); OFFLINE reads the durable
+    // browser-local store (api/offline.ts) — the mode switch effect below
+    // re-runs this effect, so each mode's sidebar owns its own namespace and
+    // the two histories never mix. Summaries carry no message bodies;
+    // selecting a restored chat reads its full record through the identified
+    // GET / local read.
     useEffect(() => {
         let cancelled = false;
         void (async () => {
             try {
-                const result = await listConversations(baseUrl);
+                const result = offline ? await listLocalConversations() : await listConversations(baseUrl);
                 if (!cancelled) chats(result.conversations);
             } catch (reason) {
                 if (!cancelled) error(reason instanceof Error ? reason.message : String(reason));
@@ -2408,11 +2588,22 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         return () => {
             cancelled = true;
         };
-        // Mount-only effect: the history list is re-synced after each completed
-        // turn (submit updates the summaries); chats/error are stable state-hook
-        // handles.
+        // Mode changes (and mount) reload the list for that mode; the server
+        // list is also re-synced after each completed turn (submit updates the
+        // summaries); chats/error are stable state-hook handles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [baseUrl]);
+    }, [baseUrl, offline]);
+
+    // Offline manual-model fallback: while OFFLINE, no catalog entry is
+    // loaded, and nothing is selected yet, the Settings manual model id
+    // (typed after mount) becomes the selected model. A remembered model or
+    // a catalog entry always wins — this only unblocks a blank selection.
+    useEffect(() => {
+        if (!offline || model() !== '') return;
+        const fallback = readRememberedModel() || settings().manualModel.trim() || '';
+        if (fallback) model(fallback);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [offline, settings().manualModel]);
 
     // Restore the persisted agent registry once on mount (localStorage; see
     // src/agents). Mount-only: every later edit rewrites the whole list
@@ -2749,23 +2940,39 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         systemPrompt(text);
         if (!text || savingSystemPrompt() || deleting()) return;
 
+        // EPOCH GUARD: the persist belongs to the mode at COMMIT time. A
+        // mid-persist mode switch moves the surface to the other namespace —
+        // the write still lands in the captured namespace (the storage
+        // closure captured at commit), but its response applies nothing
+        // (record, sidebar summary, banner, draft restore) to the new mode,
+        // and the mode switch's flag reset owns the busy flag if this settle
+        // is stale.
+        const epochAtStart = modeEpoch();
         savingSystemPrompt(true);
         try {
             let result: ConversationRecord;
             if (record) {
                 // The draft UI only renders when the record has no system turn,
-                // so prepend the newly saved prompt without disturbing history.
-                result = (await replaceConversationMessages(baseUrl, record.conversationId, {
+                // so prepend the newly saved prompt without disturbing history
+                // (storage dispatch — the active mode's conversation namespace).
+                result = (await storage.replace(record.conversationId, {
                     messages: [{ role: 'system', content: text }, ...record.messages]
                 })).conversation;
             } else {
-                // A new-chat prompt must have a server record of its own; otherwise
-                // leaving the page before the first user send loses the edit.
+                // A new-chat prompt must have a record of its OWN in the active
+                // mode's namespace (server record online, browser-local record
+                // offline); otherwise leaving the page before the first user
+                // send loses the edit.
                 const request = model() ? { model: model(), systemPrompt: text } : { systemPrompt: text };
-                const conversationId = (await createConversation(baseUrl, request)).conversationId;
-                result = (await fetchConversation(baseUrl, conversationId)).conversation;
+                const conversationId = (await storage.create(request)).conversationId;
+                result = (await storage.get(conversationId)).conversation;
             }
 
+            // EPOCH GUARD: a mode switch during the persist detaches this
+            // write from the surface entirely — neither its record NOR its
+            // sidebar summary (now a different namespace) may apply to the
+            // new mode.
+            if (modeEpoch() !== epochAtStart) return;
             // The prompt response may arrive after New chat or another chat pick.
             // Apply it only when the original surface still owns this draft text;
             // the sidebar summary is updated regardless so the server write remains
@@ -2785,21 +2992,39 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 : [summary, ...current]);
             error('');
         } catch (reason) {
-            // Keep the typed prompt visible for retry when persistence fails, but
-            // never overwrite a different surface's state after navigation.
-            if ((selected()?.conversationId ?? null) === originalConversationId) systemPrompt(text);
-            error(reason instanceof Error ? reason.message : String(reason));
+            // A mode switch during the persist: the new mode's banner/draft
+            // must not receive the stale failure (no cross-mode crosstalk).
+            if (modeEpoch() === epochAtStart) {
+                // Keep the typed prompt visible for retry when persistence fails,
+                // but never overwrite a different surface's state after
+                // navigation.
+                if ((selected()?.conversationId ?? null) === originalConversationId) systemPrompt(text);
+                error(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            savingSystemPrompt(false);
+            // switchMode resets the flag for the new namespace; a stale settle
+            // must not clear (or re-take) it there.
+            if (modeEpoch() === epochAtStart) savingSystemPrompt(false);
         }
-    }, [baseUrl, cancelSystemPromptDraft, chats, collapsedTurns, deleting, editingSystemPrompt, error, model, savingSystemPrompt, selected, systemPrompt]);
+    }, [cancelSystemPromptDraft, chats, collapsedTurns, deleting, editingSystemPrompt, error, model, savingSystemPrompt, selected, storage, systemPrompt]);
 
     // Select a conversation and fetch its full message history; the recorded model
     // applies only when nothing is remembered (a remembered/picked model wins).
+    // EPOCH GUARD: the load belongs to the mode that started it — if a mode
+    // switch lands during the fetch, the record (the OTHER namespace) must not
+    // replace the new mode's surface and the transient loading flag must not
+    // be cleared by the stale finally.
     const selectChat = useCallback(async (conversationId: string) => {
+        const epochAtStart = modeEpoch();
         loading(true);
         try {
-            const record = (await fetchConversation(baseUrl, conversationId)).conversation;
+            // Storage dispatch: the active mode's namespace (server GET online,
+            // local read offline); a missing id surfaces the 404-equivalent
+            // message in the banner instead of loading a phantom surface.
+            const record = (await storage.get(conversationId)).conversation;
+            // A switch during the fetch: the record is the previous mode's —
+            // the new mode's list effect already loaded its own namespace.
+            if (modeEpoch() !== epochAtStart) return;
             // Explicit navigation: the bottom-follow effect consumes this
             // one-shot mark and pins the freshly opened chat to its latest
             // turn unconditionally (ambient record refreshes can't do that).
@@ -2820,11 +3045,18 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             collapsedTurns(defaultCollapsedIndices(record.messages));
             error('');
         } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
+            // A banner belonging to the previous mode: the switch already
+            // cleared the new mode's error, so a stale failure must not
+            // re-surface it.
+            if (modeEpoch() === epochAtStart) {
+                error(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            loading(false);
+            // switchMode resets loading(false) for the new namespace; a stale
+            // finally must not clear (or re-take) the NEW mode's flag.
+            if (modeEpoch() === epochAtStart) loading(false);
         }
-    }, [applyModelMemory, baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, loading, selected, selectionPin, sidebarOpen, systemPrompt]);
+    }, [applyModelMemory, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, loading, selected, selectionPin, sidebarOpen, storage, systemPrompt]);
 
     // Rewrite the agent registry AND persist it (localStorage best-effort;
     // src/agents storeAgents). Every agent mutation funnels through here so
@@ -2834,11 +3066,84 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         storeAgents(next);
     }, [agents]);
 
-    // Switch the sidebar registry tab (Chat / Agent / Tool). Switching swaps
-    // the CONTENT surface too (agent editor / tool panel vs. the chat column),
-    // so any open chat editor — bubble edit, title rename, prompt draft — is
-    // abandoned here; the keyed remounts revert their DOM text on return.
-    const selectSidebarTab = useCallback((tab: 'chat' | 'agent' | 'tool') => {
+    // Settings-surface plumbing: every edit persists IMMEDIATELY
+    // (saveAssistantSettings, api/offline.ts) and updates the state, so a
+    // reload always restores the mode + endpoints. The inputs keep the RAW
+    // (untrimmed) value in state so typing stays fluid; trimming happens on
+    // persistence and on use.
+    const applySettings = useCallback((next: AssistantSettings) => {
+        settings(saveAssistantSettings(next));
+    }, [settings]);
+
+    // Switch between the online and offline modes. The mode, the
+    // conversation namespace, and the catalog all change with it, so the
+    // surface is reset here and the mode-keyed effects (catalog + list)
+    // reload the new namespace:
+    // - `chats`/`selected` belong to one storage namespace (server records
+    //   vs. browser-local records) — a stale selection from the other mode
+    //   must not render;
+    // - the in-flight pending/streaming buffers are the SEND surface's, so
+    //   they clear too; the underlying provider stream, if any, keeps
+    //   running in its captured storage namespace (persistence is
+    //   UNABROKED — the capture-at-start closure owns the write) while its
+    //   completion path (submit) applies nothing to surface state after the
+    //   switch — the epoch gate (modeEpoch, bumped FIRST below) marks every
+    //   pre-switch operation permanently obsolete, no cross-mode response
+    //   race, no history mixing;
+    // - the new mode is immediately usable: the transient busy flags
+    //   (loading/deleting/saving*) are reset here so a detached operation's
+    //   stale finally cannot keep (or retake) them in the new namespace;
+    // - the remembered model and the composer draft are mode-agnostic and
+    //   survive the switch.
+    const switchMode = useCallback((nextMode: AssistantMode) => {
+        const current = settings();
+        if (current.mode === nextMode) return;
+        // Epoch FIRST: any operation that already snapshotted the epoch is
+        // obsolete the instant this lands, no matter how many times the
+        // user bounces between modes afterwards (away-and-back returns the
+        // same mode string but a NEW epoch — the stale op stays stale).
+        modeEpoch(modeEpoch() + 1);
+        applySettings({ ...current, mode: nextMode });
+        selected(null);
+        chats([]);
+        models([]);
+        pendingUser('');
+        streaming('');
+        activeSend(null);
+        // Transient busy flags belong to the previous namespace — a detached
+        // operation's stale finally/catch is epoch-gated and will NOT write
+        // them back, so each resets here (no stuck spinner in the new mode).
+        loading(false);
+        deleting(false);
+        savingSystemPrompt(false);
+        savingEdit(false);
+        savingTitle(false);
+        collapsedTurns([]);
+        systemPrompt('');
+        cancelSystemPromptDraft();
+        cancelEdit();
+        cancelTitleEdit();
+        error('');
+    }, [activeSend, applySettings, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, loading, models, pendingUser, savingEdit, savingSystemPrompt, savingTitle, selected, settings, streaming, systemPrompt]);
+
+    const updateModelEndpoint = useCallback((value: string) => {
+        applySettings({ ...settings(), modelEndpoint: value });
+    }, [applySettings, settings]);
+
+    const updateStreamEndpoint = useCallback((value: string) => {
+        applySettings({ ...settings(), streamEndpoint: value });
+    }, [applySettings, settings]);
+
+    const updateManualModel = useCallback((value: string) => {
+        applySettings({ ...settings(), manualModel: value });
+    }, [applySettings, settings]);
+
+    // Switch the sidebar registry tab (Chat / Agent / Tool / Settings).
+    // Switching swaps the CONTENT surface too (agent editor / tool panel /
+    // settings panel vs. the chat column), so any open chat editor — bubble
+    // edit, title rename, prompt draft — is abandoned here; the keyed
+    // remounts revert their DOM text on return.
+    const selectSidebarTab = useCallback((tab: 'chat' | 'agent' | 'tool' | 'settings') => {
         sidebarTab(tab);
         cancelEdit();
         cancelTitleEdit();
@@ -2893,11 +3198,25 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // selection survives either way, matching startNewChat. Blocked while a
     // turn is streaming; the active request still owns its original record and
     // completion state is reconciled by the send flow.
+    // EPOCH GUARD (mode-switch isolation, like submit/selectChat): the
+    // identified DELETE belongs to the mode at START time — a mode switch
+    // during the request detaches every UI effect (the list drop, the
+    // surface reset, the banner, the busy flag) while the remote write
+    // still lands in the CAPTURED namespace (the captured `storage`
+    // closure): an online removal stays a server-side deletion, an offline
+    // one a local-store removal — no cross-namespace data corruption.
     const deleteChat = useCallback(async (conversationId: string) => {
         if (deleting()) return;
+        const epochAtStart = modeEpoch();
         deleting(true);
         try {
-            await deleteConversation(baseUrl, conversationId);
+            // Storage dispatch: the active mode's namespace (identified DELETE
+            // online, local removal offline); a missing id rejects with the
+            // 404-equivalent message, which the catch surfaces below.
+            await storage.remove(conversationId);
+            // A stale settle (the switch landed during the request): the other
+            // mode's list and surface own themselves now.
+            if (modeEpoch() !== epochAtStart) return;
             chats(chats().filter((chat) => chat.conversationId !== conversationId));
             if (selected()?.conversationId === conversationId) {
                 selected(null);
@@ -2912,11 +3231,17 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             }
             error('');
         } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
+            // A stale failure belongs to the previous namespace — the switch
+            // already cleared the new mode's banner.
+            if (modeEpoch() === epochAtStart) {
+                error(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            deleting(false);
+            // switchMode resets the flag for the new namespace; a stale settle
+            // must not clear (or re-take) it there.
+            if (modeEpoch() === epochAtStart) deleting(false);
         }
-    }, [baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, message, selected, systemPrompt]);
+    }, [cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, message, selected, storage, systemPrompt]);
 
     // Turn one message's bubble into the inline HTML editor (contentEditable,
     // auto-focused by the editing effect above). The offset restores the caret
@@ -2931,13 +3256,27 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // identified PUT the inline editor's blur-commit uses; the next provider
     // turn automatically sends the shortened history as its context. Guarded by
     // savingEdit like commitEdit so two history rewrites can never race.
+    // EPOCH GUARD (mode-switch isolation, like submit/selectChat): the
+    // identified PUT belongs to the mode at START time — a mode switch
+    // during the request detaches every UI effect (the record apply, the
+    // sidebar summary, the collapse re-seed, the banner, the busy flag)
+    // while the shortened history still lands in the CAPTURED namespace
+    // (the captured `storage` closure) — no history loss on either side.
     const deleteMessage = useCallback(async (index: number) => {
         const record = selected();
         if (!record || savingEdit()) return;
+        // Snapshot BEFORE the first await: the switch's epoch bump (switchMode)
+        // is what marks this operation stale.
+        const epochAtStart = modeEpoch();
         savingEdit(true);
         try {
             const messages = record.messages.filter((_, candidate) => candidate !== index);
-            const result = (await replaceConversationMessages(baseUrl, record.conversationId, { messages })).conversation;
+            // Storage dispatch: whole-history replace in the active mode's
+            // namespace (identified PUT online, local rewrite offline).
+            const result = (await storage.replace(record.conversationId, { messages })).conversation;
+            // A stale settle (the switch landed during the request): the other
+            // mode's selection and list own themselves now.
+            if (modeEpoch() !== epochAtStart) return;
             selected(result);
             const summary = summaryFromRecord(result);
             chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
@@ -2948,28 +3287,45 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             collapsedTurns(defaultCollapsedIndices(result.messages));
             error('');
         } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
+            if (modeEpoch() === epochAtStart) {
+                error(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            savingEdit(false);
+            // switchMode resets the flag for the new namespace.
+            if (modeEpoch() === epochAtStart) savingEdit(false);
         }
-    }, [baseUrl, cancelEdit, chats, collapsedTurns, error, savingEdit, selected]);
+    }, [cancelEdit, chats, collapsedTurns, error, savingEdit, selected, storage]);
 
     // Toggle one persisted turn between user and assistant and rewrite the full
     // history through the identified PUT. Converting to assistant stamps the
     // currently selected model for visible attribution; converting to user drops
     // assistant-only model metadata. The canonical response re-seeds collapse
     // defaults because the latest assistant index may change after the swap.
+    // EPOCH GUARD (mode-switch isolation, like submit/selectChat): the
+    // whole-history PUT belongs to the mode at START time — a mode switch
+    // during the request detaches every UI effect (the record apply, the
+    // sidebar summary, the collapse re-seed, the banner, the busy flag)
+    // while the role swap still lands in the CAPTURED namespace (the
+    // captured `storage` closure) — the swapped history survives a reload.
     const switchMessage = useCallback(async (index: number) => {
         const record = selected();
         if (!record || deleting() || savingEdit()) return;
         const existing = record.messages[index];
         if (!existing || existing.role === 'system') return;
+        // Snapshot BEFORE the first await: the switch's epoch bump (switchMode)
+        // is what marks this operation stale.
+        const epochAtStart = modeEpoch();
         savingEdit(true);
         try {
             const messages = record.messages.map((candidate, candidateIndex) =>
                 candidateIndex === index ? switchMessageRole(candidate, model()) : candidate
             );
-            const result = (await replaceConversationMessages(baseUrl, record.conversationId, { messages })).conversation;
+            // Storage dispatch: the whole-history rewrite in the active
+            // mode's namespace keeps both modes' histories separate.
+            const result = (await storage.replace(record.conversationId, { messages })).conversation;
+            // A stale settle (the switch landed during the request): the other
+            // mode's selection and list own themselves now.
+            if (modeEpoch() !== epochAtStart) return;
             if (selected()?.conversationId === record.conversationId) selected(result);
             const summary = summaryFromRecord(result);
             chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
@@ -2977,19 +3333,25 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             collapsedTurns(defaultCollapsedIndices(result.messages));
             error('');
         } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
+            if (modeEpoch() === epochAtStart) {
+                error(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            savingEdit(false);
+            // switchMode resets the flag for the new namespace.
+            if (modeEpoch() === epochAtStart) savingEdit(false);
         }
-    }, [baseUrl, cancelEdit, chats, collapsedTurns, deleting, error, model, savingEdit, selected]);
+    }, [cancelEdit, chats, collapsedTurns, deleting, error, model, savingEdit, selected, storage]);
 
     // Copy any message's raw text to the system clipboard (the per-turn copy
     // action in the controls row under the bubble). The async Clipboard API is
     // preferred; the
     // hidden-textarea + execCommand path keeps older or permission-restricted
     // browsers working (jsdom has neither, so tests stub navigator.clipboard).
-    // This is a pure client-side action: storage is never involved; failures
-    // surface in the shared error banner instead of throwing unhandled.
+    // This is a pure client-side action: storage is never involved (no
+    // namespace, no remote round-trip), so the mode-switch epoch gate does
+    // not apply — the banner write is local and cannot straddle a mode
+    // switch. Failures surface in the shared error banner instead of
+    // throwing unhandled.
     const copyMessage = useCallback(async (content: string) => {
         try {
             if (navigator.clipboard?.writeText) {
@@ -3015,19 +3377,39 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // selected index is inclusive, so forking at a user message copies that
     // user turn and every earlier turn; forking at an assistant message copies
     // the completed exchange. The source record is never rewritten.
+    // EPOCH GUARD (mode-switch isolation, like submit/selectChat): the fork's
+    // create + read-back belong to the mode at START time — a mode switch
+    // during the request detaches every UI effect (the new-branch summary
+    // insertion, the surface jump, the model re-adoption, the banner, the
+    // sticky pin) while the forked record still lands in the CAPTURED
+    // namespace (the captured `storage` closure) — the branch survives a
+    // reload in the mode that forked it.
     const forkConversation = useCallback(async (index: number) => {
         const record = selected();
         if (!record || deleting() || savingSystemPrompt()) return;
         const message = record.messages[index];
         if (!message || message.role === 'system') return;
 
+        // Snapshot BEFORE the first await: the switch's epoch bump (switchMode)
+        // is what marks this operation stale.
+        const epochAtStart = modeEpoch();
         try {
             const prefix = record.messages.slice(0, index + 1);
-            const fork = await createConversation(baseUrl, {
+            // Storage dispatch: the fork is a create WITH the copied prefix in
+            // the active mode's namespace (the local mirror validates that a
+            // fork history carries at least one user turn, exactly like the
+            // server handler), then the canonical read-back. The write ALWAYS
+            // runs in the captured namespace — a mid-request mode switch must
+            // not lose the branch from the mode that forked it.
+            const fork = await storage.create({
                 messages: prefix,
                 model: record.model || model()
             });
-            const forkRecord = (await fetchConversation(baseUrl, fork.conversationId)).conversation;
+            const forkRecord = (await storage.get(fork.conversationId)).conversation;
+            // A stale settle (the switch landed during the request): the other
+            // mode's sidebar and surface own themselves now — the branch is
+            // persisted in its own namespace and shows up there on reload.
+            if (modeEpoch() !== epochAtStart) return;
             const summary = summaryFromRecord(forkRecord);
             // Put the new branch first because it is the most recently created
             // conversation, then make it the active surface for continuation.
@@ -3043,9 +3425,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             selectionPin(true);
             error('');
         } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
+            // A stale failure belongs to the previous namespace's banner.
+            if (modeEpoch() === epochAtStart) {
+                error(reason instanceof Error ? reason.message : String(reason));
+            }
         }
-    }, [baseUrl, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, model, savingSystemPrompt, selected, selectionPin, systemPrompt]);
+    }, [cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, error, model, savingSystemPrompt, selected, selectionPin, storage, systemPrompt]);
 
     // Commit a rename delivered by the title h1's BLUR (or Enter): the SAME
     // identified PUT the message editor uses — the history round-trips
@@ -3057,28 +3442,47 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // raced a chat switch/new chat from resurrecting the old title onto the
     // fresh surface. The request remains independently asynchronous while the
     // title control stays usable.
+    // EPOCH GUARD (mode-switch isolation, like submit/selectChat): the rename
+    // PUT belongs to the mode at START time — a mode switch during the
+    // request detaches every UI effect (the record apply, the sidebar
+    // summary, the banner, the busy flag) while the renamed history still
+    // lands in the CAPTURED namespace (the captured `storage` closure).
+    // The editor close above (cancelTitleEdit) is synchronous and belongs to
+    // the committing surface regardless of the outcome.
     const saveTitle = useCallback(async (rawTitle: string) => {
         if (!editingTitle()) return;
         const record = selected();
         const title = rawTitle.trim();
         cancelTitleEdit();
         if (!record || !title || savingTitle() || title === record.title) return;
+        // Snapshot BEFORE the first await: the switch's epoch bump (switchMode)
+        // is what marks this operation stale.
+        const epochAtStart = modeEpoch();
         savingTitle(true);
         try {
-            const result = (await replaceConversationMessages(baseUrl, record.conversationId, {
+            // Storage dispatch: the rename rides the active mode's
+            // whole-history rewrite (explicit title wins over derivation).
+            const result = (await storage.replace(record.conversationId, {
                 messages: record.messages,
                 title
             })).conversation;
+            // A stale settle (the switch landed during the request): the other
+            // mode's selection and list own themselves now — the rename is
+            // persisted in its own namespace and shows up there on reload.
+            if (modeEpoch() !== epochAtStart) return;
             if (selected()?.conversationId === record.conversationId) selected(result);
             const summary = summaryFromRecord(result);
             chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
             error('');
         } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
+            if (modeEpoch() === epochAtStart) {
+                error(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            savingTitle(false);
+            // switchMode resets the flag for the new namespace.
+            if (modeEpoch() === epochAtStart) savingTitle(false);
         }
-    }, [baseUrl, cancelTitleEdit, chats, editingTitle, error, savingTitle, selected]);
+    }, [cancelTitleEdit, chats, editingTitle, error, savingTitle, selected, storage]);
 
     // Commit an inline bubble edit delivered by BLUR: the bubble's DOM text
     // replaces the message's content by REPLACING the complete history through
@@ -3100,6 +3504,13 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     //   the old chat. The edit still persists server-side (and the sidebar
     //   summary updates), but `selected` is only overwritten while the surface
     //   still shows the edited conversation.
+    // EPOCH GUARD (mode-switch isolation, like submit/selectChat): the edit
+    // PUT belongs to the mode at START time — a mode switch during the
+    // request detaches every UI effect (the record apply, the sidebar
+    // summary, the banner, the busy flag) while the edited history still
+    // lands in the CAPTURED namespace (the captured `storage` closure).
+    // The editor close above (cancelEdit) is synchronous and belongs to the
+    // committing surface regardless of the outcome.
     const commitEdit = useCallback(async (index: number, rawText: string) => {
         if (editingIndex() !== index) return;
         const record = selected();
@@ -3107,22 +3518,35 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         cancelEdit();
         if (!record || !text || savingEdit()) return;
         if (record.messages[index]?.content === text) return;
+        // Snapshot BEFORE the first await: the switch's epoch bump (switchMode)
+        // is what marks this operation stale.
+        const epochAtStart = modeEpoch();
         savingEdit(true);
         try {
             const messages: ChatMessage[] = record.messages.map((existing, candidate) =>
                 candidate === index ? { ...existing, content: text } : existing
             );
-            const result = (await replaceConversationMessages(baseUrl, record.conversationId, { messages })).conversation;
+            // Storage dispatch: the edited history is rewritten in the active
+            // mode's namespace; the canonical response re-seeds both the
+            // selection and the sidebar summary below.
+            const result = (await storage.replace(record.conversationId, { messages })).conversation;
+            // A stale settle (the switch landed during the request): the other
+            // mode's selection and list own themselves now — the edit is
+            // persisted in its own namespace and shows up there on reload.
+            if (modeEpoch() !== epochAtStart) return;
             if (selected()?.conversationId === record.conversationId) selected(result);
             const summary = summaryFromRecord(result);
             chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
             error('');
         } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
+            if (modeEpoch() === epochAtStart) {
+                error(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            savingEdit(false);
+            // switchMode resets the flag for the new namespace.
+            if (modeEpoch() === epochAtStart) savingEdit(false);
         }
-    }, [baseUrl, cancelEdit, chats, editingIndex, error, savingEdit, selected]);
+    }, [cancelEdit, chats, editingIndex, error, savingEdit, selected, storage]);
 
     // Send flow: (1) stream the assistant turn from the provider using the ENTIRE
     // conversation history — system prompt included — plus the new user message,
@@ -3153,16 +3577,34 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // or racing the prompt PUT/create response. activeSend additionally
         // rejects a second send while a stream is still generating (loading()
         // alone cannot: selectChat's transient loading(true→false) would
-        // re-open the gate mid-stream).
-        if (!text || !chosenModel || loading() || savingSystemPrompt() || activeSend()) return;
+        // re-open the gate mid-stream — and after a mode switch the NEW mode's
+        // transient selectChat loading must NOT block its first send, which
+        // is why the guard reads activeSend, not loading).
+        if (!text || !chosenModel || savingSystemPrompt() || activeSend()) return;
 
         loading(true);
         error('');
         // Snapshot the sending surface BEFORE any await: the pending/streaming
         // bubbles render only on THIS surface (see activeSend), and the
         // completion path verifies the surface still matches before applying.
+        // The sending MODE is snapshotted as the EPOCH (not the mode string):
+        // an away-and-back switch returns the same string but a new epoch, so
+        // a detached stream can never re-apply itself after the user bounced.
+        // Persistence still runs in this mode's namespace (server records vs.
+        // browser-local records, via the captured `storage` closure) even when
+        // the switch detaches the surface apply — no history loss.
         const sendConversationId = selected()?.conversationId ?? null;
-        activeSend({ conversationId: sendConversationId, model: chosenModel });
+        const epochAtSend = modeEpoch();
+        const sendId = sendSequence() + 1;
+        sendSequence(sendId);
+        activeSend({ id: sendId, conversationId: sendConversationId, model: chosenModel });
+        // Per-token snapshot: live deltas land in the streaming buffer ONLY
+        // while this send's epoch is active — a stream whose mode was switched
+        // away settles silently (its persisted record stays in the captured
+        // namespace; the new mode's surface receives none of it).
+        const onSnapshot = (content: string) => {
+            if (modeEpoch() === epochAtSend) streaming(content);
+        };
         // Hand the composer text to the pending turn so it renders while streaming.
         pendingUser(text);
         streaming('');
@@ -3180,12 +3622,18 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 ...(record?.messages ?? []),
                 { role: 'user', content: text }
             ];
-            const reply = await streamProviderChatCompletion(
-                providerUrl,
-                chosenModel,
-                history,
-                (content) => streaming(content)
-            );
+            // Provider dispatch: ONLINE streams through the private relay base
+            // (existing behavior). OFFLINE streams to the user-configured FULL
+            // stream endpoint URL — INDEPENDENT of the model-list URL and with
+            // NO fallback to the default app server: a blank endpoint rejects
+            // with the configuration explanation instead of a silent call.
+            const offlineStreamEndpoint = offline ? settings().streamEndpoint.trim() : '';
+            const streamRequest = offline
+                ? (offlineStreamEndpoint
+                    ? streamProviderChatCompletionFromUrl(offlineStreamEndpoint, chosenModel, history, onSnapshot)
+                    : Promise.reject(new Error('Configure the offline chat completion stream endpoint in Settings (it is a FULL URL, e.g. http://localhost:8080/v1/chat/completions) to stream model replies offline — the default app server is not used in offline mode.')))
+                : streamProviderChatCompletion(providerUrl, chosenModel, history, onSnapshot);
+            const reply = await streamRequest;
 
             // Per-message attribution: the assistant turn records the model that
             // produced it so every response stays marked after reload.
@@ -3193,41 +3641,53 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             let result: ConversationRecord;
             if (!record) {
                 // New chat: create, then append. The conversation starts EMPTY, so
-                // the append order is exactly [system?, user, assistant].
-                const conversationId = (await createConversation(baseUrl, { model: chosenModel })).conversationId;
-                await addToConversation(baseUrl, conversationId, {
+                // the append order is exactly [system?, user, assistant] — in
+                // the ACTIVE MODE'S namespace (server online, browser-local
+                // offline; see the storage dispatch at the top of the
+                // component).
+                const conversationId = (await storage.create({ model: chosenModel })).conversationId;
+                await storage.append(conversationId, {
                     // The stream completed: persist the pending user turn together
                     // with the assistant reply so storage holds completed pairs.
                     messages: [...systemPrefix, { role: 'user', content: text }, assistantMessage],
                     model: chosenModel,
                     ...(reply.usage ? { usage: reply.usage } : {})
                 });
-                result = (await fetchConversation(baseUrl, conversationId)).conversation;
+                result = (await storage.get(conversationId)).conversation;
             } else if (systemPrefix.length > 0) {
                 // Existing chat gaining its FIRST system prompt: the append POST
                 // can only attach to the END, so the whole history is replaced
                 // through the identified PUT to keep the prompt at index 0.
-                result = (await replaceConversationMessages(baseUrl, record.conversationId, {
+                result = (await storage.replace(record.conversationId, {
                     messages: [...systemPrefix, ...record.messages, { role: 'user', content: text }, assistantMessage],
                     ...(reply.usage ? { usage: reply.usage } : {})
                 })).conversation;
             } else {
                 // Regular turn on an existing chat: append the completed pair,
-                // then GET the canonical record back.
-                await addToConversation(baseUrl, record.conversationId, {
+                // then read the canonical record back.
+                await storage.append(record.conversationId, {
                     messages: [{ role: 'user', content: text }, assistantMessage],
                     model: chosenModel,
                     ...(reply.usage ? { usage: reply.usage } : {})
                 });
-                result = (await fetchConversation(baseUrl, record.conversationId)).conversation;
+                result = (await storage.get(record.conversationId)).conversation;
             }
             // SURFACE GUARD: apply the fresh record ONLY while the user has not
             // navigated away mid-stream. selected(result) on a switched surface
             // would yank the view back to the sending chat (and the follow
             // effect would pin it to the bottom); the sidebar summary below
-            // still updates regardless so the completed turn is discoverable.
+            // updates on the current session so the completed turn stays
+            // discoverable in its own namespace.
+            // EPOCH GUARD (replaces the mode-string compare): the apply runs
+            // only while the mode that started the send is STILL active —
+            // away-and-back bounces create a new epoch and re-adopting the
+            // record would resurrect an obsolete operation into the new
+            // namespace; neither the record NOR its sidebar summary may leak.
+            // The STORAGE write above already ran in the captured namespace,
+            // so the persisted history is intact (reload restores it).
+            const sendSessionCurrent = modeEpoch() === epochAtSend;
             const sendStillSelected = (selected()?.conversationId ?? null) === sendConversationId;
-            if (sendStillSelected) {
+            if (sendSessionCurrent && sendStillSelected) {
                 selected(result);
                 // A fresh record replaced the history (the PUT prepend path can
                 // even shift indices), so re-seed turn collapse: the just-finished
@@ -3240,33 +3700,55 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 systemPrompt('');
                 cancelSystemPromptDraft();
             }
-            // A completed turn makes this model the browser's remembered last-used one.
+            // A completed turn makes this model the browser's remembered last-used one
+            // (mode-agnostic: remembered models survive switches by design).
             rememberModel(chosenModel);
             // The in-flight bubbles disappear from the sending surface (they
-            // only ever rendered there — see activeSend); clear the shared
-            // buffers and release the one-send-at-a-time gate.
-            pendingUser('');
-            streaming('');
-            activeSend(null);
-            const summary = summaryFromRecord(result);
-            const current = chats();
-            const next = current.some((chat) => chat.conversationId === summary.conversationId)
-                ? current.map((chat) => (chat.conversationId === summary.conversationId ? summary : chat))
-                : [summary, ...current];
-            chats(next);
+            // only ever rendered there — see activeSend); release the shared
+            // buffers + the one-send-at-a-time gate ONLY while THIS send still
+            // owns activeSend — a superseded completion (a newer send started
+            // on the other mode after the switch) must not clear the newer
+            // send's buffers.
+            if (activeSend()?.id === sendId) {
+                pendingUser('');
+                streaming('');
+                activeSend(null);
+                loading(false);
+            }
+            if (sendSessionCurrent) {
+                const summary = summaryFromRecord(result);
+                const current = chats();
+                const next = current.some((chat) => chat.conversationId === summary.conversationId)
+                    ? current.map((chat) => (chat.conversationId === summary.conversationId ? summary : chat))
+                    : [summary, ...current];
+                chats(next);
+            }
         } catch (reason) {
-            error(reason instanceof Error ? reason.message : String(reason));
-            // Restore the draft so a failed stream can be retried without
-            // retyping — only on the surface that sent it; a navigated-away
-            // surface must not receive the old draft text.
-            if ((selected()?.conversationId ?? null) === sendConversationId) message(text);
-            pendingUser('');
-            streaming('');
-            activeSend(null);
-        } finally {
-            loading(false);
+            // EPOCH GUARD: failures (including the offline blank-endpoint
+            // rejection) surface in the banner only in the mode that sent —
+            // the NEW mode's banner (and draft) must not receive the stale
+            // operation's errors; storage/endpoint problems stay visible in
+            // their own mode (no data loss, no phantom success).
+            const sendSessionCurrent = modeEpoch() === epochAtSend;
+            if (sendSessionCurrent) {
+                error(reason instanceof Error ? reason.message : String(reason));
+                // Restore the draft so a failed stream can be retried without
+                // retyping — only on the surface that sent it (a navigated-
+                // away surface must not receive the old draft text).
+                if ((selected()?.conversationId ?? null) === sendConversationId) message(text);
+            }
+            if (activeSend()?.id === sendId) {
+                pendingUser('');
+                streaming('');
+                activeSend(null);
+                loading(false);
+            }
         }
-    }, [activeSend, baseUrl, listening, pendingUser, providerUrl, recognizer, cancelSystemPromptDraft, chats, collapsedTurns, error, loading, message, model, savingSystemPrompt, selected, streaming, systemPrompt]);
+    // `loading` is write-only here and `modeEpoch`/`sendSequence` are stable
+    // refs (see the declarations above); listed per the convention of
+    // recording every state-touching dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeSend, cancelSystemPromptDraft, chats, collapsedTurns, error, listening, loading, message, model, modeEpoch, offline, pendingUser, providerUrl, recognizer, savingSystemPrompt, selected, sendSequence, settings, storage, streaming, systemPrompt]);
 
     // Voice toggle (rendered by the VoiceButton in ComposerField): one tap
     // starts a single-utterance session whose transcript fills the SAME input
@@ -3437,10 +3919,20 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
 
     // Build model dropdown options from the provider catalog. If the recorded model
     // of the selected conversation is missing from the catalog it stays selectable
-    // so the conversation remains usable with its historical model.
+    // so the conversation remains usable with its historical model. OFFLINE mode
+    // additionally offers the Settings MANUAL MODEL ID as an option: with a
+    // blank or failing model-list endpoint the catalog can be empty, and the
+    // manual fallback (adopted into the selection by the manual-model effect
+    // above) keeps the composer from deadlocking.
     const catalog = models();
     const chosenModel = model();
-    const modelOptions = chosenModel && !catalog.includes(chosenModel) ? [chosenModel, ...catalog] : catalog;
+    const manualModelOption = offline ? settings().manualModel.trim() : '';
+    const catalogWithManual = manualModelOption && !catalog.includes(manualModelOption)
+        ? [...catalog, manualModelOption]
+        : catalog;
+    const modelOptions = chosenModel && !catalogWithManual.includes(chosenModel)
+        ? [chosenModel, ...catalogWithManual]
+        : catalogWithManual;
     // id → display label for the WHOLE option set (see uniqueModelLabels): ids
     // whose stripped names collide (the same base model served by several
     // providers) display "base (provider)" so the dropdown never lists
@@ -3535,15 +4027,16 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                         agent's editor shows the agent's NAME (live — it edits
                         through the same definition the title reads), while
                         the tool surface and the agent tab's empty state fall
-                        back to the plain product name. The chat surface keeps
-                        its existing title logic below (selected title /
-                        inline rename). */}
+                        back to the versioned product name (PRODUCT_TITLE —
+                        "Chat Assistant v<version>" from package.json). The
+                        chat surface keeps its existing title logic below
+                        (selected title / inline rename). */}
                     {contentSurface === 'agent' && selectedAgent ? (
                         <HeaderTitle data-testid="agent-title">{selectedAgent.name}</HeaderTitle>
                     ) : contentSurface !== 'chat' ? (
-                        <HeaderTitle data-testid="chat-title">Chat Assistant</HeaderTitle>
+                        <HeaderTitle data-testid="chat-title">{PRODUCT_TITLE}</HeaderTitle>
                     ) : selected() === null ? (
-                        <HeaderTitle data-testid="chat-title">Chat Assistant</HeaderTitle>
+                        <HeaderTitle data-testid="chat-title">{PRODUCT_TITLE}</HeaderTitle>
                     ) : editingTitle() ? (
                         <HeaderTitle
                             key="edit"
@@ -3604,8 +4097,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 <SidebarScrim open={sidebarOpen()} onClick={() => sidebarOpen(false)} data-testid="sidebar-scrim" />
                 {/* `open` slides the mobile drawer; md+ CSS ignores it (static column). */}
                 <Sidebar open={sidebarOpen()} id="chat-sidebar-panel" data-open={sidebarOpen()} data-testid="chat-sidebar">
-                    {/* Registry tabs: Chat / Agent / Tool. The active tab swaps
-                        the list below AND the header's top-right action. */}
+                    {/* Registry tabs: Chat / Agent / Tool / Settings. The active
+                        tab swaps the list below (+ the content-area surface for
+                        agent/tool/settings) AND the header's top-right action. */}
                     <SidebarTabs role="tablist" aria-label="Sidebar sections" data-testid="sidebar-tabs">
                         <SidebarTabButton
                             type="button"
@@ -3636,6 +4130,20 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             data-testid="sidebar-tab-tool"
                         >
                             Tool
+                        </SidebarTabButton>
+                        {/* The SETTINGS tab: the conservative-minimal settings
+                            surface (mode + offline endpoints) — its content
+                            panel opens in the MAIN CONTENT AREA exactly like
+                            the agent editor and tool panel. */}
+                        <SidebarTabButton
+                            type="button"
+                            active={sidebarTab() === 'settings'}
+                            role="tab"
+                            aria-selected={sidebarTab() === 'settings'}
+                            onClick={() => selectSidebarTab('settings')}
+                            data-testid="sidebar-tab-settings"
+                        >
+                            Settings
                         </SidebarTabButton>
                     </SidebarTabs>
                     {sidebarTab() === 'chat' && (
@@ -3709,6 +4217,16 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 </ChatEntry>
                             ))}
                         </>
+                    )}
+                    {sidebarTab() === 'settings' && (
+                        // The SETTINGS tab: the configuration panel lives in the
+                        // MAIN CONTENT AREA (SettingsWorkspace) exactly like
+                        // the agent editor; the sidebar carries only its
+                        // heading (no registry list to render).
+                        <SidebarHeading data-testid="settings-sidebar-heading">
+                            <span>Settings</span>
+                            <Metadata>{offline ? 'offline' : 'online'}</Metadata>
+                        </SidebarHeading>
                     )}
                 </Sidebar>
                 <Conversation>
@@ -3789,9 +4307,98 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             <span>Pick a tool from the sidebar to inspect it here.</span>
                         </EmptyState>
                     ))}
+                    {/* SETTINGS surface: the conservative-minimal settings
+                        panel fills the content area (mode + the offline
+                        endpoint configuration). Every edit re-persists the
+                        settings immediately (applySettings →
+                        saveAssistantSettings, api/offline.ts), so a reload
+                        restores the mode and the endpoints. */}
+                    {contentSurface === 'settings' && (
+                        <SettingsWorkspace data-testid="settings-workspace">
+                            <SidebarHeading>
+                                <span>Settings</span>
+                            </SidebarHeading>
+                            {/* The MODE selector: 'online' is the default and
+                                keeps the existing application-server + private
+                                relay behavior byte-for-byte; 'offline' is the
+                                no-app-server mode (durable browser-local
+                                conversations + the configured endpoints). */}
+                            <SettingsField data-testid="mode-field">
+                                <span>Mode</span>
+                                <SettingsSelect
+                                    value={settings().mode}
+                                    onChange={(event) => switchMode(event.target.value === 'offline' ? 'offline' : 'online')}
+                                    aria-label="Assistant mode"
+                                    data-testid="mode-select"
+                                >
+                                    <option value="online">Online (application servers)</option>
+                                    <option value="offline">Offline (no application server)</option>
+                                </SettingsSelect>
+                            </SettingsField>
+                            {/* Scope clarification (R6): offline removes ONLY
+                                the Chat Assistant application server; the
+                                inference endpoints remain remote
+                                OpenAI-compatible services (network + CORS).
+                                No network-free LLM, no service worker, no
+                                bundled browser model, no local tool
+                                execution are promised. */}
+                            <Metadata data-testid="mode-note">
+                                Offline is a no-Chat-Assistant-server mode: conversations are stored in this browser and NO requests are made to the application storage server or the private provider relay. The model endpoints below are still remote OpenAI-compatible inference services — they require network connectivity and CORS from this browser (this is not a network-free local model, and no service worker, bundled browser model, or local tool execution is provided).
+                            </Metadata>
+                            {/* The offline-only configuration: two INDEPENDENT
+                                full endpoint URLs (model list / stream — NOT a
+                                shared base) plus the manual model-id fallback
+                                that keeps the composer alive when the model
+                                list is unavailable. */}
+                            {offline && (
+                                <>
+                                    <SettingsField data-testid="model-endpoint-field">
+                                        <span>Model list endpoint (full URL)</span>
+                                        <SettingsInput
+                                            value={settings().modelEndpoint}
+                                            onChange={(event) => updateModelEndpoint(event.target.value)}
+                                            placeholder="http://localhost:8080/v1/models"
+                                            aria-label="Offline model list endpoint"
+                                            data-testid="model-endpoint-input"
+                                        />
+                                    </SettingsField>
+                                    <SettingsField data-testid="stream-endpoint-field">
+                                        <span>Chat completion stream endpoint (full URL)</span>
+                                        <SettingsInput
+                                            value={settings().streamEndpoint}
+                                            onChange={(event) => updateStreamEndpoint(event.target.value)}
+                                            placeholder="http://localhost:8080/v1/chat/completions"
+                                            aria-label="Offline chat completion stream endpoint"
+                                            data-testid="stream-endpoint-input"
+                                        />
+                                    </SettingsField>
+                                    <SettingsField data-testid="manual-model-field">
+                                        <span>Manual model id (fallback when the model list is unavailable)</span>
+                                        <SettingsInput
+                                            value={settings().manualModel}
+                                            onChange={(event) => updateManualModel(event.target.value)}
+                                            placeholder="openai/gpt-4o-mini"
+                                            aria-label="Manual model id"
+                                            data-testid="manual-model-input"
+                                        />
+                                    </SettingsField>
+                                    {/* The blank-endpoint explanation: shown
+                                        while EITHER endpoint is unconfigured —
+                                        a blank endpoint never silently falls
+                                        back to the default app server. */}
+                                    {(settings().modelEndpoint.trim() === '' || settings().streamEndpoint.trim() === '') && (
+                                        <Metadata data-testid="offline-endpoint-hint">
+                                            Set a model list endpoint to load the available models, and a chat completion stream endpoint to stream replies — each is a FULL URL and they are INDEPENDENT (not a shared base). While they are blank, no request is sent to the default app server; enter a manual model id to chat without a model list.
+                                        </Metadata>
+                                    )}
+                                </>
+                            )}
+                        </SettingsWorkspace>
+                    )}
                     {/* CHAT surface: the conversation column exactly as before
                         the agent/tool surfaces existed. Unmounted while an
-                        agent editor or tool panel owns the column. */}
+                        agent editor, tool panel, or settings panel owns the
+                        column. */}
                     {chatSurface && (<>
                     <MessageList
                         // Hide platform scrollbar chrome at every breakpoint. The
@@ -4024,7 +4631,15 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 ))}
                             </AgentSelect>
                             <ModelText data-testid="model-label">
-                                {chosenModel ? modelDisplayName(chosenModel) : catalog.length === 0 ? 'No models available' : 'Select model'}
+                                {chosenModel
+                                    ? modelDisplayName(chosenModel)
+                                    : modelOptions.length === 0
+                                        // With no options at all the label explains WHERE the
+                                        // configuration lives: offline points at the Settings
+                                        // endpoint/manual-model fields (never a silent default
+                                        // server), online keeps the plain catalog-empty text.
+                                        ? (offline ? 'No models available — set an endpoint or a manual model id in Settings' : 'No models available')
+                                        : 'Select model'}
                             </ModelText>
                             <ModelSelect
                                 value={chosenModel}
@@ -4037,10 +4652,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 data-testid="model-select"
                                 // The model picker remains usable while a
                                 // response streams; the request already holds
-                                // its own model snapshot.
-                                disabled={catalog.length === 0}
+                                // its own model snapshot. Disabled only while
+                                // NO option exists (the offline manual model
+                                // id counts as an option).
+                                disabled={modelOptions.length === 0}
                             >
-                                {catalog.length === 0
+                                {modelOptions.length === 0
                                     ? <option value="">No models available</option>
                                     : modelOptions.map((id) => (
                                         // Values keep the full provider-routed id; labels strip the

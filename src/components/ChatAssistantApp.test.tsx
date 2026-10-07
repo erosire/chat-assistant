@@ -87,8 +87,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // objectEach (@presource/core) iterates the twin overlay-select CSS rules
 // found in the Emotion sheet during the composer-styling assertions.
 import { objectEach } from '@presource/core';
-import type { ChatMessage, ConversationRecord } from '../api';
+import { readFileSync } from 'node:fs';
+import { ASSISTANT_SETTINGS_KEY, readLocalConversations, type ChatMessage, type ConversationRecord } from '../api';
 import { ChatAssistantApp, controlsShouldFloat, uniqueModelLabels } from './ChatAssistantApp';
+
+// The header's fallback product name is now the versioned title (PRODUCT_TITLE
+// in ChatAssistantApp.tsx). Derive the expected value from this distribution's
+// own package.json — the same single source vite.config.ts and vitest.config.ts
+// inject as the `__APP_VERSION__` define — so the assertion cannot drift from
+// the value the shipped bundle renders. `npm test` always runs vitest from
+// the distribution package root (vitest.config.ts is resolved from that cwd),
+// so 'package.json' is cwd-relative; the jsdom test environment rewrites
+// import.meta.url, so a URL-based path would be a non-file scheme.
+const EXPECTED_PRODUCT_TITLE = `Chat Assistant v${JSON.parse(
+    readFileSync('package.json', 'utf-8')
+).version}`;
 
 const BASE_URL = 'http://test.local/v1/chat-assistant/conversation';
 const PROVIDER_URL = 'http://test.local/providers/private/v1';
@@ -358,7 +371,7 @@ describe('ChatAssistantApp', () => {
         // The header shows the product name until a chat with a title is
         // selected; with nothing selected the title is plain NON-interactive
         // text (no contentEditable — renaming is inline, no dialog exists).
-        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.getByTestId('chat-title').textContent).toBe(EXPECTED_PRODUCT_TITLE);
         expect(screen.getByTestId('chat-title').tagName).toBe('H1');
         expect(screen.getByTestId('chat-title').getAttribute('contenteditable')).toBeNull();
         expect(screen.getByTestId('chat-title').getAttribute('title')).toBeNull();
@@ -1378,7 +1391,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('empty-chat-state')).toBeDefined();
         expect(screen.getByTestId('empty-chat-list').textContent).toBe('No chats yet.');
         // The header title falls back to the product name with nothing selected.
-        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.getByTestId('chat-title').textContent).toBe(EXPECTED_PRODUCT_TITLE);
         expect(screen.getByTestId('chat-title').tagName).toBe('H1');
     });
 
@@ -1452,25 +1465,27 @@ describe('ChatAssistantApp', () => {
         // New chat clears the selection without touching the model selection,
         // and the header title falls back to the product name.
         expect(screen.getByTestId('empty-chat-state')).toBeDefined();
-        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.getByTestId('chat-title').textContent).toBe(EXPECTED_PRODUCT_TITLE);
         expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(DEFAULT_MODEL);
         expect(screen.getByTestId('model-label').textContent).toBe('test-model');
     });
 
-    it('renders the three sidebar tabs with Chat active by default', async () => {
+    it('renders the four sidebar tabs with Chat active by default', async () => {
         renderApp();
         await waitForModelSelection();
         // The tab strip is the sidebar's FIRST child, a tablist of exactly
-        // three tabs; Chat is selected.
+        // four tabs (Chat / Agent / Tool / Settings); Chat is selected.
         const tabs = screen.getByTestId('sidebar-tabs');
         expect(tabs.getAttribute('role')).toBe('tablist');
         expect(tabs.getAttribute('aria-label')).toBe('Sidebar sections');
         expect(screen.getByTestId('sidebar-tab-chat').textContent).toBe('Chat');
         expect(screen.getByTestId('sidebar-tab-agent').textContent).toBe('Agent');
         expect(screen.getByTestId('sidebar-tab-tool').textContent).toBe('Tool');
+        expect(screen.getByTestId('sidebar-tab-settings').textContent).toBe('Settings');
         expect(screen.getByTestId('sidebar-tab-chat').getAttribute('aria-selected')).toBe('true');
         expect(screen.getByTestId('sidebar-tab-agent').getAttribute('aria-selected')).toBe('false');
         expect(screen.getByTestId('sidebar-tab-tool').getAttribute('aria-selected')).toBe('false');
+        expect(screen.getByTestId('sidebar-tab-settings').getAttribute('aria-selected')).toBe('false');
         // The Chat tab shows the conversation registry.
         expect(screen.getByTestId('empty-chat-list').textContent).toBe('No chats yet.');
         // The Agent and Tool registries stay hidden until their tab is picked.
@@ -1597,7 +1612,7 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
         expect(screen.getByTestId('message-list')).toBeDefined();
         expect(screen.getByTestId('chat-composer')).toBeDefined();
-        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.getByTestId('chat-title').textContent).toBe(EXPECTED_PRODUCT_TITLE);
         expect(screen.queryByTestId('agent-workspace')).toBeNull();
     });
 
@@ -1648,7 +1663,7 @@ describe('ChatAssistantApp', () => {
 
         // The header falls back to the product name and keeps the action as
         // "New chat" (only the Agent tab swaps it).
-        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.getByTestId('chat-title').textContent).toBe(EXPECTED_PRODUCT_TITLE);
         expect(screen.getByTestId('new-chat-button').textContent).toBe('New chat');
         expect(screen.queryByTestId('new-agent-button')).toBeNull();
     });
@@ -2133,7 +2148,7 @@ describe('ChatAssistantApp', () => {
         // was never applied to `selected`.
         expect(screen.getByTestId('empty-chat-state')).toBeDefined();
         expect(screen.queryByTestId('message-content-0')).toBeNull();
-        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.getByTestId('chat-title').textContent).toBe(EXPECTED_PRODUCT_TITLE);
     });
 
     it('opens the system prompt editor and persists a new prompt immediately on blur', async () => {
@@ -3641,7 +3656,7 @@ describe('ChatAssistantApp', () => {
         await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1').textContent).toBe('Switched-away rename2 messages · complete'));
         // The surface itself moved on: the header title falls back to the
         // product name and is NOT editable with nothing selected.
-        expect(screen.getByTestId('chat-title').textContent).toBe('Chat Assistant');
+        expect(screen.getByTestId('chat-title').textContent).toBe(EXPECTED_PRODUCT_TITLE);
         expect(screen.getByTestId('chat-title').getAttribute('contenteditable')).toBeNull();
         expect(screen.getByTestId('empty-chat-state')).toBeDefined();
     });
@@ -3913,5 +3928,349 @@ describe('ChatAssistantApp', () => {
             // ...and the recognized text stays in the input for review.
             expect(input.value).toBe('Hello');
         });
+    });
+});
+
+// OFFLINE (no-application-server) mode: the Settings tab switches the mode,
+// persists it (reload restores mode/config/conversations), routes every
+// conversation CRUD through the durable browser-local store (api/offline.ts)
+// with NO request to the application storage server (192.168.50.109:5000) or
+// the private provider relay (192.168.50.109:5500), and uses the configured
+// INDEPENDENT full endpoint URLs for the OpenAI-compatible model list and
+// chat SSE. Blank endpoints explain the configuration need — they never fall
+// back to a default server.
+describe('offline (no-application-server) mode', () => {
+    // Independent hosts/ports prove the two endpoints are configured as
+    // separate full URLs (not one shared base).
+    const OFFLINE_MODELS_URL = 'http://offline-models.test:8080/v1/models';
+    const OFFLINE_STREAM_URL = 'http://offline-models.test:8080/v1/chat/completions';
+    const STREAM_ALT_URL = 'http://offline-stream.test:9090/custom/completions';
+
+    beforeEach(() => {
+        window.localStorage.clear();
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    // Seed the persisted settings BEFORE the component mounts (a reload with
+    // the saved configuration).
+    const seedOffline = (over: Partial<{ modelEndpoint: string; streamEndpoint: string; manualModel: string }> = {}) => {
+        window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
+            mode: 'offline',
+            modelEndpoint: OFFLINE_MODELS_URL,
+            streamEndpoint: OFFLINE_STREAM_URL,
+            manualModel: '',
+            ...over
+        }));
+    };
+
+    // Exact-URL fetch mock: only the configured endpoint URLs answer, every
+    // other URL 404s loudly — a silent default-URL call is therefore
+    // impossible (and any default-LAN host would surface as "unexpected").
+    const mockOfflineFetch = (catalogIds: string[] = []) => {
+        const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+            if (url === OFFLINE_MODELS_URL && init?.method === 'GET') {
+                return Promise.resolve(response(200, {
+                    object: 'list',
+                    data: catalogIds.map((id) => ({ id, object: 'model' }))
+                }));
+            }
+            if ((url === OFFLINE_STREAM_URL || url === STREAM_ALT_URL) && init?.method === 'POST') {
+                return Promise.resolve(sseResponse(completionFrames));
+            }
+            return Promise.resolve(response(404, { error: `unexpected request: ${String(url)} ${init?.method ?? ''}` }));
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        return fetchMock;
+    };
+
+    // Focus the composer (the send arrow only renders with focus) and wait
+    // until the offline model resolution lands.
+    const focusComposerAndWaitModel = (expected: string) =>
+        (async () => {
+            fireEvent.focus(screen.getByTestId('chat-input'));
+            await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(expected));
+        })();
+
+    // Focus-gated send: type + click the embedded send arrow.
+    const sendTurn = (text: string) => {
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: text } });
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+    };
+
+    it('renders the Settings tab: online default, hidden offline fields, and the scope note', async () => {
+        // Online default: the server-backed mock (catalog + collection GET)
+        // answers the ONLINE-mode mount fetches.
+        vi.stubGlobal('fetch', mockFetch());
+        renderApp();
+        await waitForModelSelection();
+
+        fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
+
+        expect(screen.getByTestId('settings-workspace')).toBeDefined();
+        expect((screen.getByTestId('mode-select') as HTMLSelectElement).value).toBe('online');
+        // The offline-only fields stay hidden while online.
+        expect(screen.queryByTestId('model-endpoint-input')).toBeNull();
+        expect(screen.queryByTestId('stream-endpoint-input')).toBeNull();
+        expect(screen.queryByTestId('manual-model-input')).toBeNull();
+        // The note is explicit about scope: no Chat Assistant server, but the
+        // inference endpoints still need connectivity + CORS.
+        const note = screen.getByTestId('mode-note').textContent ?? '';
+        expect(note).toContain('no-Chat-Assistant-server mode');
+        expect(note).toContain('require network connectivity and CORS');
+    });
+
+    it('switches to offline, persists the configuration, and a reload restores it', async () => {
+        // Online-mount traffic (catalog + collection) is answered by the
+        // server-backed mock; the OFFLINE switch blanks the configured
+        // endpoints, so no offline endpoint fetch is expected.
+        vi.stubGlobal('fetch', mockFetch());
+        const first = renderApp();
+        await waitForModelSelection();
+
+        fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
+        fireEvent.change(screen.getByTestId('mode-select'), { target: { value: 'offline' } });
+
+        // The settings are persisted immediately in canonical trimmed form.
+        expect(JSON.parse(window.localStorage.getItem(ASSISTANT_SETTINGS_KEY)!)).toEqual({
+            mode: 'offline',
+            modelEndpoint: '',
+            streamEndpoint: '',
+            manualModel: ''
+        });
+        // The offline-only fields render on the switch.
+        expect(screen.getByTestId('model-endpoint-input')).toBeDefined();
+        expect(screen.getByTestId('stream-endpoint-input')).toBeDefined();
+        expect(screen.getByTestId('manual-model-input')).toBeDefined();
+        // The empty-endpoint hint explains the configuration need.
+        expect(screen.getByTestId('offline-endpoint-hint').textContent).toContain('FULL URL');
+
+        // A remount restores the persisted mode (the reload contract); the
+        // tab state is session-level, so the settings surface re-opens through
+        // the tab.
+        first.unmount();
+        renderApp();
+        fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
+        await waitFor(() => expect((screen.getByTestId('mode-select') as HTMLSelectElement).value).toBe('offline'));
+    });
+
+    it('uses the independent full endpoint URLs exactly and never touches the default application servers', async () => {
+        mockOfflineFetch([DEFAULT_MODEL]);
+        seedOffline({ modelEndpoint: OFFLINE_MODELS_URL, streamEndpoint: STREAM_ALT_URL });
+        renderApp();
+        await focusComposerAndWaitModel(DEFAULT_MODEL);
+
+        // Mount issued EXACTLY the configured model-list URL (no default
+        // relay catalog call, no storage collection call).
+        expect((fetch as any).mock.calls).toEqual([[OFFLINE_MODELS_URL, { method: 'GET' }]]);
+
+        // Send: the streamed completion POST lands on the INDEPENDENT stream
+        // URL with the OpenAI-compatible payload.
+        sendTurn('Hello offline');
+        await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(1));
+        const posts = (fetch as any).mock.calls.filter((call: unknown[]) => ((call[1] ?? {}) as { method?: string }).method === 'POST');
+        expect(posts).toEqual([[
+            STREAM_ALT_URL,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: DEFAULT_MODEL,
+                    stream: true,
+                    stream_options: { include_usage: true },
+                    messages: [{ role: 'user', content: 'Hello offline' }]
+                })
+            }
+        ]]);
+        // No default application-server URL (the LAN storage/provider hosts)
+        // was ever requested.
+        for (const call of (fetch as any).mock.calls) {
+            expect(String(call[0])).not.toContain('192.168.50.109');
+        }
+    });
+
+    it('keeps the composer alive with a manual model id when the model list endpoint is blank (zero network at mount)', async () => {
+        mockOfflineFetch([]);
+        seedOffline({ modelEndpoint: '', streamEndpoint: OFFLINE_STREAM_URL, manualModel: 'manual/model-x' });
+        renderApp();
+        await focusComposerAndWaitModel('manual/model-x');
+
+        // Blank model endpoint: the catalog fetch is SKIPPED (never a silent
+        // default call) and the manual model id is adopted into the
+        // selection, unblocking the composer.
+        expect((fetch as any).mock.calls).toEqual([]);
+
+        sendTurn('Hello offline');
+        await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(1));
+        expect((fetch as any).mock.calls).toEqual([[
+            OFFLINE_STREAM_URL,
+            expect.objectContaining({ method: 'POST' })
+        ]]);
+    });
+
+    it('explains the blank stream endpoint in the error banner and never calls a default server', async () => {
+        mockOfflineFetch([]);
+        seedOffline({ modelEndpoint: '', streamEndpoint: '', manualModel: 'manual/model-x' });
+        renderApp();
+        await focusComposerAndWaitModel('manual/model-x');
+
+        sendTurn('Retry this');
+
+        await waitFor(() => expect(screen.getByTestId('chat-error').textContent).toContain('chat completion stream endpoint'));
+        expect(screen.getByTestId('chat-error').textContent).toContain('Settings');
+        // No network traffic at all: the rejection happens before any fetch.
+        expect((fetch as any).mock.calls).toEqual([]);
+        // The failed draft is restored on the sending surface for retry.
+        expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('Retry this');
+    });
+
+    it('runs every CRUD flow against the local store: create, list, get, append, update, delete, fork, and draft', async () => {
+        mockOfflineFetch([DEFAULT_MODEL]);
+        seedOffline();
+        renderApp();
+        await focusComposerAndWaitModel(DEFAULT_MODEL);
+
+        // CREATE: the first turn persists a completed pair locally.
+        sendTurn('Hello offline');
+        await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(1));
+        const [id] = Object.keys(readLocalConversations());
+
+        // LIST + GET: the sidebar restores the conversation; selecting it
+        // reads its full record from the local store.
+        fireEvent.click(screen.getByTestId(`chat-tab-${id}`));
+        await waitFor(() => expect(screen.getByText('Hello from the assistant')).toBeDefined());
+
+        // APPEND: a second turn on the existing chat grows the record.
+        sendTurn('Second question');
+        await waitFor(() => expect(readLocalConversations()[id].messages).toHaveLength(4));
+
+        // UPDATE (whole-history replace): deleting the FIRST user message
+        // rewrites the history through the local replace. The fresh record
+        // folds every turn except the latest assistant reply, so expand the
+        // first turn (its preview line is the expansion affordance) before
+        // the delete control renders.
+        fireEvent.click(screen.getByTestId('message-preview-0'));
+        fireEvent.click(screen.getByTestId('delete-message-0'));
+        await waitFor(() => expect(readLocalConversations()[id].messages).toHaveLength(3));
+
+        // FORK: a new conversation carrying the prefix up to the forked
+        // message (expand the target turn first — the fresh record re-folded).
+        fireEvent.click(screen.getByTestId('message-preview-1'));
+        fireEvent.click(screen.getByTestId('fork-message-1'));
+        await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(2));
+        const forked = Object.values(readLocalConversations())
+            .find((record) => record.conversationId !== id);
+        expect(forked?.messages).toEqual(readLocalConversations()[id].messages.slice(0, 2));
+
+        // DRAFT: a fresh chat's system prompt persists a prompt-only local
+        // record (the draft create path), exactly like the online flow.
+        fireEvent.click(screen.getByTestId('new-chat-button'));
+        const draftBubble = screen.getByTestId('system-prompt-value');
+        fireEvent.click(draftBubble);
+        const editor = screen.getByTestId('system-prompt-value');
+        editor.textContent = 'Draft prompt';
+        fireEvent.blur(editor);
+        await waitFor(() => {
+            const records = Object.values(readLocalConversations());
+            expect(records).toHaveLength(3);
+            expect(records.some((record) => record.messages.length === 1 && record.messages[0]?.role === 'system' && record.messages[0]?.content === 'Draft prompt')).toBe(true);
+        });
+
+        // DELETE: the sidebar "x" removes a conversation from the local store.
+        const forkedId = Object.keys(readLocalConversations()).find((candidate) => candidate !== id)!;
+        fireEvent.click(screen.getByTestId(`delete-chat-${forkedId}`));
+        await waitFor(() => expect(readLocalConversations()[forkedId]).toBeUndefined());
+
+        // EVERY network request above was a configured-endpoint request; no
+        // application-server URL appears anywhere in the call list.
+        for (const call of (fetch as any).mock.calls) {
+            expect(String(call[0])).not.toContain('192.168.50.109');
+            expect(String(call[0])).not.toContain('/v1/chat-assistant/conversation');
+        }
+    });
+
+    it('survives a reload: the offline conversations and settings restore on remount', async () => {
+        mockOfflineFetch([DEFAULT_MODEL]);
+        seedOffline();
+        const first = renderApp();
+        await focusComposerAndWaitModel(DEFAULT_MODEL);
+
+        sendTurn('Hello offline');
+        await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(1));
+        first.unmount();
+
+        // Clear the first mount's catalog call so the assertion isolates the
+        // reload's network traffic.
+        (fetch as any).mockClear();
+        renderApp();
+        await focusComposerAndWaitModel(DEFAULT_MODEL);
+        // The local list effect restores the sidebar from the durable store —
+        // the only mount call is the configured model-list endpoint (no server
+        // collection GET).
+        await waitFor(() => expect(screen.getByTestId(`chat-tab-${Object.keys(readLocalConversations())[0]}`)).toBeDefined());
+        expect((fetch as any).mock.calls).toEqual([[OFFLINE_MODELS_URL, { method: 'GET' }]]);
+    });
+
+    it('never mixes the online and offline histories across a mode switch', async () => {
+        // Dedicated mock: the OFFLINE endpoints answer as usual, and the
+        // ONLINE collection GET returns a DISTINCT server-side conversation
+        // (the module fixture's conversation-1) so each mode's sidebar has
+        // its own identifiable entry.
+        const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+            if (url === OFFLINE_MODELS_URL && init?.method === 'GET') {
+                return Promise.resolve(response(200, { object: 'list', data: [{ id: DEFAULT_MODEL, object: 'model' }] }));
+            }
+            if (url === OFFLINE_STREAM_URL && init?.method === 'POST') {
+                return Promise.resolve(sseResponse(completionFrames));
+            }
+            if (url === BASE_URL && init?.method === 'GET') {
+                return Promise.resolve(response(200, {
+                    conversations: [{
+                        conversationId: conversation.conversationId,
+                        title: conversation.title,
+                        model: conversation.model,
+                        status: 'complete',
+                        messageCount: conversation.messageCount,
+                        createdAt: conversation.createdAt,
+                        updatedAt: conversation.updatedAt
+                    }]
+                }));
+            }
+            return Promise.resolve(response(404, { error: `unexpected request: ${String(url)} ${init?.method ?? ''}` }));
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        seedOffline();
+        renderApp();
+        await focusComposerAndWaitModel(DEFAULT_MODEL);
+
+        sendTurn('Hello offline');
+        await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(1));
+        const [offlineId] = Object.keys(readLocalConversations());
+
+        // Switch to online: the server-side list owns the sidebar — the
+        // ONLINE conversation-1 entry appears, the offline id must NOT, and
+        // the local data stays intact. The registry list only renders under
+        // the Chat tab, so return to it after the mode switch.
+        fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
+        fireEvent.change(screen.getByTestId('mode-select'), { target: { value: 'online' } });
+        fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
+        expect(screen.queryByTestId(`chat-tab-${offlineId}`)).toBeNull();
+        expect(Object.keys(readLocalConversations())).toEqual([offlineId]);
+
+        // Back to offline: the local list effect restores the offline entry;
+        // the online conversation must not leak into the offline sidebar (the
+        // local store gained no server record). The mode selector lives in the
+        // settings surface, so re-open it after the tab switch above, then
+        // return to the Chat tab where the registry list renders.
+        fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
+        fireEvent.change(screen.getByTestId('mode-select'), { target: { value: 'offline' } });
+        fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
+        await waitFor(() => expect(screen.getByTestId(`chat-tab-${offlineId}`)).toBeDefined());
+        expect(screen.queryByTestId('chat-tab-conversation-1')).toBeNull();
+        expect(Object.keys(readLocalConversations())).toEqual([offlineId]);
     });
 });

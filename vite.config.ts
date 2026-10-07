@@ -1,7 +1,17 @@
 // Vite configuration mirrors distribution/story-generator/vite.config.ts so
 // the assistant can be developed and deployed as an independent distribution.
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+
+// Application version: read once from this distribution's package.json and
+// injected as the `__APP_VERSION__` define so the UI (src/version.ts) never
+// carries a hardcoded duplicate of the "version" field. A plain global define
+// (rather than `import.meta.env.APP_VERSION`) is used because vitest's runtime
+// rewrites `import.meta.env` access, which silently swallows env-scoped defines
+// during test runs; a plain identifier is substituted by esbuild identically
+// in the vite build, the dev server, and vitest.
+const APP_VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8')).version as string;
 
 // API URL strategy: the UI's defaults are ABSOLUTE. DEFAULT_CHAT_ASSISTANT_URL
 // (src/api/chat-assistant.ts) pins the storage origin
@@ -20,6 +30,12 @@ import react from '@vitejs/plugin-react';
 // Relative assets keep the build usable from a GitHub Pages repository path.
 export default defineConfig({
     plugins: [react()],
+    // Pin the package.json version into the bundle (see the APP_VERSION note
+    // above) — mirrors the define in vitest.config.ts so tests assert the
+    // same value the shipped UI renders.
+    define: {
+        __APP_VERSION__: JSON.stringify(APP_VERSION)
+    },
     base: './',
     server: {
         port: 4500,
