@@ -2,9 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     fetchProviderModels,
-    fetchProviderModelsFromUrl,
-    streamProviderChatCompletion,
-    streamProviderChatCompletionFromUrl
+    streamProviderChatCompletion
 } from './provider';
 
 // JSON-envelope Response substitute for the catalog and pre-stream error cases.
@@ -191,33 +189,35 @@ describe('provider API client', () => {
     });
 
     it.each([
-        // The offline settings UI configures INDEPENDENT full endpoint URLs
-        // (not a shared base): the exact URL (trailing slashes trimmed for
-        // stability) is what reaches fetch, with no base-URL derivation.
-        'http://offline-models.test:8080/v1/models',
-        'http://offline-models.test:8080/other/path/models/'
-    ])('fetches the catalog from the independent full model-list URL %s', async (modelListUrl) => {
+        // The offline settings UI configures a SINGLE provider base URL: the
+        // standard routes are DERIVED beneath it — the exact example base
+        // (trailing slash normalized, never double-slash, never a suffix
+        // appended twice) is what reaches fetch.
+        'http://192.168.50.109:5500/providers/private/v1',
+        'http://192.168.50.109:5500/providers/private/v1/'
+    ])('derives the standard catalog route from the configured provider base %s', async (base) => {
         (fetch as any).mockResolvedValueOnce(response(200, catalog));
 
-        const result = await fetchProviderModelsFromUrl(modelListUrl);
+        const result = await fetchProviderModels(base);
 
         expect(result).toEqual(catalog.data);
         const [calledUrl, init] = (fetch as any).mock.calls[0];
-        expect(calledUrl).toBe(modelListUrl.replace(/\/+$/, ''));
+        expect(calledUrl).toBe('http://192.168.50.109:5500/providers/private/v1/models');
         expect(init).toEqual({ method: 'GET' });
     });
 
-    it('streams the completion from the independent full stream URL', async () => {
-        // A non-standard path proves the URL is used verbatim (no
-        // /chat/completions suffix appended, no DEFAULT_PROVIDER_URL).
+    it('derives the standard stream route from the configured provider base', async () => {
+        // The stream POST lands on the standard route derived from the SAME
+        // single base URL (trailing slashes normalized) with the same
+        // OpenAI-compatible streaming payload as the online entry.
         (fetch as any).mockResolvedValueOnce(sseResponse([
             'data: {"choices":[{"index":0,"delta":{"content":"Offline"}}]}\n\n',
             'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\n',
             'data: [DONE]\n\n'
         ]));
 
-        const result = await streamProviderChatCompletionFromUrl(
-            'http://offline-stream.test:9090/custom/completions/',
+        const result = await streamProviderChatCompletion(
+            'http://192.168.50.109:5500/providers/private/v1',
             'qwen/makora-pro',
             [{ role: 'user', content: 'Question' }],
             () => undefined
@@ -227,9 +227,9 @@ describe('provider API client', () => {
             content: 'Offline',
             usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 }
         });
-        // The POST lands on the exact configured full URL with the same
-        // OpenAI-compatible streaming payload as the base-URL variant.
-        expect(fetch).toHaveBeenCalledWith('http://offline-stream.test:9090/custom/completions', {
+        // The POST lands on the exact derived route with the same
+        // OpenAI-compatible streaming payload as the online entry.
+        expect(fetch).toHaveBeenCalledWith('http://192.168.50.109:5500/providers/private/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -241,13 +241,13 @@ describe('provider API client', () => {
         });
     });
 
-    it('surfaces pre-stream and catalog failures from the independent full URLs', async () => {
+    it('surfaces pre-stream and catalog failures from the derived routes', async () => {
         (fetch as any).mockResolvedValueOnce(response(404, { error: "Model 'missing' not found" }));
         await expect(
-            streamProviderChatCompletionFromUrl('http://offline-stream.test:9090/v1/chat/completions', 'missing', [{ role: 'user', content: 'Question' }], () => undefined)
-        ).rejects.toThrow("Model 'missing' not found");
+            streamProviderChatCompletion('http://192.168.50.109:5500/providers/private/v1', 'missing', [{ role: 'user', content: 'Question' }], () => undefined
+        )).rejects.toThrow("Model 'missing' not found");
 
         (fetch as any).mockResolvedValueOnce(response(500, { error: 'endpoint unreachable' }));
-        await expect(fetchProviderModelsFromUrl('http://offline-models.test:8080/v1/models')).rejects.toThrow('endpoint unreachable');
+        await expect(fetchProviderModels('http://192.168.50.109:5500/providers/private/v1')).rejects.toThrow('endpoint unreachable');
     });
 });

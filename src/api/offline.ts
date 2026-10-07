@@ -18,11 +18,13 @@
 // What offline mode is (and is NOT):
 //   - It removes the Chat Assistant APPLICATION server (conversation
 //     storage) — the conversations live in this browser's localStorage.
-//   - It does NOT make model inference network-free: a user-configured
-//     OpenAI-compatible endpoint (full model-list URL / full stream URL)
-//     still needs connectivity and CORS from the browser. It also does not
-//     bundle a browser model, install a service worker, or execute local
-//     tools — only the app's existing server functions are re-implemented.
+//   - It does NOT make model inference network-free: the single
+//     user-configured provider base URL (standard OpenAI-compatible routes:
+//     `${base}/models` catalog, `${base}/chat/completions` stream — derived
+//     by api/provider.ts) still needs connectivity and CORS from the
+//     browser. It also does not bundle a browser model, install a service
+//     worker, or execute local tools — only the app's existing server
+//     functions are re-implemented.
 //
 // Persistence keys (all under the same "chat-assistant:" prefix as the
 // model memory and agent registry):
@@ -45,25 +47,24 @@ import type {
 // app server: durable browser-local conversations + configured endpoints).
 export type AssistantMode = 'online' | 'offline';
 
-// Offline settings surface, kept deliberately minimal (one mode selector,
-// two independent FULL endpoint URLs, and a manual model-id fallback).
-// The endpoint URLs are INDEPENDENT full URLs (e.g.
-// "http://localhost:8080/v1/models" and "http://localhost:8080/v1/
-// chat/completions") — not a shared base URL — because OpenAI-compatible
-// deployments expose the two routes on arbitrary paths. Blank strings mean
-// "not configured": a blank model endpoint means NO catalog fetch is ever
-// issued (never a silent call to the default relay), and a blank stream
-// endpoint means streaming explains the configuration need instead of
-// falling back to the default app server.
+// Offline settings surface, kept deliberately minimal: ONE mode selector and
+// ONE provider base URL. The standard OpenAI-compatible routes are DERIVED
+// from that base (api/provider.ts): GET `${base}/models` for the catalog and
+// POST `${base}/chat/completions` for the streamed reply — so exactly one
+// endpoint is configured (never two), and there is NO manual model id: the
+// catalog is auto-discovered into the existing model picker (remembered-model
+// behavior kept) and a catalog failure surfaces in the banner without a
+// manual workaround. A blank base means "not configured": NO catalog fetch is
+// ever issued (never a silent call to the default relay), and streaming
+// explains the configuration need instead of falling back to the default app
+// server.
 export type AssistantSettings = {
     mode: AssistantMode;
-    // Full URL of the OpenAI-compatible model list route (GET {url}).
-    modelEndpoint: string;
-    // Full URL of the OpenAI-compatible streaming chat completion route (POST {url}).
-    streamEndpoint: string;
-    // Manual model id used when the model list endpoint is unavailable or left
-    // blank, so an empty catalog cannot deadlock the composer.
-    manualModel: string;
+    // Base URL of the OpenAI-compatible provider (e.g.
+    // "http://192.168.50.109:5500/providers/private/v1"): the catalog is
+    // GET {base}/models and the streamed completions POST to
+    // {base}/chat/completions.
+    providerBase: string;
 };
 
 export const ASSISTANT_SETTINGS_KEY = 'chat-assistant:settings';
@@ -74,38 +75,70 @@ export const LOCAL_CONVERSATIONS_KEY = 'chat-assistant:offline-conversations';
 // explicit settings switch).
 export const defaultAssistantSettings = (): AssistantSettings => ({
     mode: 'online',
-    modelEndpoint: '',
-    streamEndpoint: '',
-    manualModel: ''
+    providerBase: ''
 });
+
+// Canonical provider-base form: trimmed and stripped of trailing slashes so
+// the derived routes (${base}/models, ${base}/chat/completions) can never
+// double-slash and the stored form round-trips byte-identically.
+export const normalizeProviderBase = (value: string): string =>
+    value.trim().replace(/\/+$/, '');
+
+// Conservative migration of the PRIOR persisted shape
+// ({ modelEndpoint, streamEndpoint, manualModel }) onto the single provider
+// base. A base is derived ONLY from the standard route suffixes on a shared
+// origin+path:
+//   - modelEndpoint  `${base}/models`           → base
+//   - streamEndpoint  `${base}/chat/completions` → base
+// When both standard-suffixed fields exist, they must agree (otherwise there
+// is no common base to ask for); a single standard-suffixed field derives
+// alone. Anything non-standard (unknown path shapes, mismatched bases,
+// blank/missing fields) degrades to '' — the settings UI asks for the new
+// single base URL. The suffixes are only EVER STRIPPED, so the derived base
+// can never concatenate a route suffix twice, and `manualModel` is dropped
+// (the single base + auto-discovered catalog supersedes the manual fallback).
+export const deriveProviderBase = (raw: {
+    providerBase?: unknown;
+    modelEndpoint?: unknown;
+    streamEndpoint?: unknown;
+}): string => {
+    // The NEW persisted shape wins verbatim (already canonical).
+    if (typeof raw.providerBase === 'string') return normalizeProviderBase(raw.providerBase);
+    const modelUrl = typeof raw.modelEndpoint === 'string' ? normalizeProviderBase(raw.modelEndpoint) : '';
+    const streamUrl = typeof raw.streamEndpoint === 'string' ? normalizeProviderBase(raw.streamEndpoint) : '';
+    const candidates: string[] = [];
+    if (modelUrl.endsWith('/models')) candidates.push(modelUrl.slice(0, -'/models'.length));
+    if (streamUrl.endsWith('/chat/completions')) candidates.push(streamUrl.slice(0, -'/chat/completions'.length));
+    // Mismatched bases are NOT safe to guess: ask for the new single URL.
+    if (candidates.length === 2 && candidates[0] !== candidates[1]) return '';
+    return candidates[0] ?? '';
+};
 
 // Structural guard for one persisted settings object: corrupt or legacy JSON
 // must degrade to the defaults instead of crashing the dashboard (the same
-// best-effort read style the agent registry uses in ../agents).
-const isAssistantSettings = (value: unknown): value is AssistantSettings => {
+// best-effort read style the agent registry uses in ../agents). The mode is
+// the only REQUIRED discriminator — the endpoint fields migrate (see
+// deriveProviderBase), so a legacy object is readable, not fatal.
+const isPersistedAssistantSettings = (value: unknown): value is { mode: AssistantMode; providerBase?: string; modelEndpoint?: string; streamEndpoint?: string } => {
     if (typeof value !== 'object' || value === null) return false;
-    const candidate = value as Partial<AssistantSettings>;
-    return (candidate.mode === 'online' || candidate.mode === 'offline')
-        && typeof candidate.modelEndpoint === 'string'
-        && typeof candidate.streamEndpoint === 'string'
-        && typeof candidate.manualModel === 'string';
+    const candidate = value as Record<string, unknown>;
+    return candidate.mode === 'online' || candidate.mode === 'offline';
 };
 
 // Read the persisted settings; anything unreadable/corrupt resolves to the
-// online default (the existing behavior is the safe fallback).
+// online default (the existing behavior is the safe fallback). Prior
+// two-endpoint persisted settings migrate onto the single provider base
+// (deriveProviderBase) on read, so an old configuration keeps working the
+// standard routes without re-entering URLs.
 export const loadAssistantSettings = (): AssistantSettings => {
     try {
         const raw = window.localStorage.getItem(ASSISTANT_SETTINGS_KEY);
         if (!raw) return defaultAssistantSettings();
         const parsed: unknown = JSON.parse(raw);
-        if (!isAssistantSettings(parsed)) return defaultAssistantSettings();
-        // Persist trimmed strings so the stored form is canonical and
-        // round-trips byte-identically.
+        if (!isPersistedAssistantSettings(parsed)) return defaultAssistantSettings();
         return {
             mode: parsed.mode,
-            modelEndpoint: parsed.modelEndpoint.trim(),
-            streamEndpoint: parsed.streamEndpoint.trim(),
-            manualModel: parsed.manualModel.trim()
+            providerBase: deriveProviderBase(parsed)
         };
     } catch {
         return defaultAssistantSettings();
@@ -113,15 +146,14 @@ export const loadAssistantSettings = (): AssistantSettings => {
 };
 
 // Persist the settings immediately (every settings edit in the UI funnels
-// through here so a reload always restores the same configuration). A
+// through here so a reload always restores the same configuration) in the
+// canonical single-base form — legacy fields are never re-written. A
 // locked-down storage that throws surfaces the write failure to the caller
 // instead of silently dropping the configuration.
 export const saveAssistantSettings = (settings: AssistantSettings): AssistantSettings => {
     const canonical: AssistantSettings = {
         mode: settings.mode,
-        modelEndpoint: settings.modelEndpoint.trim(),
-        streamEndpoint: settings.streamEndpoint.trim(),
-        manualModel: settings.manualModel.trim()
+        providerBase: normalizeProviderBase(settings.providerBase)
     };
     window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify(canonical));
     return canonical;

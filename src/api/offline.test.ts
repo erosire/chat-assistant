@@ -45,12 +45,10 @@ describe('assistant settings (api/offline)', () => {
         window.localStorage.clear();
     });
 
-    it('defaults to the online mode with blank endpoints when nothing is stored', () => {
+    it('defaults to the online mode with a blank provider base when nothing is stored', () => {
         expect(loadAssistantSettings()).toEqual({
             mode: 'online',
-            modelEndpoint: '',
-            streamEndpoint: '',
-            manualModel: ''
+            providerBase: ''
         });
         // The exported default helper is the same canonical shape the UI
         // reads on its first launch.
@@ -58,21 +56,21 @@ describe('assistant settings (api/offline)', () => {
         expect(window.localStorage.getItem(ASSISTANT_SETTINGS_KEY)).toBeNull();
     });
 
-    it('round-trips a stored offline configuration and trims the URL fields', () => {
+    it('round-trips a stored offline configuration and normalizes the base (trim + trailing slashes)', () => {
+        // The exact configured example from the requirement: the canonical
+        // persisted form strips whitespace and every trailing slash so the
+        // derived routes (${base}/models, ${base}/chat/completions) are
+        // exact.
         const settings: AssistantSettings = {
             mode: 'offline',
-            modelEndpoint: '  http://models.test:8080/v1/models  ',
-            streamEndpoint: 'http://stream.test:9090/v1/chat/completions',
-            manualModel: ' openai/gpt-4o-mini '
+            providerBase: '  http://192.168.50.109:5500/providers/private/v1//  '
         };
         const saved = saveAssistantSettings(settings);
 
         // The persisted form is the trimmed canonical object.
         expect(saved).toEqual({
             mode: 'offline',
-            modelEndpoint: 'http://models.test:8080/v1/models',
-            streamEndpoint: 'http://stream.test:9090/v1/chat/completions',
-            manualModel: 'openai/gpt-4o-mini'
+            providerBase: 'http://192.168.50.109:5500/providers/private/v1'
         });
         expect(JSON.parse(window.localStorage.getItem(ASSISTANT_SETTINGS_KEY)!)).toEqual(saved);
         // A fresh read (a simulated reload) restores the exact configuration.
@@ -82,9 +80,91 @@ describe('assistant settings (api/offline)', () => {
     it('restores the online default when the stored JSON is corrupt', () => {
         window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, '{not json');
         expect(loadAssistantSettings()).toEqual(defaultAssistantSettings());
-        // A legacy/partial object (missing string fields) degrades too.
+        // A partial object (a valid mode with no endpoint fields) degrades to
+        // that mode with a blank base — the settings UI asks for the single
+        // URL instead of crashing.
         window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({ mode: 'offline' }));
-        expect(loadAssistantSettings()).toEqual(defaultAssistantSettings());
+        expect(loadAssistantSettings()).toEqual({ mode: 'offline', providerBase: '' });
+    });
+
+    it('migrates a persisted two-endpoint legacy configuration to the provider base', () => {
+        // The PRIOR persisted shape ({ modelEndpoint, streamEndpoint,
+        // manualModel }): a standard-suffixed pair on a shared base derives
+        // that base (suffixes only ever STRIPPED), and the dropped manual
+        // model field disappears from the migrated + saved canonical form.
+        window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
+            mode: 'offline',
+            modelEndpoint: 'http://192.168.50.109:5500/providers/private/v1/models',
+            streamEndpoint: 'http://192.168.50.109:5500/providers/private/v1/chat/completions/',
+            manualModel: 'openai/gpt-4o-mini'
+        }));
+        expect(loadAssistantSettings()).toEqual({
+            mode: 'offline',
+            providerBase: 'http://192.168.50.109:5500/providers/private/v1'
+        });
+        // Persisting the migrated settings rewrites storage in the NEW single
+        // shape (no legacy fields, no double-suffixed base).
+        const migrated = saveAssistantSettings(loadAssistantSettings());
+        expect(migrated).toEqual({
+            mode: 'offline',
+            providerBase: 'http://192.168.50.109:5500/providers/private/v1'
+        });
+        expect(JSON.parse(window.localStorage.getItem(ASSISTANT_SETTINGS_KEY)!)).toEqual(migrated);
+    });
+
+    it('derives the base from a single standard-suffixed legacy endpoint', () => {
+        // Only the model-list URL is a standard `/models` route: it derives
+        // the base alone.
+        window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
+            mode: 'offline',
+            modelEndpoint: 'http://models.test:8080/v1/models',
+            streamEndpoint: ''
+        }));
+        expect(loadAssistantSettings()).toEqual({ mode: 'offline', providerBase: 'http://models.test:8080/v1' });
+
+        // Only the stream URL is a standard `/chat/completions` route: it
+        // derives the base alone too.
+        window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
+            mode: 'offline',
+            modelEndpoint: '',
+            streamEndpoint: 'http://stream.test:9090/v1/chat/completions'
+        }));
+        expect(loadAssistantSettings()).toEqual({ mode: 'offline', providerBase: 'http://stream.test:9090/v1' });
+    });
+
+    it('never concatenates a suffix twice and asks for a new base when the legacy shape is unsafe', () => {
+        // Mismatched bases (two hosts) share no provider — NO safe
+        // derivation; the settings UI asks for the single base URL.
+        window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
+            mode: 'offline',
+            modelEndpoint: 'http://a.test:8080/v1/models',
+            streamEndpoint: 'http://b.test:9090/v1/chat/completions'
+        }));
+        expect(loadAssistantSettings()).toEqual({ mode: 'offline', providerBase: '' });
+
+        // Non-standard paths carry no recognizable route suffix: no
+        // derivation (a base derived from these would concatenate routes
+        // onto the wrong origin).
+        window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
+            mode: 'offline',
+            modelEndpoint: 'http://a.test:8080/custom/models/list',
+            streamEndpoint: 'http://a.test:8080/custom/completions/run'
+        }));
+        expect(loadAssistantSettings()).toEqual({ mode: 'offline', providerBase: '' });
+
+        // A SAFE derivation never keeps a route suffix: re-saving the
+        // migrated base can never double-concatenate /models or
+        // /chat/completions (the canonical form strips them all).
+        window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
+            mode: 'offline',
+            modelEndpoint: 'http://a.test:8080/v1/models/',
+            streamEndpoint: 'http://a.test:8080/v1/chat/completions'
+        }));
+        const migrated = loadAssistantSettings();
+        expect(migrated).toEqual({ mode: 'offline', providerBase: 'http://a.test:8080/v1' });
+        expect(migrated.providerBase.endsWith('/models')).toBe(false);
+        expect(migrated.providerBase.endsWith('/chat/completions')).toBe(false);
+        expect(saveAssistantSettings(migrated)).toEqual({ mode: 'offline', providerBase: 'http://a.test:8080/v1' });
     });
 });
 

@@ -1,9 +1,10 @@
-// T4 targeted review tests for the offline (no-application-server) mode:
+// Targeted review tests for the offline (no-application-server) mode:
 // the failure/race checks the primary test file (ChatAssistantApp.test.tsx)
 // does not pin — mode switches DURING an in-flight stream, local
-// persistence write failures, offline catalog failures, and the manual
-// model fallback's no-clobbering rule. Every test asserts exact observable
-// state (no fuzzy ranges).
+// persistence write failures, offline catalog failures (no manual fallback
+// — the remembered model is the only unblock), and the remembered model's
+// blank-base adoption. Every test asserts exact observable state (no
+// fuzzy ranges).
 //
 // Namespace-isolation contract under test (ChatAssistantApp.tsx submit flow,
 // epoch fix): the sending EPOCH (monotonic counter, `modeEpoch`) is
@@ -28,10 +29,16 @@ import { ChatAssistantApp } from './ChatAssistantApp';
 
 const BASE_URL = 'http://test.local/v1/chat-assistant/conversation';
 const PROVIDER_URL = 'http://test.local/providers/private/v1';
-// Independent offline endpoints (distinct host/ports) prove the configured
-// full URLs are used verbatim — no default application-server fallback.
-const OFFLINE_MODELS_URL = 'http://offline-race.test:8080/v1/models';
-const OFFLINE_STREAM_URL = 'http://offline-race.test:8080/v1/chat/completions';
+// ONE offline provider base (distinct host/port proves the configured base
+// is used, never a default application-server fallback): the standard
+// routes are DERIVED beneath it — ${base}/models catalog,
+// ${base}/chat/completions stream.
+const OFFLINE_PROVIDER_BASE = 'http://offline-race.test:8080/v1';
+const OFFLINE_MODELS_URL = `${OFFLINE_PROVIDER_BASE}/models`;
+const OFFLINE_STREAM_URL = `${OFFLINE_PROVIDER_BASE}/chat/completions`;
+// Must match MODEL_STORAGE_KEY in ChatAssistantApp.tsx (the remembered-model
+// memory — the offline auto-selection fallback).
+const MODEL_STORAGE_KEY = 'chat-assistant:model';
 const DEFAULT_MODEL = 'zeta-org/test-model';
 
 const catalog = {
@@ -87,13 +94,14 @@ const controlledStream = () => {
 const renderApp = () =>
     render(<ChatAssistantApp baseUrl={BASE_URL} providerUrl={PROVIDER_URL} />);
 
-// Seed the persisted settings (a reload with saved configuration) BEFORE mount.
-const seedOffline = (over: Partial<{ modelEndpoint: string; streamEndpoint: string; manualModel: string }> = {}) => {
+// Seed the persisted settings (a reload with saved configuration) BEFORE
+// mount: the canonical single-base shape (api/offline.ts AssistantSettings) —
+// the standard routes are derived beneath the base, and the remembered model
+// memory (when set separately) is the only auto-selection fallback.
+const seedOffline = (over: Partial<{ providerBase: string }> = {}) => {
     window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
         mode: 'offline',
-        modelEndpoint: OFFLINE_MODELS_URL,
-        streamEndpoint: OFFLINE_STREAM_URL,
-        manualModel: '',
+        providerBase: OFFLINE_PROVIDER_BASE,
         ...over
     }));
 };
@@ -323,8 +331,8 @@ describe('offline mode: provider and storage failure handling', () => {
         expect(screen.getByTestId('empty-chat-list').textContent).toBe('No chats yet.');
     });
 
-    it('surfaces the offline catalog failure in the banner and the manual model id unblocks the composer', async () => {
-        seedOffline({ modelEndpoint: OFFLINE_MODELS_URL, streamEndpoint: OFFLINE_STREAM_URL, manualModel: 'manual/x' });
+    it('surfaces the offline catalog failure in the banner without any manual fallback', async () => {
+        seedOffline({ providerBase: OFFLINE_PROVIDER_BASE });
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url === OFFLINE_MODELS_URL && init?.method === 'GET') {
                 // The provider reports its failure body; the surface banner reads it verbatim.
@@ -339,43 +347,32 @@ describe('offline mode: provider and storage failure handling', () => {
         renderApp();
         fireEvent.focus(screen.getByTestId('chat-input'));
 
-        // The catalog failure surfaces (provider error text verbatim) while
-        // the manual-model effect (offline + empty selection + manual id set)
-        // adopts 'manual/x' into the selection, keeping the composer usable.
+        // The catalog failure surfaces (provider error text verbatim). There
+        // is NO manual model id configuration: the empty picker stays empty
+        // and disabled — a remembered model (persisted in a previous session)
+        // is the ONLY unblock, and none is seeded here.
         await waitFor(() => expect(screen.getByTestId('chat-error').textContent).toContain('endpoint unreachable'));
-        expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('manual/x');
+        expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('');
+        expect((screen.getByTestId('model-select') as HTMLSelectElement).disabled).toBe(true);
         // Exactly ONE request was issued (the failed catalog fetch) — no
         // default application-server fallback call of any kind.
         expect((fetch as any).mock.calls).toEqual([[OFFLINE_MODELS_URL, { method: 'GET' }]]);
     });
 
-    it('adopts the manual model id into an empty selection only — a current selection is never clobbered by later edits', async () => {
-        // Blank endpoints: zero network at mount; the manual id is the ONLY
-        // model source, and it is adopted into the (initially empty) selection.
-        seedOffline({ modelEndpoint: '', streamEndpoint: '', manualModel: 'manual/one' });
+    it('adopts the remembered model into a blank selection with a blank provider base — zero network at mount', async () => {
+        // Blank base: zero network at mount (the catalog is never fetched
+        // from a default server); the REMEMBERED model is the only source of
+        // a model id and is adopted into the (initially empty) selection.
+        seedOffline({ providerBase: '' });
+        window.localStorage.setItem(MODEL_STORAGE_KEY, 'manual/one');
         vi.stubGlobal('fetch', vi.fn());
         renderApp();
-        // The blank selection is unblocked by the adoption (the fallback only
-        // fills a BLANK selection).
+        // The blank selection is unblocked by the adoption (the remembered
+        // model only fills a BLANK selection — an explicit pick or a catalog
+        // entry always wins).
         await focusAndAwaitModel('manual/one');
 
-        // The manual-model field renders in the settings content surface, so
-        // open the settings tab before exercising it; the model select lives in
-        // the (unmounted-while-settings) chat surface, so each edit is verified
-        // by returning to the chat tab and reading the select there.
-        fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
-        // Editing the manual model AFTER an adoption must not overwrite the
-        // current selection (the documented no-clobber rule).
-        fireEvent.change(screen.getByTestId('manual-model-input'), { target: { value: 'manual/two' } });
-        fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
-        expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('manual/one');
-        // Blanking the manual field must not clobber the selection either.
-        fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
-        fireEvent.change(screen.getByTestId('manual-model-input'), { target: { value: '' } });
-        fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
-        expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('manual/one');
-
-        // The whole flow is network-free at this point (blank endpoints).
+        // The whole flow is network-free at this point (blank base).
         expect((fetch as any).mock.calls).toEqual([]);
     });
 });

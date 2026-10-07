@@ -3935,16 +3935,19 @@ describe('ChatAssistantApp', () => {
 // persists it (reload restores mode/config/conversations), routes every
 // conversation CRUD through the durable browser-local store (api/offline.ts)
 // with NO request to the application storage server (192.168.50.109:5000) or
-// the private provider relay (192.168.50.109:5500), and uses the configured
-// INDEPENDENT full endpoint URLs for the OpenAI-compatible model list and
-// chat SSE. Blank endpoints explain the configuration need — they never fall
-// back to a default server.
+// the private provider relay (192.168.50.109:5500), and derives the standard
+// OpenAI-compatible routes from ONE configured provider base URL: the
+// ${base}/models catalog and the ${base}/chat/completions stream. A blank
+// base explains the configuration need — it never falls back to a default
+// server, and there is no manual model id (auto-discovery + the remembered
+// model only).
 describe('offline (no-application-server) mode', () => {
-    // Independent hosts/ports prove the two endpoints are configured as
-    // separate full URLs (not one shared base).
-    const OFFLINE_MODELS_URL = 'http://offline-models.test:8080/v1/models';
-    const OFFLINE_STREAM_URL = 'http://offline-models.test:8080/v1/chat/completions';
-    const STREAM_ALT_URL = 'http://offline-stream.test:9090/custom/completions';
+    // ONE provider base: the standard routes are derived beneath it (the
+    // exact URL pair the provider client produces — no separate
+    // configuration, no suffix appended twice).
+    const OFFLINE_PROVIDER_BASE = 'http://offline-provider.test:8080/v1';
+    const OFFLINE_MODELS_URL = `${OFFLINE_PROVIDER_BASE}/models`;
+    const OFFLINE_STREAM_URL = `${OFFLINE_PROVIDER_BASE}/chat/completions`;
 
     beforeEach(() => {
         window.localStorage.clear();
@@ -3956,20 +3959,26 @@ describe('offline (no-application-server) mode', () => {
     });
 
     // Seed the persisted settings BEFORE the component mounts (a reload with
-    // the saved configuration).
-    const seedOffline = (over: Partial<{ modelEndpoint: string; streamEndpoint: string; manualModel: string }> = {}) => {
+    // the saved configuration): the canonical single-base shape (api/offline.ts
+    // AssistantSettings).
+    const seedOffline = (over: Partial<{ providerBase: string }> = {}) => {
         window.localStorage.setItem(ASSISTANT_SETTINGS_KEY, JSON.stringify({
             mode: 'offline',
-            modelEndpoint: OFFLINE_MODELS_URL,
-            streamEndpoint: OFFLINE_STREAM_URL,
-            manualModel: '',
+            providerBase: OFFLINE_PROVIDER_BASE,
             ...over
         }));
     };
 
-    // Exact-URL fetch mock: only the configured endpoint URLs answer, every
-    // other URL 404s loudly — a silent default-URL call is therefore
-    // impossible (and any default-LAN host would surface as "unexpected").
+    // Seed the remembered model memory (the offline auto-selection fallback —
+    // the manual model configuration no longer exists).
+    const seedRememberedModel = (id: string) => {
+        window.localStorage.setItem(MODEL_STORAGE_KEY, id);
+    };
+
+    // Exact-URL fetch mock: only the DERIVED standard routes of the configured
+    // base answer, every other URL 404s loudly — a silent default-URL call is
+    // therefore impossible (and any default-LAN host would surface as
+    // "unexpected").
     const mockOfflineFetch = (catalogIds: string[] = []) => {
         const fetchMock = vi.fn((url: string, init?: RequestInit) => {
             if (url === OFFLINE_MODELS_URL && init?.method === 'GET') {
@@ -3978,7 +3987,7 @@ describe('offline (no-application-server) mode', () => {
                     data: catalogIds.map((id) => ({ id, object: 'model' }))
                 }));
             }
-            if ((url === OFFLINE_STREAM_URL || url === STREAM_ALT_URL) && init?.method === 'POST') {
+            if (url === OFFLINE_STREAM_URL && init?.method === 'POST') {
                 return Promise.resolve(sseResponse(completionFrames));
             }
             return Promise.resolve(response(404, { error: `unexpected request: ${String(url)} ${init?.method ?? ''}` }));
@@ -4013,9 +4022,7 @@ describe('offline (no-application-server) mode', () => {
         expect(screen.getByTestId('settings-workspace')).toBeDefined();
         expect((screen.getByTestId('mode-select') as HTMLSelectElement).value).toBe('online');
         // The offline-only fields stay hidden while online.
-        expect(screen.queryByTestId('model-endpoint-input')).toBeNull();
-        expect(screen.queryByTestId('stream-endpoint-input')).toBeNull();
-        expect(screen.queryByTestId('manual-model-input')).toBeNull();
+        expect(screen.queryByTestId('provider-base-input')).toBeNull();
         // The note is explicit about scope: no Chat Assistant server, but the
         // inference endpoints still need connectivity + CORS.
         const note = screen.getByTestId('mode-note').textContent ?? '';
@@ -4034,19 +4041,18 @@ describe('offline (no-application-server) mode', () => {
         fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
         fireEvent.change(screen.getByTestId('mode-select'), { target: { value: 'offline' } });
 
-        // The settings are persisted immediately in canonical trimmed form.
+        // The settings are persisted immediately in canonical trimmed form
+        // (the NEW single-base shape — the legacy endpoint/manual fields are
+        // gone from storage).
         expect(JSON.parse(window.localStorage.getItem(ASSISTANT_SETTINGS_KEY)!)).toEqual({
             mode: 'offline',
-            modelEndpoint: '',
-            streamEndpoint: '',
-            manualModel: ''
+            providerBase: ''
         });
-        // The offline-only fields render on the switch.
-        expect(screen.getByTestId('model-endpoint-input')).toBeDefined();
-        expect(screen.getByTestId('stream-endpoint-input')).toBeDefined();
-        expect(screen.getByTestId('manual-model-input')).toBeDefined();
-        // The empty-endpoint hint explains the configuration need.
-        expect(screen.getByTestId('offline-endpoint-hint').textContent).toContain('FULL URL');
+        // The offline-only field (the single provider base URL) renders on the
+        // switch.
+        expect(screen.getByTestId('provider-base-input')).toBeDefined();
+        // The empty-base hint explains the configuration need.
+        expect(screen.getByTestId('offline-endpoint-hint').textContent).toContain('provider base URL');
 
         // A remount restores the persisted mode (the reload contract); the
         // tab state is session-level, so the settings surface re-opens through
@@ -4057,23 +4063,25 @@ describe('offline (no-application-server) mode', () => {
         await waitFor(() => expect((screen.getByTestId('mode-select') as HTMLSelectElement).value).toBe('offline'));
     });
 
-    it('uses the independent full endpoint URLs exactly and never touches the default application servers', async () => {
+    it('derives the standard model and stream routes from the single provider base and never touches the default application servers', async () => {
         mockOfflineFetch([DEFAULT_MODEL]);
-        seedOffline({ modelEndpoint: OFFLINE_MODELS_URL, streamEndpoint: STREAM_ALT_URL });
+        seedOffline({ providerBase: OFFLINE_PROVIDER_BASE });
         renderApp();
         await focusComposerAndWaitModel(DEFAULT_MODEL);
 
-        // Mount issued EXACTLY the configured model-list URL (no default
-        // relay catalog call, no storage collection call).
+        // Mount issued EXACTLY the derived catalog route ${base}/models (no
+        // default relay catalog call, no storage collection call).
         expect((fetch as any).mock.calls).toEqual([[OFFLINE_MODELS_URL, { method: 'GET' }]]);
 
-        // Send: the streamed completion POST lands on the INDEPENDENT stream
-        // URL with the OpenAI-compatible payload.
+        // Send: the streamed completion POST lands on the DERIVED stream
+        // route ${base}/chat/completions with the OpenAI-compatible payload
+        // (same base as the catalog — the standard routes, not two
+        // independent URLs).
         sendTurn('Hello offline');
         await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(1));
         const posts = (fetch as any).mock.calls.filter((call: unknown[]) => ((call[1] ?? {}) as { method?: string }).method === 'POST');
         expect(posts).toEqual([[
-            STREAM_ALT_URL,
+            OFFLINE_STREAM_URL,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -4092,39 +4100,55 @@ describe('offline (no-application-server) mode', () => {
         }
     });
 
-    it('keeps the composer alive with a manual model id when the model list endpoint is blank (zero network at mount)', async () => {
+    it('adopts the remembered model with a blank provider base (zero network at mount) and explains the missing base on send', async () => {
         mockOfflineFetch([]);
-        seedOffline({ modelEndpoint: '', streamEndpoint: OFFLINE_STREAM_URL, manualModel: 'manual/model-x' });
+        seedOffline({ providerBase: '' });
+        seedRememberedModel('manual/model-x');
         renderApp();
         await focusComposerAndWaitModel('manual/model-x');
 
-        // Blank model endpoint: the catalog fetch is SKIPPED (never a silent
-        // default call) and the manual model id is adopted into the
-        // selection, unblocking the composer.
+        // Blank base: the catalog fetch is SKIPPED (never a silent default
+        // call) and the remembered model is adopted into the selection
+        // (auto-selection — the manual model configuration no longer
+        // exists).
         expect((fetch as any).mock.calls).toEqual([]);
 
+        // No stream route is configured: the send rejects with the
+        // configuration explanation BEFORE any request (the default server
+        // is never called), and the draft is restored for retry.
         sendTurn('Hello offline');
-        await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(1));
-        expect((fetch as any).mock.calls).toEqual([[
-            OFFLINE_STREAM_URL,
-            expect.objectContaining({ method: 'POST' })
-        ]]);
+        await waitFor(() => expect(screen.getByTestId('chat-error').textContent).toContain('provider base URL'));
+        expect(screen.getByTestId('chat-error').textContent).toContain('Settings');
+        expect((fetch as any).mock.calls).toEqual([]);
+        expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('Hello offline');
     });
 
-    it('explains the blank stream endpoint in the error banner and never calls a default server', async () => {
-        mockOfflineFetch([]);
-        seedOffline({ modelEndpoint: '', streamEndpoint: '', manualModel: 'manual/model-x' });
+    it('surfaces the offline catalog failure in the banner without a manual fallback', async () => {
+        const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+            if (url === OFFLINE_MODELS_URL && init?.method === 'GET') {
+                // The provider reports its failure body; the surface banner reads it verbatim.
+                return Promise.resolve(response(500, { error: 'endpoint unreachable' }));
+            }
+            if (url === OFFLINE_STREAM_URL && init?.method === 'POST') {
+                return Promise.resolve(sseResponse(completionFrames));
+            }
+            return Promise.resolve(response(404, { error: `unexpected request: ${String(url)} ${init?.method ?? ''}` }));
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        seedOffline();
         renderApp();
-        await focusComposerAndWaitModel('manual/model-x');
+        fireEvent.focus(screen.getByTestId('chat-input'));
 
-        sendTurn('Retry this');
-
-        await waitFor(() => expect(screen.getByTestId('chat-error').textContent).toContain('chat completion stream endpoint'));
-        expect(screen.getByTestId('chat-error').textContent).toContain('Settings');
-        // No network traffic at all: the rejection happens before any fetch.
-        expect((fetch as any).mock.calls).toEqual([]);
-        // The failed draft is restored on the sending surface for retry.
-        expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('Retry this');
+        // The catalog failure surfaces (provider error text verbatim) and
+        // there is NO manual model fallback: the empty picker stays empty
+        // and disabled (a remembered model, had one been persisted, would
+        // be the only unblock).
+        await waitFor(() => expect(screen.getByTestId('chat-error').textContent).toContain('endpoint unreachable'));
+        expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('');
+        expect((screen.getByTestId('model-select') as HTMLSelectElement).disabled).toBe(true);
+        // Exactly ONE request was issued (the failed catalog fetch) — no
+        // default application-server fallback call of any kind.
+        expect((fetch as any).mock.calls).toEqual([[OFFLINE_MODELS_URL, { method: 'GET' }]]);
     });
 
     it('runs every CRUD flow against the local store: create, list, get, append, update, delete, fork, and draft', async () => {

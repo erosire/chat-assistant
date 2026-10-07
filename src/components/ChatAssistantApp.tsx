@@ -197,7 +197,6 @@ import {
     deleteLocalConversation,
     fetchConversation,
     fetchProviderModels,
-    fetchProviderModelsFromUrl,
     getLocalConversation,
     listConversations,
     listLocalConversations,
@@ -208,7 +207,6 @@ import {
     speechDeniedDetail,
     speechRecognitionSupported,
     streamProviderChatCompletion,
-    streamProviderChatCompletionFromUrl,
     loadAssistantSettings,
     DEFAULT_CHAT_ASSISTANT_URL,
     DEFAULT_PROVIDER_URL,
@@ -2495,46 +2493,52 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
 
     // Load the provider model catalog. ONLINE mode keeps the existing behavior
     // (GET {provider}/models on the private relay — no API key from the
-    // browser). OFFLINE mode fetches the catalog from the user-configured FULL
-    // model-list endpoint URL (independent of the stream URL and of the
-    // default relay); a BLANK model endpoint issues NO request at all — the
-    // catalog stays empty, the composer's manual model fallback (Settings →
-    // manualModel) keeps the chat usable, and the default app server is never
-    // called silently. The effect re-runs when the mode or the configured
-    // endpoint changes (mode switch / settings edit); the cancelled flag
-    // keeps a stale in-flight response from one configuration from landing
-    // after the switch (no cross-mode catalog mixing).
+    // browser). OFFLINE mode fetches the catalog from the standard route
+    // DERIVED from the single configured provider base URL (Settings →
+    // providerBase: GET ${base}/models — the stream route is
+    // ${base}/chat/completions, same derivation); a BLANK base issues NO
+    // request at all — the catalog stays empty, the remembered model (if any)
+    // is adopted to unblock the composer, and the default app server is
+    // never called silently. There is no manual model id: a catalog
+    // FAILURE surfaces in the banner as-is (the picker stays empty; the
+    // remembered model, if persisted, still unblocks sending). The effect
+    // re-runs when the mode or the configured base changes (mode switch /
+    // settings edit); the cancelled flag keeps a stale in-flight response
+    // from one configuration from landing after the switch (no cross-mode
+    // catalog mixing).
     useEffect(() => {
         let cancelled = false;
         void (async () => {
-            // The offline branch reads the LIVE settings (trimmed URLs are the
-            // canonical persisted form).
-            const offlineEndpoint = settings().mode === 'offline' ? settings().modelEndpoint.trim() : '';
+            // The offline branch reads the LIVE settings (the trimmed base is
+            // the canonical persisted form — normalizeProviderBase).
+            const offlineProviderBase = settings().mode === 'offline' ? settings().providerBase.trim() : '';
             if (offline) {
-                if (!offlineEndpoint) {
+                if (!offlineProviderBase) {
                     // Unconfigured catalog: NO fetch (see the block comment).
-                    // Fall back to the remembered model, else the manual
-                    // model id, so blank-endpoint offline never deadlocks.
+                    // A remembered model (if any) keeps the composer usable;
+                    // there is no manual model fallback to ask for.
                     if (!model()) {
-                        const initial = readRememberedModel() || settings().manualModel.trim() || '';
+                        const initial = readRememberedModel();
                         if (initial) model(initial);
                     }
                     return;
                 }
                 try {
-                    const catalog = await fetchProviderModelsFromUrl(offlineEndpoint);
+                    const catalog = await fetchProviderModels(offlineProviderBase);
                     if (cancelled) return;
                     const ids = catalog
                         .map((entry) => entry.id)
                         .sort((a, b) => modelLabel(a).localeCompare(modelLabel(b)));
                     models(ids);
                     if (!model()) {
-                        const initial = readRememberedModel() || ids[0] || settings().manualModel.trim() || '';
+                        const initial = readRememberedModel() || ids[0] || '';
                         if (initial) model(initial);
                     }
                 } catch (reason) {
-                    // A failed offline catalog fetch surfaces in the banner; the
-                    // manual model fallback keeps the composer usable.
+                    // A failed offline catalog fetch surfaces in the banner —
+                    // no manual workaround: the picker stays empty until the
+                    // base is fixed (a remembered model, if any, still
+                    // unblocks sending).
                     if (!cancelled) error(reason instanceof Error ? reason.message : String(reason));
                 }
                 return;
@@ -2562,10 +2566,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         return () => {
             cancelled = true;
         };
-        // Mode + endpoint changes reload the catalog for the active
-        // configuration; the accessor functions are stable state-hook handles.
+        // Mode + configured base changes reload the catalog for the active
+        // configuration; the accessor functions are stable state-hook
+        // handles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [providerUrl, offline, settings().modelEndpoint, settings().manualModel]);
+    }, [providerUrl, offline, settings().providerBase]);
 
     // Load the conversation list for the ACTIVE MODE so the sidebar restores
     // its history after a reload: ONLINE reads the server collection (empty
@@ -2593,17 +2598,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // summaries); chats/error are stable state-hook handles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [baseUrl, offline]);
-
-    // Offline manual-model fallback: while OFFLINE, no catalog entry is
-    // loaded, and nothing is selected yet, the Settings manual model id
-    // (typed after mount) becomes the selected model. A remembered model or
-    // a catalog entry always wins — this only unblocks a blank selection.
-    useEffect(() => {
-        if (!offline || model() !== '') return;
-        const fallback = readRememberedModel() || settings().manualModel.trim() || '';
-        if (fallback) model(fallback);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [offline, settings().manualModel]);
 
     // Restore the persisted agent registry once on mount (localStorage; see
     // src/agents). Mount-only: every later edit rewrites the whole list
@@ -3126,16 +3120,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         error('');
     }, [activeSend, applySettings, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, loading, models, pendingUser, savingEdit, savingSystemPrompt, savingTitle, selected, settings, streaming, systemPrompt]);
 
-    const updateModelEndpoint = useCallback((value: string) => {
-        applySettings({ ...settings(), modelEndpoint: value });
-    }, [applySettings, settings]);
-
-    const updateStreamEndpoint = useCallback((value: string) => {
-        applySettings({ ...settings(), streamEndpoint: value });
-    }, [applySettings, settings]);
-
-    const updateManualModel = useCallback((value: string) => {
-        applySettings({ ...settings(), manualModel: value });
+    // Single provider base URL (offline): one edit both re-persists the
+    // configuration and re-runs the catalog effect (the derived ${base}/
+    // models route) — the ${base}/chat/completions stream route follows the
+    // same base automatically.
+    const updateProviderBase = useCallback((value: string) => {
+        applySettings({ ...settings(), providerBase: value });
     }, [applySettings, settings]);
 
     // Switch the sidebar registry tab (Chat / Agent / Tool / Settings).
@@ -3623,15 +3613,17 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 { role: 'user', content: text }
             ];
             // Provider dispatch: ONLINE streams through the private relay base
-            // (existing behavior). OFFLINE streams to the user-configured FULL
-            // stream endpoint URL — INDEPENDENT of the model-list URL and with
-            // NO fallback to the default app server: a blank endpoint rejects
-            // with the configuration explanation instead of a silent call.
-            const offlineStreamEndpoint = offline ? settings().streamEndpoint.trim() : '';
+            // (existing behavior). OFFLINE streams to the STANDARD route
+            // derived from the single configured provider base
+            // (${base}/chat/completions — the catalog's ${base}/models route
+            // shares the same base) with NO fallback to the default app
+            // server: a blank base rejects with the configuration
+            // explanation instead of a silent call.
+            const offlineProviderBase = offline ? settings().providerBase.trim() : '';
             const streamRequest = offline
-                ? (offlineStreamEndpoint
-                    ? streamProviderChatCompletionFromUrl(offlineStreamEndpoint, chosenModel, history, onSnapshot)
-                    : Promise.reject(new Error('Configure the offline chat completion stream endpoint in Settings (it is a FULL URL, e.g. http://localhost:8080/v1/chat/completions) to stream model replies offline — the default app server is not used in offline mode.')))
+                ? (offlineProviderBase
+                    ? streamProviderChatCompletion(offlineProviderBase, chosenModel, history, onSnapshot)
+                    : Promise.reject(new Error('Configure the offline provider base URL in Settings (for example, http://192.168.50.109:5500/providers/private/v1) to stream model replies offline — the model catalog lives under its /models route and replies stream from /chat/completions; the default app server is not used in offline mode.')))
                 : streamProviderChatCompletion(providerUrl, chosenModel, history, onSnapshot);
             const reply = await streamRequest;
 
@@ -3917,22 +3909,19 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         );
     });
 
-    // Build model dropdown options from the provider catalog. If the recorded model
-    // of the selected conversation is missing from the catalog it stays selectable
-    // so the conversation remains usable with its historical model. OFFLINE mode
-    // additionally offers the Settings MANUAL MODEL ID as an option: with a
-    // blank or failing model-list endpoint the catalog can be empty, and the
-    // manual fallback (adopted into the selection by the manual-model effect
-    // above) keeps the composer from deadlocking.
+    // Build model dropdown options from the provider catalog (OFFLINE: the
+    // catalog is the configured provider base's ${base}/models route — the
+    // manual model configuration no longer exists). If the recorded model
+    // of the selected conversation is missing from the catalog it stays
+    // selectable so the conversation remains usable with its historical
+    // model; the same rule lets a remembered model (the offline fallback
+    // for a blank base / failed catalog) stay pickable when its catalog
+    // entry is gone.
     const catalog = models();
     const chosenModel = model();
-    const manualModelOption = offline ? settings().manualModel.trim() : '';
-    const catalogWithManual = manualModelOption && !catalog.includes(manualModelOption)
-        ? [...catalog, manualModelOption]
+    const modelOptions = chosenModel && !catalog.includes(chosenModel)
+        ? [chosenModel, ...catalog]
         : catalog;
-    const modelOptions = chosenModel && !catalogWithManual.includes(chosenModel)
-        ? [chosenModel, ...catalogWithManual]
-        : catalogWithManual;
     // id → display label for the WHOLE option set (see uniqueModelLabels): ids
     // whose stripped names collide (the same base model served by several
     // providers) display "base (provider)" so the dropdown never lists
@@ -4345,50 +4334,32 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             <Metadata data-testid="mode-note">
                                 Offline is a no-Chat-Assistant-server mode: conversations are stored in this browser and NO requests are made to the application storage server or the private provider relay. The model endpoints below are still remote OpenAI-compatible inference services — they require network connectivity and CORS from this browser (this is not a network-free local model, and no service worker, bundled browser model, or local tool execution is provided).
                             </Metadata>
-                            {/* The offline-only configuration: two INDEPENDENT
-                                full endpoint URLs (model list / stream — NOT a
-                                shared base) plus the manual model-id fallback
-                                that keeps the composer alive when the model
-                                list is unavailable. */}
+                            {/* The offline-only configuration: a SINGLE
+                                provider base URL — the standard
+                                OpenAI-compatible routes are DERIVED beneath
+                                it (/models catalog, /chat/completions
+                                stream). No manual model id: the catalog is
+                                auto-discovered into the existing model
+                                picker. */}
                             {offline && (
                                 <>
-                                    <SettingsField data-testid="model-endpoint-field">
-                                        <span>Model list endpoint (full URL)</span>
+                                    <SettingsField data-testid="provider-base-field">
+                                        <span>Provider base URL (models /models · stream /chat/completions)</span>
                                         <SettingsInput
-                                            value={settings().modelEndpoint}
-                                            onChange={(event) => updateModelEndpoint(event.target.value)}
-                                            placeholder="http://localhost:8080/v1/models"
-                                            aria-label="Offline model list endpoint"
-                                            data-testid="model-endpoint-input"
+                                            value={settings().providerBase}
+                                            onChange={(event) => updateProviderBase(event.target.value)}
+                                            placeholder="http://192.168.50.109:5500/providers/private/v1"
+                                            aria-label="Offline provider base URL"
+                                            data-testid="provider-base-input"
                                         />
                                     </SettingsField>
-                                    <SettingsField data-testid="stream-endpoint-field">
-                                        <span>Chat completion stream endpoint (full URL)</span>
-                                        <SettingsInput
-                                            value={settings().streamEndpoint}
-                                            onChange={(event) => updateStreamEndpoint(event.target.value)}
-                                            placeholder="http://localhost:8080/v1/chat/completions"
-                                            aria-label="Offline chat completion stream endpoint"
-                                            data-testid="stream-endpoint-input"
-                                        />
-                                    </SettingsField>
-                                    <SettingsField data-testid="manual-model-field">
-                                        <span>Manual model id (fallback when the model list is unavailable)</span>
-                                        <SettingsInput
-                                            value={settings().manualModel}
-                                            onChange={(event) => updateManualModel(event.target.value)}
-                                            placeholder="openai/gpt-4o-mini"
-                                            aria-label="Manual model id"
-                                            data-testid="manual-model-input"
-                                        />
-                                    </SettingsField>
-                                    {/* The blank-endpoint explanation: shown
-                                        while EITHER endpoint is unconfigured —
-                                        a blank endpoint never silently falls
-                                        back to the default app server. */}
-                                    {(settings().modelEndpoint.trim() === '' || settings().streamEndpoint.trim() === '') && (
+                                    {/* The blank-base explanation: shown while
+                                        the base is unconfigured — a blank base
+                                        never silently falls back to the
+                                        default app server. */}
+                                    {settings().providerBase.trim() === '' && (
                                         <Metadata data-testid="offline-endpoint-hint">
-                                            Set a model list endpoint to load the available models, and a chat completion stream endpoint to stream replies — each is a FULL URL and they are INDEPENDENT (not a shared base). While they are blank, no request is sent to the default app server; enter a manual model id to chat without a model list.
+                                            Set the provider base URL to load the model catalog from its /models route and stream replies from /chat/completions (for example, http://192.168.50.109:5500/providers/private/v1). While it is blank, no request is sent to the default app server.
                                         </Metadata>
                                     )}
                                 </>
@@ -4634,11 +4605,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 {chosenModel
                                     ? modelDisplayName(chosenModel)
                                     : modelOptions.length === 0
-                                        // With no options at all the label explains WHERE the
-                                        // configuration lives: offline points at the Settings
-                                        // endpoint/manual-model fields (never a silent default
-                                        // server), online keeps the plain catalog-empty text.
-                                        ? (offline ? 'No models available — set an endpoint or a manual model id in Settings' : 'No models available')
+                                         // With no options at all the label explains WHERE the
+                                         // configuration lives: offline points at the Settings
+                                         // provider base URL field (never a silent default
+                                         // server), online keeps the plain catalog-empty text.
+                                        ? (offline ? 'No models available — set the provider base URL in Settings' : 'No models available')
                                         : 'Select model'}
                             </ModelText>
                             <ModelSelect
@@ -4653,8 +4624,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 // The model picker remains usable while a
                                 // response streams; the request already holds
                                 // its own model snapshot. Disabled only while
-                                // NO option exists (the offline manual model
-                                // id counts as an option).
+                                // NO option exists (a remembered model — the
+                                // offline fallback for a blank base / failed
+                                // catalog — still counts as an option via the
+                                // modelOptions rule above).
                                 disabled={modelOptions.length === 0}
                             >
                                 {modelOptions.length === 0

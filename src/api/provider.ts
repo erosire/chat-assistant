@@ -76,14 +76,12 @@ const errorMessage = async (response: Response, fallback: string): Promise<strin
     return `${fallback} (HTTP ${response.status})`;
 };
 
-// GET {url} returns the OpenAI-compatible model catalog as a full-URL request:
-// the response envelope ({object:'list', data:[...]}) is parsed exactly like
-// the provider base-URL variant below. This is the OFFLINE-mode entry point:
-// the settings UI configures INDEPENDENT full endpoint URLs (e.g.
-// "http://localhost:8080/v1/models"), not a shared base, so the URL is used
-// verbatim (trailing slashes trimmed for stability) and NEVER falls back to
-// DEFAULT_PROVIDER_URL — a blank endpoint is caught by the UI before any
-// request, so no silent call to the default app server can happen.
+// GET {url} returns the OpenAI-compatible model catalog: the response
+// envelope ({object:'list', data:[...]}) is parsed once for every entry
+// below. Callers pass the FULL route URL — the base-URL entries derive the
+// standard routes (${base}/models, ${base}/chat/completions); a blank base
+// is caught by the UI (components/ChatAssistantApp.tsx) before any request,
+// so no silent call to the default app server can ever happen.
 const fetchModelsFromUrl = async (url: string): Promise<ProviderModel[]> => {
     const response = await fetch(url.replace(/\/+$/, ''), { method: 'GET' });
     if (!response.ok) {
@@ -97,18 +95,17 @@ const fetchModelsFromUrl = async (url: string): Promise<ProviderModel[]> => {
     return data.data;
 };
 
-// GET {provider}/models returns every model the private provider registry can serve;
-// routing keys come straight from each client's pinned model, so `id` is the exact
-// value that must be sent back as `model` in the chat completion request.
+// GET {base}/models returns every model the provider registry can serve;
+// routing keys come straight from each client's pinned model, so `id` is the
+// exact value that must be sent back as `model` in the chat completion
+// request. The SAME derivation serves both modes: the online private relay
+// base (providerUrl prop / DEFAULT_PROVIDER_URL) and the OFFLINE-mode
+// single provider base configured in Settings (AssistantSettings
+// .providerBase) — trailing slashes are normalized so the exact configured
+// example base (e.g. http://192.168.50.109:5500/providers/private/v1)
+// yields exactly `${base}/models`.
 export async function fetchProviderModels(baseUrl: string): Promise<ProviderModel[]> {
     return fetchModelsFromUrl(`${normalizeBaseUrl(baseUrl)}/models`);
-}
-
-// Offline-mode variant: the model catalog fetched from a user-configured FULL
-// model-list endpoint URL (components/ChatAssistantApp.tsx settings →
-// AssistantSettings.modelEndpoint). Same envelope contract, independent URL.
-export function fetchProviderModelsFromUrl(modelListUrl: string): Promise<ProviderModel[]> {
-    return fetchModelsFromUrl(modelListUrl);
 }
 
 // Outgoing history is mapped to plain {role, content} messages: ChatMessage may
@@ -118,16 +115,16 @@ export function fetchProviderModelsFromUrl(modelListUrl: string): Promise<Provid
 const toProviderMessages = (messages: ChatMessage[]): Array<Pick<ChatMessage, 'role' | 'content'>> =>
     messages.map(({ role, content }) => ({ role, content }));
 
-// POST {url} with stream: true and the complete conversation history. The
-// provider injects credentials itself (key rotation lives in the private
-// model clients), so no Authorization header is ever set from the browser.
-// `onSnapshot` receives the ACCUMULATED assistant text after every content
-// delta so the caller can render live progress. Resolves at [DONE]/
-// connection-close with the full content plus usage when the final chunk
-// provided it. Errors: non-2xx rejects before streaming ("Model 'x' not
-// found", failover 500); a mid-stream {"error":...} frame rejects with its
-// message. The shared body is identical for the base-URL and the offline
-// full-URL entries: same OpenAI-compatible payload in every variant.
+ // POST {url} with stream: true and the complete conversation history. The
+ // provider injects credentials itself (key rotation lives in the private
+ // model clients), so no Authorization header is ever set from the browser.
+ // `onSnapshot` receives the ACCUMULATED assistant text after every content
+ // delta so the caller can render live progress. Resolves at [DONE]/
+ // connection-close with the full content plus usage when the final chunk
+ // provided it. Errors: non-2xx rejects before streaming ("Model 'x' not
+ // found", failover 500); a mid-stream {"error":...} frame rejects with its
+ // message. The OpenAI-compatible payload is the single shared body for
+ // every mode (online relay base / offline configured base).
 const streamCompletionRequest = async (
     url: string,
     model: string,
@@ -204,9 +201,15 @@ const streamCompletionRequest = async (
     return { content, ...(usage ? { usage } : {}) };
 }
 
-// Online-mode entry (behavior unchanged): the streaming completion is POSTed
-// to {provider}/chat/completions of the base URL — the private relay default
-// (DEFAULT_PROVIDER_URL) or an embedder's providerUrl prop.
+// Entry for BOTH modes (online behavior unchanged): the streaming completion
+// is POSTed to {base}/chat/completions of the base URL — the online private
+// relay base (DEFAULT_PROVIDER_URL / embedder providerUrl prop), or the
+// OFFLINE-mode single provider base configured in Settings
+// (AssistantSettings.providerBase). Trailing slashes are normalized, so the
+// exact configured example base yields exactly `${base}/chat/completions`,
+// paired with fetchProviderModels' `${base}/models`; a blank base is
+// surfaced by the UI (configuration explanation) and never falls back to a
+// default app server.
 export function streamProviderChatCompletion(
     baseUrl: string,
     model: string,
@@ -214,20 +217,4 @@ export function streamProviderChatCompletion(
     onSnapshot: (content: string) => void
 ): Promise<ProviderChatCompletion> {
     return streamCompletionRequest(`${normalizeBaseUrl(baseUrl)}/chat/completions`, model, messages, onSnapshot);
-}
-
-// Offline-mode entry: the streaming completion is POSTed to a user-configured
-// FULL stream endpoint URL (components/ChatAssistantApp.tsx settings →
-// AssistantSettings.streamEndpoint, e.g. "http://localhost:8080/v1/
-// chat/completions"). INDEPENDENT of the model-list URL and of the provider
-// base URL — no derivation, no DEFAULT_PROVIDER_URL fallback: when the
-// endpoint is blank the UI surfaces the configuration need instead of
-// calling the default app server.
-export function streamProviderChatCompletionFromUrl(
-    streamUrl: string,
-    model: string,
-    messages: ChatMessage[],
-    onSnapshot: (content: string) => void
-): Promise<ProviderChatCompletion> {
-    return streamCompletionRequest(streamUrl.replace(/\/+$/, ''), model, messages, onSnapshot);
 }
