@@ -2368,7 +2368,7 @@ describe('ChatAssistantApp', () => {
             'vultr/glm-5.3-flash',       // │ ├ three-way stripped collision
             'makora/glm-5.3-flash',      // │ ┘
             'modal/kimi-k3',             // │ collides with nvidia below
-            'local/qwen3.8-27b',         // │ collides with daytona below
+            'local/qwen3.8',              // │ unique stripped (post-rename id)
             'lightning/gpt-5.6-luna',    // │ unique stripped
             'lightning/gpt-5.6-sol',     // │ unique stripped
             'nvidia/glm-5.3',            // │ four-way stripped collision
@@ -2386,7 +2386,7 @@ describe('ChatAssistantApp', () => {
             ['vultr/glm-5.3-flash', 'glm-5.3-flash (vultr)'],
             ['makora/glm-5.3-flash', 'glm-5.3-flash (makora)'],
             ['modal/kimi-k3', 'kimi-k3 (modal)'],
-            ['local/qwen3.8-27b', 'qwen3.8-27b (local)'],
+            ['local/qwen3.8', 'qwen3.8'],
             ['lightning/gpt-5.6-luna', 'gpt-5.6-luna'],
             ['lightning/gpt-5.6-sol', 'gpt-5.6-sol'],
             ['nvidia/glm-5.3', 'glm-5.3 (nvidia)'],
@@ -2394,7 +2394,7 @@ describe('ChatAssistantApp', () => {
             ['token-router/glm-5.3', 'glm-5.3 (token-router)'],
             ['nvidia/deepseek-v4-flash', 'deepseek-v4-flash (nvidia)'],
             ['nvidia/kimi-k3', 'kimi-k3 (nvidia)'],
-            ['daytona/qwen3.8-27b', 'qwen3.8-27b (daytona)'],
+            ['daytona/qwen3.8-27b', 'qwen3.8-27b'],
             ['merge/kimi-k2-6', 'kimi-k2-6']
         ]));
 
