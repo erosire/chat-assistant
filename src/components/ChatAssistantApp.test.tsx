@@ -2363,7 +2363,7 @@ describe('ChatAssistantApp', () => {
         // distinctly while still leading with the model name.
         const ids = [
             'makora/glm-5.3',            // ┌ four-way stripped collision
-            'makora/deepseek-v4-flash',  // │ collides with nvidia below
+            'makora/ds4-flash',          // │ unique stripped (post-rename id)
             'modal/glm-5.3-flash',       // │ ┐
             'vultr/glm-5.3-flash',       // │ ├ three-way stripped collision
             'makora/glm-5.3-flash',      // │ ┘
@@ -2374,14 +2374,14 @@ describe('ChatAssistantApp', () => {
             'nvidia/glm-5.3',            // │ four-way stripped collision
             'merge/glm-5.3',             // │ (makora + nvidia + merge + token-router)
             'token-router/glm-5.3',      // ┘
-            'nvidia/deepseek-v4-flash',
+            'nvidia/deepseek-v4-flash',  // no longer collides (makora renamed to makora/ds4-flash)
             'nvidia/kimi-k3',
             'daytona/qwen3.8-27b',
             'merge/kimi-k2-6'            // unique stripped
         ];
         expect(uniqueModelLabels(ids)).toEqual(new Map([
             ['makora/glm-5.3', 'glm-5.3 (makora)'],
-            ['makora/deepseek-v4-flash', 'deepseek-v4-flash (makora)'],
+            ['makora/ds4-flash', 'ds4-flash'],
             ['modal/glm-5.3-flash', 'glm-5.3-flash (modal)'],
             ['vultr/glm-5.3-flash', 'glm-5.3-flash (vultr)'],
             ['makora/glm-5.3-flash', 'glm-5.3-flash (makora)'],
@@ -2392,7 +2392,7 @@ describe('ChatAssistantApp', () => {
             ['nvidia/glm-5.3', 'glm-5.3 (nvidia)'],
             ['merge/glm-5.3', 'glm-5.3 (merge)'],
             ['token-router/glm-5.3', 'glm-5.3 (token-router)'],
-            ['nvidia/deepseek-v4-flash', 'deepseek-v4-flash (nvidia)'],
+            ['nvidia/deepseek-v4-flash', 'deepseek-v4-flash'],
             ['nvidia/kimi-k3', 'kimi-k3 (nvidia)'],
             ['daytona/qwen3.8-27b', 'qwen3.8-27b'],
             ['merge/kimi-k2-6', 'kimi-k2-6']
