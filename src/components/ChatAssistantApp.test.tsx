@@ -609,9 +609,9 @@ describe('ChatAssistantApp', () => {
 
     it('widens colliding stripped model names to the full provider id in the dropdown', async () => {
         // The private registry serves ONE base model through SEVERAL providers
-        // (modal + vultr + makora all offer "glm-5.3-flash") — the exact shape
+        // (modal + vultr both offer "glm-5.3-flash") — the exact shape
         // behind the reported "glm-5.3-flash ×3" duplicate dropdown. Bare label
-        // stripping collapsed all three into identical entries; the dedupe rule
+        // stripping collapsed the colliding entries into identical rows; the dedupe rule
         // (uniqueModelLabels) must show "base (provider)" for each colliding
         // option while the lone unique model keeps its short stripped label.
         const collidingCatalog = {
@@ -619,7 +619,7 @@ describe('ChatAssistantApp', () => {
             data: [
                 { id: 'modal/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
                 { id: 'vultr/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
-                { id: 'makora/glm-5.3-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
+                { id: 'makora/glm5-flash', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 },
                 { id: 'lightning/gpt-5.6-luna', object: 'model', created: 1677610602, owned_by: 'localhost', context_length: 262144 }
             ]
         };
@@ -646,7 +646,7 @@ describe('ChatAssistantApp', () => {
         expect(Array.from(select.options).map((option) => ({ value: option.value, label: option.textContent }))).toEqual([
             { value: 'modal/glm-5.3-flash', label: 'glm-5.3-flash (modal)' },
             { value: 'vultr/glm-5.3-flash', label: 'glm-5.3-flash (vultr)' },
-            { value: 'makora/glm-5.3-flash', label: 'glm-5.3-flash (makora)' },
+            { value: 'makora/glm5-flash', label: 'glm5-flash' },
             { value: 'lightning/gpt-5.6-luna', label: 'gpt-5.6-luna' }
         ]);
 
@@ -2365,8 +2365,8 @@ describe('ChatAssistantApp', () => {
             'makora/glm-5.3',            // ┌ four-way stripped collision
             'makora/ds4-flash',          // │ unique stripped (post-rename id)
             'modal/glm-5.3-flash',       // │ ┐
-            'vultr/glm-5.3-flash',       // │ ├ three-way stripped collision
-            'makora/glm-5.3-flash',      // │ ┘
+            'vultr/glm-5.3-flash',       // │ ┘ two-way stripped collision
+            'makora/glm5-flash',      // │ unique stripped (post-rename id)
             'modal/kimi-k3',             // │ collides with nvidia below
             'local/qwen3.8',              // │ unique stripped (post-rename id)
             'lightning/gpt-5.6-luna',    // │ unique stripped
@@ -2384,7 +2384,7 @@ describe('ChatAssistantApp', () => {
             ['makora/ds4-flash', 'ds4-flash'],
             ['modal/glm-5.3-flash', 'glm-5.3-flash (modal)'],
             ['vultr/glm-5.3-flash', 'glm-5.3-flash (vultr)'],
-            ['makora/glm-5.3-flash', 'glm-5.3-flash (makora)'],
+            ['makora/glm5-flash', 'glm5-flash'],
             ['modal/kimi-k3', 'kimi-k3 (modal)'],
             ['local/qwen3.8', 'qwen3.8'],
             ['lightning/gpt-5.6-luna', 'gpt-5.6-luna'],

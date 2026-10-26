@@ -18,6 +18,12 @@ export default defineConfig({
         environment: 'jsdom',
         globals: true,
         include: ['src/**/*.{test,spec}.{ts,tsx}'],
-        passWithNoTests: true
+        passWithNoTests: true,
+        // Under a parallel turbo run this suite's React/streaming tests
+        // regularly exceed vitest's default ceilings (5s test / 10s hook) —
+        // a timed-out test leaves its in-flight stream running and poisons
+        // the next test in the file. Both get explicit headroom here.
+        testTimeout: 60_000,
+        hookTimeout: 60_000
     }
 });

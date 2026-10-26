@@ -18,7 +18,7 @@
 //   as "GLM-5.3-NVFP4") but kept in values for provider routing. STRIPPED
 //   LABELS THAT COLLIDE gain a provider suffix (uniqueModelLabels): the
 //   private registry serves one base model through several providers
-//   ("makora/glm-5.3-flash" + "vultr/glm-5.3-flash" + "merge/glm-5.3-flash"),
+//   ("modal/glm-5.3-flash" + "vultr/glm-5.3-flash" + "merge/glm-5.3-flash"),
 //   and bare stripping rendered the dropdown as a list of identical
 //   "glm-5.3-flash" entries — ids sharing a stripped name display
 //   "base (provider)" (e.g. "glm-5.3-flash (vultr)") so every option reads
@@ -1579,7 +1579,7 @@ export const modelLabel = (id: string): string => {
 // Display labels for a whole catalog with COLLIDING stripped names resolved.
 // The private registry legitimately serves the same base model through several
 // providers — e.g. "modal/glm-5.3-flash", "vultr/glm-5.3-flash", and
-// "makora/glm-5.3-flash" (see @agentic/provider registry.ts) — and bare
+// "merge/glm-5.3-flash" (see @agentic/provider registry.ts) — and bare
 // modelLabel() collapses all of them to the identical "glm-5.3-flash", which
 // rendered the dropdown as the reported "glm-5.3-flash ×3" duplicate list.
 // Rule: a stripped label used by EXACTLY ONE catalog id keeps the short form;
