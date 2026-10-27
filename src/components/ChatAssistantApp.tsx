@@ -14,15 +14,15 @@
 // - the browser remembers the last model actually used (localStorage);
 // - with nothing remembered, a selected chat's recorded model applies;
 // - otherwise the first catalog entry sorted by MODEL NAME applies — provider /
-//   organisation prefixes are stripped from labels ("zai-org/GLM-5.3-NVFP4" shows
-//   as "GLM-5.3-NVFP4") but kept in values for provider routing. STRIPPED
-//   LABELS THAT COLLIDE gain a provider suffix (uniqueModelLabels): the
-//   private registry serves one base model through several providers
-//   ("modal/glm-5.3-flash" + "vultr/glm-5.3-flash" + "merge/glm-5.3-flash"),
-//   and bare stripping rendered the dropdown as a list of identical
-//   "glm-5.3-flash" entries — ids sharing a stripped name display
-//   "base (provider)" (e.g. "glm-5.3-flash (vultr)") so every option reads
-//   distinctly. The same map drives the composer text, both attribution
+//   organisation prefixes are stripped from the LEADING label ("zai-org/GLM-5.3-NVFP4"
+//   leads with "GLM-5.3-NVFP4") but kept in values for provider routing. EVERY
+//   prefixed id then gains its provider suffix (uniqueModelLabels): the
+//   private registry serves many models through several providers
+//   ("modal/glm-5.3-flash" + "vultr/glm-5.3-flash" + "coder" via localhost),
+//   so labels read "base (provider)" (e.g. "glm-5.3-flash (vultr)",
+//   "coder (localhost)") — the model name leads and the provider always
+//   follows, so no row is left unattributed and colliding base names still
+//   read distinctly. The same map drives the composer text, both attribution
 //   labels, and the dropdown options.
 // Per-message attribution (the assistant turn's top-left label) already marks
 // WHICH model produced each reply, so no separate "Model: ..." strip exists.
@@ -34,9 +34,12 @@
 // registry column (src/agents supplies the agent/tool client registry):
 // "Chat" (the conversation list, default), "Agent" (chat presets — selecting
 // an agent swaps the MAIN CONTENT AREA to the agent's configuration to set
-// the agent's NAME, SYSTEM PROMPT, and
-// ALLOWED TOOLS; the selected agent is the ACTIVE agent whose system prompt
-// seeds new chats), and "Tool" (the tool registry — a tool is its name plus,
+// the agent's NAME, SYSTEM PROMPT, CHAT LAYOUT (the example back-and-forth
+// attached at the start of every chat that uses the agent), and
+// ALLOWED TOOLS — the tools render as a tile grid and the editor spans the
+// full content column; every agent entry carries its own "x" delete control,
+// exactly like a conversation entry; the selected agent is the ACTIVE agent
+// whose system prompt + chat layout seed new chats), and "Tool" (the tool registry — a tool is its name plus,
 // for custom tools, its JavaScript/TypeScript source; NATIVE tools provided
 // by the runtime list without any implementation. A selected tool's panel
 // takes the content area the same way). The header's top-right action follows the tab: "New chat"
@@ -125,8 +128,11 @@
 // AGENT selection sits LEFT of the model selection (both are quiet clickable
 // TEXT lines with the native dropdown select overlaid invisibly; the agent
 // dropdown lists the persisted client-side agent registry from src/agents
-// with "None" ('' value) as the DEFAULT — the choice is session-level UI
-// state for now, not yet wired into the send path), and the send button is a
+// with "None" ('' value) as the DEFAULT. Picking an agent REPLACES the chat's
+// own system prompt block with the agent's block — its system prompt followed
+// by its example conversation (see agentPrefixMessages) — both in the rendered
+// chat and in what is sent to the provider; the choice is session-level UI
+// state), and the send button is a
 // circular ">" arrow docked INSIDE the input box at its RIGHT EDGE, vertically
 // CENTERED in the box (top:50% + translateY(-50%)) at every height — one row
 // through the eight-row growth cap —
@@ -198,8 +204,10 @@ import {
     fetchConversation,
     fetchProviderModels,
     getLocalConversation,
+    isConversationPending,
     listConversations,
     listLocalConversations,
+    readTrackedConversationIds,
     replaceConversationMessages,
     replaceLocalConversationMessages,
     saveAssistantSettings,
@@ -207,7 +215,10 @@ import {
     speechDeniedDetail,
     speechRecognitionSupported,
     streamProviderChatCompletion,
+    trackConversationId,
+    untrackConversationId,
     loadAssistantSettings,
+    CONVERSATION_POLL_INTERVAL_MS,
     DEFAULT_CHAT_ASSISTANT_URL,
     DEFAULT_PROVIDER_URL,
     type AssistantMode,
@@ -234,16 +245,25 @@ import {
     SwitchIcon
 } from '../icons';
 // Client-side agent + tool registry (src/agents): agents are named chat
-// presets (name + system prompt + allowed tool ids) persisted best-effort in
-// localStorage; AVAILABLE_TOOLS is the tool registry (native entries without
-// source, custom entries with JavaScript/TypeScript code) the Agent tab's
-// "allowed tools" group and the Tool tab render from.
+// presets (name + system prompt + chat layout + allowed tool ids) persisted
+// best-effort in localStorage; AVAILABLE_TOOLS is the tool registry (native
+// entries without source, custom entries with JavaScript/TypeScript code) the
+// Agent tab's "allowed tools" group and the Tool tab render from.
+// agentPrefixMessages is the block an agent attaches to the START of a chat
+// (its system prompt followed by its example conversation), which REPLACES
+// the chat's own system prompt block.
 import {
     AVAILABLE_TOOLS,
+    agentPrefixMessages,
+    appendAgentMessage,
     createAgentDefinition,
     readStoredAgents,
+    removeAgentMessage,
     storeAgents,
     toggleAgentTool,
+    updateAgentMessage,
+    updateAgentMessageRole,
+    type AgentBlockMessage,
     type AgentDefinition,
     type ToolDefinition
 } from '../agents';
@@ -282,7 +302,14 @@ const Page = styledComponent('main', {
     flexDirection: 'column',
     overflow: 'hidden',
     backgroundColor: COLORS.page,
-    color: COLORS.text
+    color: COLORS.text,
+    // Native widgets (the model/agent/settings <select> popups, their scroll
+    // thumbs) are painted by the BROWSER, not by Emotion: without an explicit
+    // dark color scheme they fall back to the OS light palette (a white list
+    // with black rows), which is what made the model dropdown read as an
+    // unthemed white menu against this dark surface. color-scheme inherits to
+    // every descendant control, so the popups follow the app palette.
+    colorScheme: 'dark'
 });
 
 // Header keeps the product name and the explicit actions visible on every screen
@@ -459,17 +486,18 @@ const SidebarTabButton = styledComponent<{ active?: boolean }>('button', {
 // the sidebar's Agent tab swaps the conversation column over to this panel).
 // The name input and system prompt textarea write straight into the agent
 // definition on every change (persisted to localStorage immediately — there
-// is no draft/commit split); the tools group renders one checkbox per
+// is no draft/commit split); the tools group renders one TILE per
 // AVAILABLE_TOOLS entry (the muted "No tools available yet." note is the
 // empty-registry fallback and only renders while AVAILABLE_TOOLS is empty).
-// flex:1 + overflowY:auto
-// lets long prompts scroll inside the workspace; the maxWidth keeps input
-// lines readable on wide screens (left-aligned, matching the chat column).
+// flex:1 + overflowY:auto lets long prompts scroll inside the workspace.
+// The panel spans the FULL content column (no maxWidth cap): the name field,
+// the prompt editor, and the tool tile grid all stretch edge to edge, so the
+// editor uses the whole area an open chat occupies instead of a narrow
+// left-aligned strip.
 const AgentWorkspace = styledComponent('section', {
     flex: 1,
     minHeight: 0,
     width: '100%',
-    maxWidth: 760,
     overflowY: 'auto',
     display: 'flex',
     flexDirection: 'column',
@@ -768,16 +796,114 @@ const SettingsSelect = styledComponent('select', {
     outline: 'none'
 }) as unknown as React.FC<React.SelectHTMLAttributes<HTMLSelectElement>>;
 
-// One "allowed tools" checkbox row. Only rendered once AVAILABLE_TOOLS has
-// entries; the wrapping label makes the whole row clickable.
-const AgentToolOption = styledComponent('label', {
+// The "allowed tools" TILE GRID: one tile per AVAILABLE_TOOLS entry, laid out
+// as a responsive auto-fill grid so the group reads as a set of choices rather
+// than a plain list of rows. auto-fill + minmax keeps tiles at a comfortable
+// minimum width and lets them reflow into more columns on wide content areas
+// (the agent workspace spans the full column now — see AgentWorkspace).
+const AgentToolGrid = styledComponent('div', {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+    gap: 8,
+    width: '100%'
+});
+
+// One "allowed tools" TILE. Only rendered once AVAILABLE_TOOLS has entries;
+// the wrapping label makes the WHOLE tile clickable. `selected` is a visual
+// state prop (not a native attribute): a checked tile gets the accent border +
+// tinted surface so the enabled set reads at a glance, mirroring ChatButton's
+// selected treatment.
+const AgentToolOption = styledComponent<{ selected?: boolean }>('label', {
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+    boxSizing: 'border-box',
+    minHeight: 44,
+    padding: '10px 12px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 8,
+    backgroundColor: ({ selected }) => (selected ? COLORS.user : COLORS.panelStrong),
+    borderColor: ({ selected }) => (selected ? COLORS.accentStrong : COLORS.border),
+    color: COLORS.text,
     fontSize: 13,
     lineHeight: 1.4,
-    cursor: 'pointer'
+    cursor: 'pointer',
+    transition: 'border-color 120ms ease, background-color 120ms ease',
+    boxShadow: ({ selected }) => (selected ? `0 0 0 1px ${COLORS.accentStrong}` : 'none')
+}) as unknown as React.FC<React.LabelHTMLAttributes<HTMLLabelElement> & { selected?: boolean }>;
+
+// The agent's CHAT LAYOUT list: one row per example turn, in order, under the
+// system prompt field. A plain column with a small gap keeps the preset
+// readable as a conversation (system prompt, then the back-and-forth).
+const AgentLayoutList = styledComponent('div', {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    width: '100%'
 });
+
+// One example turn row: the role chip on the left (a button — clicking flips
+// user ↔ assistant, mirroring the persisted turn's role switch) and the
+// message text on the right. Wrapping keeps long turns readable.
+const AgentLayoutRow = styledComponent('div', {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 8,
+    width: '100%',
+    boxSizing: 'border-box'
+});
+
+// The role chip: a small uppercase label identifying the turn's speaker and
+// doubling as its role-switch control.
+const AgentLayoutRole = styledComponent('button', {
+    flexShrink: 0,
+    minWidth: 78,
+    padding: '8px 10px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 8,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.muted,
+    cursor: 'pointer',
+    font: 'inherit',
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: '0.04em',
+    textTransform: 'uppercase'
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+
+// One example turn's text field: the same field treatment as the agent prompt
+// (panelStrong surface, 8px radius), one text row tall with vertical growth
+// left to the workspace's own scrolling.
+const AgentLayoutInput = styledComponent('textarea', {
+    flex: 1,
+    minWidth: 0,
+    boxSizing: 'border-box',
+    padding: '10px 12px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 8,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    font: 'inherit',
+    fontSize: 13,
+    lineHeight: 1.5,
+    resize: 'vertical',
+    outline: 'none'
+}) as unknown as React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>>;
+
+// A compact secondary action in the agent editor (add a turn): a bordered
+// quiet button at content-area scale (the same treatment as SecondaryButton,
+// declared locally because SecondaryButton is defined further down the file).
+const AgentLayoutAction = styledComponent('button', {
+    alignSelf: 'flex-start',
+    padding: '6px 10px',
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 6,
+    backgroundColor: COLORS.panelStrong,
+    color: COLORS.text,
+    cursor: 'pointer',
+    font: 'inherit',
+    fontSize: 12
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Each sidebar conversation ENTRY is a positioning context: the select button
 // fills it and the per-conversation "x" delete control overlays its top-right
@@ -1072,7 +1198,7 @@ const TurnJumpPair = styledComponent('div', {
 // strip's own box identical across the flip so the gate never moves layout).
 // The base cast threads the custom `floating` prop through styledComponent's
 // generic base-parameter check — the same `as unknown as` composition cast
-// ConversationDeleteButton/NewChatButton use on their outputs, applied to the
+// EntryDeleteButton/NewChatButton use on their outputs, applied to the
 // input because the prop type lives on the DERIVED component only.
 const TrailingControls = styledComponent<{ floating?: boolean }>(TurnControls as unknown as React.FC<{ floating?: boolean }>, {
     justifyContent: 'flex-end',
@@ -1217,12 +1343,15 @@ const MessageDeleteButton = styledComponent<{ greyed?: boolean }>('button', {
     lineHeight: 1
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { greyed?: boolean }>;
 
-// The per-conversation delete control: the SAME CloseIcon treatment as the
+// The per-ENTRY delete control: the SAME CloseIcon treatment as the
 // per-message delete, absolutely pinned to the top-right corner of a sidebar
-// conversation entry (ChatEntry is its positioning context). It is a SIBLING
-// of the select button inside the entry — not nested in it — so clicking the
-// x deletes without ever triggering the entry's chat selection.
-const ConversationDeleteButton = styledComponent(MessageDeleteButton, {
+// registry entry (ChatEntry is its positioning context). It is a SIBLING of
+// the select button inside the entry — not nested in it — so clicking the x
+// deletes without ever triggering the entry's selection. Shared by the
+// conversation list and the Agent registry, whose entries use identical
+// chrome; the accessible label is set per render site ("Delete conversation"
+// / "Delete agent").
+const EntryDeleteButton = styledComponent(MessageDeleteButton, {
     position: 'absolute',
     top: 6,
     right: 6
@@ -1363,10 +1492,7 @@ const MessageInput = styledComponent('textarea', {
 
 // The picker row sitting ABOVE the input: [Agents][Model] side by side — the
 // agent selection LEFT, the model selection RIGHT of it. inline-flex keeps
-// both quiet text lines shrink-wrapped; position:relative is the positioning
-// context both invisible overlay selects fill (inset:0 of the whole row —
-// each select still only covers its own text because the row is exactly as
-// wide as the two texts plus the gap). align-self:flex-start keeps the row
+// both quiet text lines shrink-wrapped. align-self:flex-start keeps the row
 // flush-left inside the composer's column.
 const ModelPicker = styledComponent('div', {
     position: 'relative',
@@ -1374,6 +1500,19 @@ const ModelPicker = styledComponent('div', {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 16
+});
+
+// ONE picker inside that row: its label text plus the invisible native select
+// overlaid on THAT text alone. Each picker carries its OWN positioning context
+// on purpose — while both overlay selects filled the SHARED row (inset:0 of
+// ModelPicker) the model select, rendered last, covered the agent text as well
+// and swallowed every click on it, so no agent could ever be selected (the
+// reported "can't select any agent" bug). Containing each select in its own
+// shrink-wrapped box makes every overlay exactly as wide as its own label.
+const PickerField = styledComponent('span', {
+    position: 'relative',
+    display: 'inline-flex',
+    alignItems: 'center'
 });
 
 // The agent text itself: the SAME muted label typography as the model text
@@ -1485,7 +1624,8 @@ const VoiceButton = styledComponent<{ listening?: boolean }>('button', {
 // text actually lands on this select, which opens the real model dropdown;
 // keeping it a native <select> preserves keyboard support and the existing
 // data-testid="model-select" contract used by the tests (fireEvent.change
-// selects a model by value).
+// selects a model by value). The containing block is its OWN PickerField, so
+// the overlay is exactly as wide as the model label.
 const ModelSelect = styledComponent('select', {
     position: 'absolute',
     inset: 0,
@@ -1498,10 +1638,10 @@ const ModelSelect = styledComponent('select', {
 
 // Native select layered invisibly over the AGENT text — the exact twin of
 // ModelSelect's overlay mechanics (position:absolute + inset:0 + opacity:0
-// inside the shared ModelPicker positioning context): every click on the
-// agent text lands on this select and opens the real agent dropdown, with
-// keyboard support preserved natively. data-testid="agent-select" is the
-// test contract (fireEvent.change selects an agent by value).
+// inside its OWN PickerField positioning context): every click on the agent
+// text lands on this select and opens the real agent dropdown, with keyboard
+// support preserved natively. data-testid="agent-select" is the test contract
+// (fireEvent.change selects an agent by value).
 const AgentSelect = styledComponent('select', {
     position: 'absolute',
     inset: 0,
@@ -1576,40 +1716,34 @@ export const modelLabel = (id: string): string => {
     return slash >= 0 ? id.slice(slash + 1) : id;
 };
 
-// Display labels for a whole catalog with COLLIDING stripped names resolved.
-// The private registry legitimately serves the same base model through several
-// providers — e.g. "modal/glm-5.3-flash", "vultr/glm-5.3-flash", and
-// "merge/glm-5.3-flash" (see @agentic/provider registry.ts) — and bare
-// modelLabel() collapses all of them to the identical "glm-5.3-flash", which
-// rendered the dropdown as the reported "glm-5.3-flash ×3" duplicate list.
-// Rule: a stripped label used by EXACTLY ONE catalog id keeps the short form;
-// every id sharing a stripped label displays "base (provider)" — the stripped
-// base name followed by the provider prefix in parentheses, e.g.
-// "glm-5.3-flash (modal)" / "glm-5.3-flash (vultr)" — so every option reads
-// distinctly while still leading with the model name the user recognises.
-// Prefixless ids (no "/") always keep the bare form: there is no provider to
-// disambiguate. Values always stay the full ids — only labels shorten.
+// Display labels for a whole catalog: every prefixed id reads
+// "base (provider)" — the stripped base name followed by the provider prefix
+// in parentheses, e.g. "glm-5.3-flash (modal)" / "coder (localhost)".
+//
+// WHY THE PROVIDER IS ALWAYS SHOWN: the private registry serves many models
+// through several gateways (see @agentic/provider registry.ts), and the
+// provider is a real routing/distinction axis — the same base model is served
+// by modal, vultr, merge, token-router, open-router, ... The earlier rule only
+// suffixed ids whose stripped names COLLIDED, so every uniquely-named model
+// ("coder", "explore", "gpt-5.6-luna", "glm5-flash", ...) rendered with no
+// provider at all and the dropdown mixed labelled and unlabelled rows. The
+// provider is therefore part of EVERY label now: the model name still leads
+// (the user recognises the model first), and the provider always follows.
+// Prefixless ids (no "/") keep the bare form — there is no provider to show.
+// Values always stay the full ids; only labels shorten.
+//
 // Returned as an id → label Map so the composer text, the dropdown options,
 // the streaming attribution, and the persisted-turn labels all resolve
 // IDENTICAL display names for one id.
 export const uniqueModelLabels = (ids: string[]): Map<string, string> => {
-    // First pass: count how many ids share each stripped label.
-    const strippedCounts = new Map<string, number>();
-    arrayEach(ids, (entry) => {
-        const stripped = modelLabel(entry.value);
-        strippedCounts.set(stripped, (strippedCounts.get(stripped) ?? 0) + 1);
-    });
-    // Second pass: unique stripped labels stay short; shared ones gain the
-    // "base (provider)" suffix so each option reads distinctly. The provider
-    // is the id's prefix before the final "/" — ids without a "/" cannot
-    // collide with a prefixed id's stripped label AND have no provider to
-    // show, so they always keep the bare form.
     const labels = new Map<string, string>();
     arrayEach(ids, (entry) => {
-        const stripped = modelLabel(entry.value);
-        const collides = (strippedCounts.get(stripped) ?? 0) > 1;
+        // The provider is the id's prefix before the FINAL "/" — the same
+        // split modelLabel() uses, so the base name and the suffix always
+        // partition the id exactly.
         const slash = entry.value.lastIndexOf('/');
-        labels.set(entry.value, collides && slash >= 0 ? `${stripped} (${entry.value.slice(0, slash)})` : stripped);
+        const stripped = modelLabel(entry.value);
+        labels.set(entry.value, slash >= 0 ? `${stripped} (${entry.value.slice(0, slash)})` : stripped);
     });
     return labels;
 };
@@ -2141,6 +2275,32 @@ const renderMessages = (messages: ChatMessage[], options: MessageListOptions): R
     return nodes;
 };
 
+// The AGENT BLOCK preview drawn at the top of an unstarted chat: the agent's
+// system prompt followed by its example conversation (see
+// agentPrefixMessages), rendered with the SAME turn chrome as persisted turns
+// so the layout reads exactly like the history it is about to become. It is a
+// PROJECTION of the agent definition — no controls, no editing: the block
+// itself is configured on the Agent tab, and it is persisted into the record
+// by the first send (which then renders as ordinary turns).
+const renderAgentBlock = (block: AgentBlockMessage[]): React.ReactNode[] =>
+    block.map((message, index) => {
+        const role = message.role;
+        const TurnComponent = role === 'user' ? UserTurn : role === 'assistant' ? AssistantTurn : SystemTurn;
+        const BubbleComponent = role === 'user' ? UserMessage : role === 'assistant' ? AssistantMessage : SystemMessage;
+        return (
+            <TurnComponent key={`agent-block-${index}`} data-testid={`agent-block-turn-${index}`}>
+                <TurnHeaderRow>
+                    <TurnHeaderLead alignRight={role === 'user'}>
+                        <TurnLabelLine>
+                            <TurnLabelText data-testid={`agent-block-label-${index}`}>{role}</TurnLabelText>
+                        </TurnLabelLine>
+                    </TurnHeaderLead>
+                </TurnHeaderRow>
+                <BubbleComponent data-testid={`agent-block-content-${index}`}>{message.content}</BubbleComponent>
+            </TurnComponent>
+        );
+    });
+
 // Derive the compact sidebar summary from a full record; shared by the send and
 // edit flows so both keep the list entry consistent with the persisted record.
 const summaryFromRecord = (result: ConversationRecord): ConversationSummary => ({
@@ -2272,6 +2432,14 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // semantics. Both shapes are identical Promise APIs, so the flows above
     // stay mode-agnostic and a mode switch can never mix the server's
     // records with the local ones.
+    // ONLINE mode tracks only the conversations THIS browser created: the id
+    // returned by each successful creation is cached (localStorage, see
+    // readTrackedConversationIds in api/chat-assistant.ts) and every list read
+    // asks the server for exactly those ids. The cache — not the server's
+    // history — is therefore the sidebar's authority, so a browser never sees
+    // (or downloads) conversations another browser created, no matter how long
+    // the server-wide list grows. `create` tracks the returned id, `remove`
+    // untracks it; `list` filters by the cache.
     const storage = offline ? {
         list: () => listLocalConversations(),
         get: (conversationId: string) => getLocalConversation(conversationId),
@@ -2280,12 +2448,24 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         replace: (conversationId: string, request: ConversationPutRequest) => replaceLocalConversationMessages(conversationId, request),
         remove: (conversationId: string) => deleteLocalConversation(conversationId)
     } : {
-        list: () => listConversations(baseUrl),
+        list: () => listConversations(baseUrl, readTrackedConversationIds()),
         get: (conversationId: string) => fetchConversation(baseUrl, conversationId),
-        create: (request: ConversationPostRequest) => createConversation(baseUrl, request),
+        create: async (request: ConversationPostRequest) => {
+            const created = await createConversation(baseUrl, request);
+            // Track BEFORE any follow-up read so a reload mid-flow still
+            // restores the conversation it just created.
+            trackConversationId(created.conversationId);
+            return created;
+        },
         append: (conversationId: string, request: ConversationPostRequest) => addToConversation(baseUrl, conversationId, request),
         replace: (conversationId: string, request: ConversationPutRequest) => replaceConversationMessages(baseUrl, conversationId, request),
-        remove: (conversationId: string) => deleteConversation(baseUrl, conversationId)
+        remove: async (conversationId: string) => {
+            const removed = await deleteConversation(baseUrl, conversationId);
+            // Drop the id only AFTER the server confirms the removal, so a
+            // failed DELETE keeps the conversation tracked and restorable.
+            untrackConversationId(conversationId);
+            return removed;
+        }
     };
     const selected = useStateHook<ConversationRecord | null>(null);
     // Available provider model ids, loaded once from GET {provider}/models and kept
@@ -2389,6 +2569,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // activeSend, so a superseded completion can never clear a newer send's
     // buffers.
     const activeSend = useStateHook<{ id: number; conversationId: string | null; model: string } | null>(null);
+    // The conversation id THIS browser currently has a pending/ongoing request
+    // for — the single id the sidebar poller watches (see the polling effect).
+    // Set when the up-front pending record is created (online new chat) and
+    // cleared when the send settles or fails, so polling exists only for the
+    // duration of a real request. `null` means nothing is in flight.
+    const pendingConversationId = useStateHook<string | null>(null);
     // Monotonic epoch of the ACTIVE MODE: switchMode pushes it forward once per
     // switch. Long-running callbacks (submit's stream, selectChat's fetch,
     // saveSystemPromptDraft's persist) snapshot the epoch before their first
@@ -2422,8 +2608,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const agents = useStateHook<AgentDefinition[]>([]);
     // The agent selected in the Agent tab. Selecting an agent opens its
     // editor in the MAIN CONTENT AREA (like an open chat) AND makes it the
-    // ACTIVE agent whose system prompt seeds new chats (startNewChat prefills
-    // the draft prompt from it).
+    // ACTIVE agent whose block seeds new chats (startNewChat seeds the
+    // composer's agent picker with it, so its system prompt + chat layout are
+    // attached at the start of the next chat in place of the system prompt).
     const selectedAgentId = useStateHook<string | null>(null);
     // The tool selected in the Tool tab — its configuration panel opens in
     // the content area the same way (selectedTool below resolves against
@@ -2573,19 +2760,29 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     }, [providerUrl, offline, settings().providerBase]);
 
     // Load the conversation list for the ACTIVE MODE so the sidebar restores
-    // its history after a reload: ONLINE reads the server collection (empty
-    // until the first completed turn); OFFLINE reads the durable
-    // browser-local store (api/offline.ts) — the mode switch effect below
-    // re-runs this effect, so each mode's sidebar owns its own namespace and
-    // the two histories never mix. Summaries carry no message bodies;
-    // selecting a restored chat reads its full record through the identified
-    // GET / local read.
+    // its history after a reload: ONLINE reads the server collection FILTERED to
+    // this browser's tracked ids (the ones it created — see the storage
+    // dispatch); OFFLINE reads the durable browser-local store (api/offline.ts)
+    // — the mode switch effect below re-runs this effect, so each mode's
+    // sidebar owns its own namespace and the two histories never mix. Summaries
+    // carry no message bodies; selecting a restored chat reads its full record
+    // through the identified GET / local read.
     useEffect(() => {
         let cancelled = false;
         void (async () => {
             try {
-                const result = offline ? await listLocalConversations() : await listConversations(baseUrl);
-                if (!cancelled) chats(result.conversations);
+                const result = offline ? await listLocalConversations() : await listConversations(baseUrl, readTrackedConversationIds());
+                if (cancelled) return;
+                // Prune ids the server no longer holds (deleted from another
+                // tab or device) so the cache never accumulates dead entries
+                // that would keep inflating every later list query.
+                if (!offline) {
+                    const returned = new Set(result.conversations.map((conversation) => conversation.conversationId));
+                    for (const tracked of readTrackedConversationIds()) {
+                        if (!returned.has(tracked)) untrackConversationId(tracked);
+                    }
+                }
+                chats(result.conversations);
             } catch (reason) {
                 if (!cancelled) error(reason instanceof Error ? reason.message : String(reason));
             }
@@ -2598,6 +2795,70 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         // summaries); chats/error are stable state-hook handles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [baseUrl, offline]);
+
+    // SMART TRACKING of the in-flight conversation: while THIS browser has a
+    // pending/ongoing request for a conversation id, that id is polled through
+    // the identified GET so the sidebar entry and the open surface follow the
+    // server's own record (a completion persisted elsewhere — a retried send,
+    // another tab — becomes visible without a reload). The watch is scoped to
+    // the request: `pendingConversationId` is set when the pending record is
+    // created and cleared when the send settles or fails, so the timer exists
+    // ONLY during generation. A settled conversation is never polled, and a
+    // pending record left behind by a closed tab is not polled forever — no
+    // request is in flight for it, so nothing is waiting on it.
+    useEffect(() => {
+        if (offline) return;
+        const conversationId = pendingConversationId();
+        if (conversationId === null) return;
+
+        let cancelled = false;
+        const epochAtStart = modeEpoch();
+        const poll = async () => {
+            try {
+                const record = (await fetchConversation(baseUrl, conversationId)).conversation;
+                // A mode switch (or unmount) during the request detaches the
+                // result: the other mode's sidebar and surface own themselves.
+                if (cancelled || modeEpoch() !== epochAtStart) return;
+                // While the record is still pending the surface belongs to the
+                // send flow (its own completion applies the canonical record);
+                // only the sidebar summary is refreshed here.
+                const summary = summaryFromRecord(record);
+                chats(chats().map((chat) => (chat.conversationId === summary.conversationId ? summary : chat)));
+                if (isConversationPending(record.status)) return;
+                // An ONGOING send on this very conversation owns the surface: the
+                // stream is still rendering and its completion applies the
+                // canonical record, so adopting a pre-turn snapshot here would
+                // yank the in-flight bubbles away.
+                if (activeSend() !== null) return;
+                // Settled server-side: adopt it as the canonical surface so the
+                // open chat shows the finished turn without waiting for the
+                // send flow to finish its own round-trip.
+                if (selected()?.conversationId === record.conversationId) {
+                    selected(record);
+                    collapsedTurns(defaultCollapsedIndices(record.messages));
+                }
+            } catch (reason) {
+                // A conversation that vanished server-side stops being watched
+                // and is untracked; any other failure keeps polling (the next
+                // tick retries while the request is still in flight).
+                if (cancelled || modeEpoch() !== epochAtStart) return;
+                const message = reason instanceof Error ? reason.message : String(reason);
+                if (message.includes('not found')) {
+                    untrackConversationId(conversationId);
+                    chats(chats().filter((chat) => chat.conversationId !== conversationId));
+                    pendingConversationId(null);
+                }
+            }
+        };
+        const timer = window.setInterval(() => void poll(), CONVERSATION_POLL_INTERVAL_MS);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+        // Deps: the watched id plus the mode/endpoint it belongs to. chats/
+        // selected/collapsedTurns are stable state-hook handles.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [baseUrl, offline, pendingConversationId()]);
 
     // Restore the persisted agent registry once on mount (localStorage; see
     // src/agents). Mount-only: every later edit rewrites the whole list
@@ -3104,6 +3365,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         pendingUser('');
         streaming('');
         activeSend(null);
+        // The in-flight watch belongs to the previous namespace: its poller is
+        // detached by the epoch bump above and must not resume in the new mode.
+        pendingConversationId(null);
         // Transient busy flags belong to the previous namespace — a detached
         // operation's stale finally/catch is epoch-gated and will NOT write
         // them back, so each resets here (no stuck spinner in the new mode).
@@ -3118,7 +3382,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         cancelEdit();
         cancelTitleEdit();
         error('');
-    }, [activeSend, applySettings, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, loading, models, pendingUser, savingEdit, savingSystemPrompt, savingTitle, selected, settings, streaming, systemPrompt]);
+    }, [activeSend, applySettings, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, chats, collapsedTurns, deleting, loading, models, pendingConversationId, pendingUser, savingEdit, savingSystemPrompt, savingTitle, selected, settings, streaming, systemPrompt]);
 
     // Single provider base URL (offline): one edit both re-persists the
     // configuration and re-runs the catalog effect (the derived ${base}/
@@ -3158,6 +3422,19 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         persistAgents(agents().map((agent) => (agent.id === id ? { ...agent, ...patch } : agent)));
     }, [agents, persistAgents]);
 
+    // Permanently delete ONE agent from its sidebar entry's "x" (the same
+    // sibling-delete-control pattern the conversation list uses). The registry
+    // rewrite is persisted immediately through persistAgents; deleting the
+    // OPEN agent also clears the selection so the Agent tab falls back to its
+    // "No agent selected" empty state instead of rendering a definition that
+    // no longer exists. Conversation state is untouched — agents are pure
+    // client-side presets (src/agents), so there is no server record to
+    // delete and no mode namespace to guard.
+    const deleteAgent = useCallback((id: string) => {
+        persistAgents(agents().filter((agent) => agent.id !== id));
+        if (selectedAgentId() === id) selectedAgentId(null);
+    }, [agents, persistAgents, selectedAgentId]);
+
     // Reset the surface without creating a server record until the first provider
     // turn completes. The model selection intentionally survives a new chat so the
     // last-used model stays preselected. The button lives in the header, so the
@@ -3165,21 +3442,24 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const startNewChat = useCallback(() => {
         selected(null);
         message('');
-        // A fresh chat seeds the system prompt draft from the ACTIVE agent
-        // (the one selected in the Agent tab — an agent is "available for use
-        // in chat" by being selected): its saved system prompt prefills the
-        // draft turn, still editable inline before the first send. With no
-        // active agent the draft starts back at its "no prompt" placeholder
-        // (editor closed), with no collapsed turns yet.
-        const agent = agents().find((candidate) => candidate.id === selectedAgentId());
-        systemPrompt(agent?.systemPrompt ?? '');
+        // A fresh chat uses the ACTIVE agent (the one selected in the Agent
+        // tab): the composer picker is seeded with it, so its block — system
+        // prompt PLUS example conversation — is attached at the start of the
+        // chat and REPLACES the chat's own system prompt block (see
+        // agentPreview + the send flow). The draft therefore starts EMPTY: the
+        // agent supplies the opening context, and copying its prompt into the
+        // draft would just duplicate it as the chat's own system turn. With no
+        // active agent the picker stays on "None" and the draft starts back at
+        // its "no prompt" placeholder, with no collapsed turns yet.
+        agentChoice(selectedAgentId() ?? '');
+        systemPrompt('');
         cancelSystemPromptDraft();
         collapsedTurns([]);
         error('');
         sidebarOpen(false);
         cancelEdit();
         cancelTitleEdit();
-    }, [agents, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, message, selected, selectedAgentId, sidebarOpen, systemPrompt]);
+    }, [agentChoice, cancelEdit, cancelSystemPromptDraft, cancelTitleEdit, collapsedTurns, error, message, selected, selectedAgentId, sidebarOpen, systemPrompt]);
 
     // Permanently delete ONE conversation from its sidebar entry's "x"
     // (identified DELETE): drop its summary from the list. Only when the
@@ -3539,13 +3819,16 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     }, [cancelEdit, chats, editingIndex, error, savingEdit, selected, storage]);
 
     // Send flow: (1) stream the assistant turn from the provider using the ENTIRE
-    // conversation history — system prompt included — plus the new user message,
-    // rendering deltas live, (2) only after the stream completes, persist the
-    // finished pair through the storage API (creating the conversation first when
-    // needed), (3) GET the canonical record (skipped on the system-prepend PUT
-    // path, which already returns it). A prompt is normally persisted by its
-    // blur handler before this flow starts; the system-prefix fallback remains
-    // for a prompt save that failed and is retried together with a user turn.
+    // conversation history — the leading block included — plus the new user
+    // message, rendering deltas live, (2) only after the stream completes, persist
+    // the finished pair through the storage API (creating the conversation first
+    // when needed), (3) GET the canonical record (skipped on the leading-block
+    // PUT path, which already returns it). The leading block is the AGENT's
+    // system prompt + example conversation when an agent is chosen in the
+    // composer picker (it REPLACES the chat's own system prompt turn), else the
+    // local prompt draft. A prompt is normally persisted by its blur handler
+    // before this flow starts; the system-prefix fallback remains for a prompt
+    // save that failed and is retried together with a user turn.
     // An empty draft adds nothing. A failure before or during
     // streaming saves nothing and restores the composer text for retry.
     // Invoked from the form's onSubmit (event present: prevent the browser's
@@ -3599,19 +3882,83 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
         pendingUser(text);
         streaming('');
         message('');
+        // The ONLINE record created up front for a brand-new chat (see below).
+        // Declared OUTSIDE the try so the failure path can roll it back: a
+        // generation that never produced a reply must leave no phantom
+        // conversation behind (the pre-existing "saves nothing" contract).
+        let createdPending: string | null = null;
         try {
             const record = selected();
-            // Prepend the draft prompt only while the record lacks a leading
-            // system message; trimmed-empty drafts add nothing.
-            const prompt = record?.messages[0]?.role === 'system' ? '' : systemPrompt().trim();
-            const systemPrefix: ChatMessage[] = prompt ? [{ role: 'system', content: prompt }] : [];
-            // Full history (system prompt included) goes to whichever model is
-            // selected, even if earlier turns were produced by a different model.
+            // The leading block a chat starts with. An agent CHOSEN in the
+            // composer's picker supplies it — its system prompt plus its
+            // example conversation (see agentPrefixMessages) — and that block
+            // REPLACES the chat's own system prompt turn. It is attached only
+            // while the chat has not really started yet: a brand-new surface,
+            // or a prompt-only record (a leading system turn and nothing
+            // else). A chat that already holds conversational turns keeps its
+            // established history — the opening block is never re-attached, so
+            // a later send can never duplicate the example turns.
+            const agent = agents().find((candidate) => candidate.id === agentChoice()) ?? null;
+            const recordMessages = record?.messages ?? [];
+            const unstarted = recordMessages.every((message) => message.role === 'system');
+            const agentBlock: ChatMessage[] = agent && unstarted ? agentPrefixMessages(agent) : [];
+            // An attached agent block REPLACES the chat's own system prompt
+            // block, so the record's leading system turn (the prompt-only
+            // record an earlier draft save created) is dropped instead of
+            // being kept alongside it.
+            const baseMessages: ChatMessage[] = agentBlock.length > 0
+                ? recordMessages.filter((message) => message.role !== 'system')
+                : recordMessages;
+            // With no agent the pre-existing draft rule applies: prepend the
+            // local prompt draft only while the record lacks a leading system
+            // message; a trimmed-empty draft adds nothing.
+            const leadsWithSystem = recordMessages[0]?.role === 'system';
+            const prompt = agent || leadsWithSystem ? '' : systemPrompt().trim();
+            const systemPrefix: ChatMessage[] = agentBlock.length > 0
+                ? agentBlock
+                : prompt ? [{ role: 'system', content: prompt }] : [];
+            // Full history (the leading block included) goes to whichever model
+            // is selected, even if earlier turns were produced by a different model.
             const history: ChatMessage[] = [
                 ...systemPrefix,
-                ...(record?.messages ?? []),
+                ...baseMessages,
                 { role: 'user', content: text }
             ];
+            // ONLINE new chat: create the record BEFORE generating, marked
+            // 'pending'. The id then exists (and is cached by storage.create)
+            // for the whole generation window, which is exactly the id the
+            // sidebar poller watches — the conversation is visible, tracked, and
+            // pollable while its turn is in flight. The pending record starts
+            // empty (the server derives the title from the completed pair), so a
+            // reload during generation restores the chat instead of losing it.
+            // OFFLINE keeps its existing order (create after the stream): there
+            // is no server to poll, so the local record is written settled.
+            if (!record && !offline) {
+                createdPending = (await storage.create({ model: chosenModel, status: 'pending' })).conversationId;
+                if (modeEpoch() === epochAtSend) {
+                    const now = new Date().toISOString();
+                    const pendingSummary: ConversationSummary = {
+                        conversationId: createdPending,
+                        title: 'New conversation',
+                        model: chosenModel,
+                        status: 'pending',
+                        messageCount: 0,
+                        createdAt: now,
+                        updatedAt: now
+                    };
+                    chats([pendingSummary, ...chats().filter((chat) => chat.conversationId !== createdPending)]);
+                    // Arm the sidebar poller for THIS id: the record is pending
+                    // and a request is in flight, which is exactly the window
+                    // the smart tracking covers.
+                    pendingConversationId(createdPending);
+                }
+            } else if (record && !offline) {
+                // An ONGOING request on an already-tracked conversation: the
+                // record is not marked pending (its history is only rewritten
+                // when the turn completes), but the id is still watched for the
+                // duration of the request, exactly like the create path.
+                pendingConversationId(record.conversationId);
+            }
             // Provider dispatch: ONLINE streams through the private relay base
             // (existing behavior). OFFLINE streams to the STANDARD route
             // derived from the single configured provider base
@@ -3636,8 +3983,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 // the append order is exactly [system?, user, assistant] — in
                 // the ACTIVE MODE'S namespace (server online, browser-local
                 // offline; see the storage dispatch at the top of the
-                // component).
-                const conversationId = (await storage.create({ model: chosenModel })).conversationId;
+                // component). ONLINE reuses the pending record created above, so
+                // the completion settles that SAME id instead of creating a
+                // second conversation.
+                const conversationId = createdPending ?? (await storage.create({ model: chosenModel })).conversationId;
                 await storage.append(conversationId, {
                     // The stream completed: persist the pending user turn together
                     // with the assistant reply so storage holds completed pairs.
@@ -3647,11 +3996,14 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 });
                 result = (await storage.get(conversationId)).conversation;
             } else if (systemPrefix.length > 0) {
-                // Existing chat gaining its FIRST system prompt: the append POST
-                // can only attach to the END, so the whole history is replaced
-                // through the identified PUT to keep the prompt at index 0.
+                // Existing chat gaining its FIRST leading block (its system
+                // prompt, or the agent's prompt + example conversation): the
+                // append POST can only attach to the END, so the whole history
+                // is replaced through the identified PUT to keep the block at
+                // index 0 (an agent block also DROPS the record's previous
+                // system turn — it replaces that block).
                 result = (await storage.replace(record.conversationId, {
-                    messages: [...systemPrefix, ...record.messages, { role: 'user', content: text }, assistantMessage],
+                    messages: [...systemPrefix, ...baseMessages, { role: 'user', content: text }, assistantMessage],
                     ...(reply.usage ? { usage: reply.usage } : {})
                 })).conversation;
             } else {
@@ -3714,6 +4066,9 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     ? current.map((chat) => (chat.conversationId === summary.conversationId ? summary : chat))
                     : [summary, ...current];
                 chats(next);
+                // The request is over: stop watching the id (polling exists only
+                // while a pending/ongoing request needs it).
+                if (pendingConversationId() === summary.conversationId) pendingConversationId(null);
             }
         } catch (reason) {
             // EPOCH GUARD: failures (including the offline blank-endpoint
@@ -3722,6 +4077,24 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
             // operation's errors; storage/endpoint problems stay visible in
             // their own mode (no data loss, no phantom success).
             const sendSessionCurrent = modeEpoch() === epochAtSend;
+            // ROLLBACK of the up-front pending record: a generation that never
+            // produced a reply must not leave an empty conversation in the
+            // sidebar (the "a failed turn saves nothing" contract). The delete
+            // runs in the CAPTURED namespace and is best-effort — a failed
+            // cleanup leaves a tracked, empty record the user can remove with
+            // the entry's own "x" rather than surfacing a second error.
+            if (createdPending !== null) {
+                try {
+                    await storage.remove(createdPending);
+                } catch {
+                    // Best-effort cleanup; the original failure is what the user needs.
+                }
+                if (modeEpoch() === epochAtSend) {
+                    chats(chats().filter((chat) => chat.conversationId !== createdPending));
+                    // The request is over (and its record is gone): stop polling.
+                    pendingConversationId(null);
+                }
+            }
             if (sendSessionCurrent) {
                 error(reason instanceof Error ? reason.message : String(reason));
                 // Restore the draft so a failed stream can be retried without
@@ -3740,7 +4113,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // refs (see the declarations above); listed per the convention of
     // recording every state-touching dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeSend, cancelSystemPromptDraft, chats, collapsedTurns, error, listening, loading, message, model, modeEpoch, offline, pendingUser, providerUrl, recognizer, savingSystemPrompt, selected, sendSequence, settings, storage, streaming, systemPrompt]);
+    }, [activeSend, agentChoice, agents, cancelSystemPromptDraft, chats, collapsedTurns, error, listening, loading, message, model, modeEpoch, offline, pendingConversationId, pendingUser, providerUrl, recognizer, savingSystemPrompt, selected, sendSequence, settings, storage, streaming, systemPrompt]);
 
     // Voice toggle (rendered by the VoiceButton in ComposerField): one tap
     // starts a single-utterance session whose transcript fills the SAME input
@@ -3892,7 +4265,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     <strong>{chat.title}</strong>
                     <Metadata>{chat.messageCount} messages · {chat.status}</Metadata>
                 </ChatButton>
-                <ConversationDeleteButton
+                <EntryDeleteButton
                     type="button"
                     onClick={() => void deleteChat(chat.conversationId)}
                     // Provider waiting/streaming is asynchronous and must not
@@ -3904,7 +4277,7 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                     data-testid={`delete-chat-${chat.conversationId}`}
                 >
                     <CloseIcon size={14} />
-                </ConversationDeleteButton>
+                </EntryDeleteButton>
             </ChatEntry>
         );
     });
@@ -3922,11 +4295,12 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     const modelOptions = chosenModel && !catalog.includes(chosenModel)
         ? [chosenModel, ...catalog]
         : catalog;
-    // id → display label for the WHOLE option set (see uniqueModelLabels): ids
-    // whose stripped names collide (the same base model served by several
-    // providers) display "base (provider)" so the dropdown never lists
-    // identical-looking entries. Resolved once per render and reused by
-    // the composer text, the option labels, and both attribution surfaces.
+    // id → display label for the WHOLE option set (see uniqueModelLabels):
+    // every prefixed id displays "base (provider)" — the model name leads and
+    // the provider always follows — so the dropdown never leaves a row
+    // unattributed and colliding base names still read distinctly. Resolved
+    // once per render and reused by the composer text, the option labels, and
+    // both attribution surfaces.
     const modelLabels = uniqueModelLabels(modelOptions);
     // Lookup with graceful fallback: a historical ChatMessage.model that is no
     // longer in the catalog misses the map and degrades to the plain stripped
@@ -3938,8 +4312,6 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // registry (agents()) lives in localStorage — see src/agents.
     const agentDisplay = (): string => agents().find((agent) => agent.id === agentChoice())?.name ?? 'None';
 
-    // Render only the selected record; a new chat remains an empty composer until submitted.
-    const currentMessages = selected()?.messages ?? [];
     // The in-flight pair belongs to ONE surface only: it renders while the
     // selected conversation matches the send's snapshot (activeSend — see its
     // comment). Switching chats mid-stream leaves the generating turn on the
@@ -3957,6 +4329,24 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
     // The local-draft system turn yields to the RENDERED system message turn
     // once the record leads with a persisted system message.
     const hasPersistedSystemPrompt = selected()?.messages[0]?.role === 'system';
+    // The agent chosen in the composer's picker (null for the default "None").
+    const chosenAgent = agents().find((agent) => agent.id === agentChoice()) ?? null;
+    // A chat counts as UNSTARTED while it holds no conversational turn (no user
+    // or assistant message): a blank new chat, or a prompt-only record an
+    // earlier draft save created. Only then does an agent's block attach.
+    const chatUnstarted = (selected()?.messages ?? []).every((message) => message.role === 'system');
+    // The agent block PREVIEW: the agent's system prompt followed by its
+    // example conversation, rendered at the TOP of the chat in place of the
+    // system prompt turn — the exact block the send flow attaches (see
+    // agentPrefixMessages). It is a projection of the agent definition, not
+    // stored chat state, so it disappears once the chat has real turns (by
+    // then the block is persisted and renderMessages draws those turns).
+    const agentPreview = chosenAgent && chatUnstarted ? agentPrefixMessages(chosenAgent) : [];
+    // While the preview stands in for the chat's opening block, the record's own
+    // system-only turns are suppressed so the block is not shown twice.
+    const currentMessages = agentPreview.length > 0
+        ? (selected()?.messages ?? []).filter((message) => message.role !== 'system')
+        : selected()?.messages ?? [];
     // While the draft is empty the system turn's bubble is the literal
     // placeholder "no prompt"; the copy action only exists with real text.
     const systemPromptEmpty = systemPrompt().trim() === '';
@@ -4160,7 +4550,11 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 agents().map((agent) => (
                                     // Entries reuse the conversation entry chrome
                                     // (ChatEntry positioning context + ChatButton
-                                    // selected treatment) — no delete control yet.
+                                    // selected treatment) INCLUDING the pinned "x"
+                                    // delete control: the two registries are
+                                    // managed the same way. The x is a sibling of
+                                    // the select button (never nested) so deleting
+                                    // can never select the agent.
                                     <ChatEntry key={agent.id} data-testid={`agent-entry-${agent.id}`}>
                                         <ChatButton
                                             type="button"
@@ -4170,8 +4564,19 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                             data-testid={`agent-tab-${agent.id}`}
                                         >
                                             <strong>{agent.name}</strong>
-                                            <Metadata>{agent.tools.length} tools</Metadata>
+                                            <Metadata data-testid={`agent-entry-meta-${agent.id}`}>
+                                                {agent.messages.length} turns · {agent.tools.length} tools
+                                            </Metadata>
                                         </ChatButton>
+                                        <EntryDeleteButton
+                                            type="button"
+                                            onClick={() => deleteAgent(agent.id)}
+                                            aria-label="Delete agent"
+                                            title="Delete agent"
+                                            data-testid={`delete-agent-${agent.id}`}
+                                        >
+                                            <CloseIcon size={14} />
+                                        </EntryDeleteButton>
                                     </ChatEntry>
                                 ))
                             ) : (
@@ -4221,9 +4626,10 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                 <Conversation>
                     {/* AGENT surface: the selected agent's configuration fills
                         the content area exactly like an open chat (name +
-                        system prompt + allowed tools; see AgentWorkspace).
-                        Every change writes into the definition and re-persists
-                        immediately — no draft/commit split. */}
+                        system prompt + CHAT LAYOUT + allowed tools; see
+                        AgentWorkspace). Every change writes into the
+                        definition and re-persists immediately — no
+                        draft/commit split. */}
                     {contentSurface === 'agent' && selectedAgent && (
                         <AgentWorkspace data-testid="agent-workspace">
                             <AgentNameInput
@@ -4241,27 +4647,88 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                 rows={10}
                                 data-testid="agent-prompt-input"
                             />
-                            {/* Allowed tools: one checkbox per registry entry
+                            {/* The agent's CHAT LAYOUT: its system prompt above,
+                                then an ordered example back-and-forth. This is
+                                exactly what gets attached to the START of a chat
+                                that uses the agent — the system prompt plus
+                                these turns REPLACE the chat's own system prompt
+                                block (see agentPrefixMessages + the send flow).
+                                Rows alternate user → assistant; each role chip
+                                flips the turn and each row is individually
+                                removable. */}
+                            <SidebarHeading>
+                                <span>Chat layout</span>
+                                <Metadata data-testid="agent-layout-count">
+                                    {selectedAgent.messages.length} turns
+                                </Metadata>
+                            </SidebarHeading>
+                            <Metadata data-testid="agent-layout-note">
+                                Attached to the start of every chat that uses this agent, replacing the chat's system prompt block.
+                            </Metadata>
+                            {selectedAgent.messages.length > 0 && (
+                                <AgentLayoutList data-testid="agent-layout-list">
+                                    {selectedAgent.messages.map((message, index) => (
+                                        <AgentLayoutRow key={index} data-testid={`agent-message-${index}`}>
+                                            <AgentLayoutRole
+                                                type="button"
+                                                onClick={() => updateAgent(selectedAgent.id, updateAgentMessageRole(selectedAgent, index))}
+                                                aria-label={`Switch ${message.role} turn to ${message.role === 'user' ? 'assistant' : 'user'}`}
+                                                title={`Switch ${message.role} turn to ${message.role === 'user' ? 'assistant' : 'user'}`}
+                                                data-testid={`agent-message-role-${index}`}
+                                            >
+                                                {message.role}
+                                            </AgentLayoutRole>
+                                            <AgentLayoutInput
+                                                value={message.content}
+                                                onChange={(event) => updateAgent(selectedAgent.id, updateAgentMessage(selectedAgent, index, event.target.value))}
+                                                placeholder={message.role === 'user' ? 'Example user message...' : 'Example assistant reply...'}
+                                                aria-label={`${message.role} turn ${index + 1}`}
+                                                rows={2}
+                                                data-testid={`agent-message-input-${index}`}
+                                            />
+                                            <AgentLayoutAction
+                                                type="button"
+                                                onClick={() => updateAgent(selectedAgent.id, removeAgentMessage(selectedAgent, index))}
+                                                aria-label={`Remove ${message.role} turn`}
+                                                title={`Remove ${message.role} turn`}
+                                                data-testid={`remove-agent-message-${index}`}
+                                            >
+                                                Remove
+                                            </AgentLayoutAction>
+                                        </AgentLayoutRow>
+                                    ))}
+                                </AgentLayoutList>
+                            )}
+                            <AgentLayoutAction
+                                type="button"
+                                onClick={() => updateAgent(selectedAgent.id, appendAgentMessage(selectedAgent))}
+                                data-testid="add-agent-message"
+                            >
+                                Add turn
+                            </AgentLayoutAction>
+                            {/* Allowed tools: one TILE per registry entry
                                 (toggleAgentTool flips the id in the agent's
-                                allowed set); the muted note is the
-                                empty-registry fallback. */}
+                                allowed set; the tile shows the checked state);
+                                the muted note is the empty-registry fallback. */}
                             <SidebarHeading>
                                 <span>Allowed tools</span>
                             </SidebarHeading>
                             {AVAILABLE_TOOLS.length === 0 ? (
                                 <Metadata data-testid="agent-tools-empty">No tools available yet.</Metadata>
                             ) : (
-                                AVAILABLE_TOOLS.map((tool) => (
-                                    <AgentToolOption key={tool.id}>
-                                        <input
-                                            type="checkbox"
-                                            checked={selectedAgent.tools.includes(tool.id)}
-                                            onChange={() => updateAgent(selectedAgent.id, toggleAgentTool(selectedAgent, tool.id))}
-                                            data-testid={`agent-tool-${tool.id}`}
-                                        />
-                                        <Metadata>{tool.name}</Metadata>
-                                    </AgentToolOption>
-                                ))
+                                <AgentToolGrid data-testid="agent-tool-grid">
+                                    {AVAILABLE_TOOLS.map((tool) => (
+                                        <AgentToolOption key={tool.id} selected={selectedAgent.tools.includes(tool.id)}>
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedAgent.tools.includes(tool.id)}
+                                                onChange={() => updateAgent(selectedAgent.id, toggleAgentTool(selectedAgent, tool.id))}
+                                                data-testid={`agent-tool-${tool.id}`}
+                                            />
+                                            <span>{tool.name}</span>
+                                        </AgentToolOption>
+                                    ))}
+                                </AgentToolGrid>
                             )}
                         </AgentWorkspace>
                     )}
@@ -4399,8 +4866,18 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             cross ever (the system prompt cannot be removed).
                             Once the record leads with a persisted system
                             message, renderMessages draws that turn instead and
-                            this block disappears. */}
-                        {!hasPersistedSystemPrompt && (
+                            this block disappears.
+                            WITH AN AGENT CHOSEN this whole turn is REPLACED by
+                            the agent's block (its system prompt + example
+                            conversation, see renderAgentBlock): the agent
+                            supplies the chat's opening context, so the chat's
+                            own prompt draft has nothing to contribute. */}
+                        {agentPreview.length > 0 && (
+                            <>
+                                {renderAgentBlock(agentPreview)}
+                            </>
+                        )}
+                        {agentPreview.length === 0 && !hasPersistedSystemPrompt && (
                             <SystemTurn data-testid="system-prompt-turn">
                                 <TurnHeaderRow>
                                     <TurnHeaderLead>
@@ -4583,63 +5060,75 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                             whose invisible native select opens the real
                             dropdown on click. Always visible. */}
                         <ModelPicker data-testid="model-picker">
-                            <AgentText data-testid="agent-label">
-                                {agentDisplay()}
-                            </AgentText>
-                            <AgentSelect
-                                value={agentChoice()}
-                                onChange={(event) => agentChoice(event.target.value)}
-                                aria-label="Select agent"
-                                data-testid="agent-select"
-                            >
-                                {/* The DEFAULT "None" entry ('' value): no
-                                    agent applies. The remaining options list
-                                    the persisted client-side agent registry
-                                    (src/agents) by name. */}
-                                <option value="">None</option>
-                                {agents().map((agent) => (
-                                    <option key={agent.id} value={agent.id}>{agent.name}</option>
-                                ))}
-                            </AgentSelect>
-                            <ModelText data-testid="model-label">
-                                {chosenModel
-                                    ? modelDisplayName(chosenModel)
-                                    : modelOptions.length === 0
-                                         // With no options at all the label explains WHERE the
-                                         // configuration lives: offline points at the Settings
-                                         // provider base URL field (never a silent default
-                                         // server), online keeps the plain catalog-empty text.
-                                        ? (offline ? 'No models available — set the provider base URL in Settings' : 'No models available')
-                                        : 'Select model'}
-                            </ModelText>
-                            <ModelSelect
-                                value={chosenModel}
-                                onChange={(event) => {
-                                    model(event.target.value);
-                                    // An explicit pick is immediately the remembered last-used model.
-                                    rememberModel(event.target.value);
-                                }}
-                                aria-label="Select model"
-                                data-testid="model-select"
-                                // The model picker remains usable while a
-                                // response streams; the request already holds
-                                // its own model snapshot. Disabled only while
-                                // NO option exists (a remembered model — the
-                                // offline fallback for a blank base / failed
-                                // catalog — still counts as an option via the
-                                // modelOptions rule above).
-                                disabled={modelOptions.length === 0}
-                            >
-                                {modelOptions.length === 0
-                                    ? <option value="">No models available</option>
-                                    : modelOptions.map((id) => (
-                                        // Values keep the full provider-routed id; labels strip the
-                                        // prefix UNLESS the stripped name is shared by several ids
-                                        // (same base model through multiple providers) — those
-                                        // display "base (provider)" so every option reads distinctly.
-                                        <option key={id} value={id}>{modelDisplayName(id)}</option>
+                            {/* Each pair is its own PickerField so its
+                                invisible select overlays ONLY its own label —
+                                a shared row-wide overlay let the model select
+                                (rendered last) cover the agent text and eat
+                                every click, making agent selection impossible. */}
+                            <PickerField>
+                                <AgentText data-testid="agent-label">
+                                    {agentDisplay()}
+                                </AgentText>
+                                <AgentSelect
+                                    value={agentChoice()}
+                                    onChange={(event) => agentChoice(event.target.value)}
+                                    aria-label="Select agent"
+                                    data-testid="agent-select"
+                                >
+                                    {/* The DEFAULT "None" entry ('' value): no
+                                        agent applies. The remaining options list
+                                        the persisted client-side agent registry
+                                        (src/agents) by name; picking one
+                                        REPLACES this chat's system prompt block
+                                        with the agent's block (its system
+                                        prompt + example conversation). */}
+                                    <option value="">None</option>
+                                    {agents().map((agent) => (
+                                        <option key={agent.id} value={agent.id}>{agent.name}</option>
                                     ))}
-                            </ModelSelect>
+                                </AgentSelect>
+                            </PickerField>
+                            <PickerField>
+                                <ModelText data-testid="model-label">
+                                    {chosenModel
+                                        ? modelDisplayName(chosenModel)
+                                        : modelOptions.length === 0
+                                             // With no options at all the label explains WHERE the
+                                             // configuration lives: offline points at the Settings
+                                             // provider base URL field (never a silent default
+                                             // server), online keeps the plain catalog-empty text.
+                                            ? (offline ? 'No models available — set the provider base URL in Settings' : 'No models available')
+                                            : 'Select model'}
+                                </ModelText>
+                                <ModelSelect
+                                    value={chosenModel}
+                                    onChange={(event) => {
+                                        model(event.target.value);
+                                        // An explicit pick is immediately the remembered last-used model.
+                                        rememberModel(event.target.value);
+                                    }}
+                                    aria-label="Select model"
+                                    data-testid="model-select"
+                                    // The model picker remains usable while a
+                                    // response streams; the request already holds
+                                    // its own model snapshot. Disabled only while
+                                    // NO option exists (a remembered model — the
+                                    // offline fallback for a blank base / failed
+                                    // catalog — still counts as an option via the
+                                    // modelOptions rule above).
+                                    disabled={modelOptions.length === 0}
+                                >
+                                    {modelOptions.length === 0
+                                        ? <option value="">No models available</option>
+                                        : modelOptions.map((id) => (
+                                            // Values keep the full provider-routed id; every prefixed
+                                            // label reads "base (provider)" — the model name leads and
+                                            // the provider always follows — so no option is left
+                                            // unattributed and colliding base names still read distinctly.
+                                            <option key={id} value={id}>{modelDisplayName(id)}</option>
+                                        ))}
+                                </ModelSelect>
+                            </PickerField>
                         </ModelPicker>
                         <TokenUsage data-testid="token-usage">
                             Total tokens: {selected()?.usage?.total_tokens ?? 0}

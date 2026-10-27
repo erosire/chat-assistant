@@ -13,10 +13,18 @@ import { createRegistryStore, type RegistryStore } from './registry-store';
 // `tools` holds TOOL IDS (not names) so tool renames never orphan a
 // configuration; the server validates the array shape but not the referenced
 // ids (the tool registry is a sibling collection, not a foreign key).
+// `messages` is the agent's CHAT LAYOUT: the example back-and-forth attached
+// after its system prompt at the start of every chat that uses the agent.
+export type AgentMessage = {
+    role: 'user' | 'assistant';
+    content: string;
+};
+
 export type AgentRecord = {
     agentId: string;
     name: string;
     systemPrompt: string;
+    messages: AgentMessage[];
     tools: string[];
     createdAt: string;
     updatedAt: string;
@@ -55,17 +63,35 @@ const isToolLanguage = (value: unknown): value is ToolRecord['language'] =>
 // defaults) and PUT (optional with retention). Returns the normalized fields
 // or an error message; timestamps and identifiers are owned by the handlers.
 // POST without a name defaults to "New agent" — the same default the client
-// registry's createAgentDefinition uses.
+// registry's createAgentDefinition uses. `messages` is the chat layout: only
+// the two conversational roles are accepted (an agent's system prompt is its
+// own field, so a layout entry can never introduce a second one), and content
+// may be empty while the editor persists each keystroke.
 export const parseAgentDefinition = (
     body: unknown,
-    fallback: Pick<AgentRecord, 'name' | 'systemPrompt' | 'tools'> | null
-): { definition?: Pick<AgentRecord, 'name' | 'systemPrompt' | 'tools'>; error?: string } => {
+    fallback: Pick<AgentRecord, 'name' | 'systemPrompt' | 'messages' | 'tools'> | null
+): { definition?: Pick<AgentRecord, 'name' | 'systemPrompt' | 'messages' | 'tools'>; error?: string } => {
     if (!isObject(body)) return { error: 'body must be a JSON object' };
     const name = body.name ?? fallback?.name ?? 'New agent';
     const systemPrompt = body.systemPrompt ?? fallback?.systemPrompt;
+    const messages = body.messages ?? fallback?.messages;
     const tools = body.tools ?? fallback?.tools;
     if (!isString(name) || name.trim().length === 0) return { error: 'name must be a non-empty string' };
     if (systemPrompt !== undefined && !isString(systemPrompt)) return { error: 'systemPrompt must be a string' };
+    const chatLayout: AgentMessage[] = [];
+    if (messages !== undefined) {
+        if (!Array.isArray(messages)) return { error: 'messages must be an array of chat turns' };
+        for (const message of arrayEnsures(messages)) {
+            if (!isObject(message)) return { error: 'messages must be an array of chat turns' };
+            const role = message.role;
+            const content = message.content;
+            if (role !== 'user' && role !== 'assistant') {
+                return { error: 'messages must contain only "user" and "assistant" turns' };
+            }
+            if (!isString(content)) return { error: 'messages must be an array of chat turns' };
+            chatLayout.push({ role, content });
+        }
+    }
     if (tools !== undefined) {
         if (!Array.isArray(tools)) return { error: 'tools must be an array of tool ids' };
         for (const tool of arrayEnsures(tools)) {
@@ -76,6 +102,7 @@ export const parseAgentDefinition = (
         definition: {
             name: name.trim(),
             systemPrompt: systemPrompt ?? '',
+            messages: chatLayout,
             tools: tools === undefined ? [] : (tools as string[]).slice()
         }
     };
@@ -157,6 +184,7 @@ export const agentCreate = asHandlerMethod(async (_, parameters, rawVariables) =
         agentId,
         name: parsed.definition!.name,
         systemPrompt: parsed.definition!.systemPrompt,
+        messages: parsed.definition!.messages,
         tools: parsed.definition!.tools,
         createdAt: now,
         updatedAt: now
@@ -178,8 +206,8 @@ export const agentGet = asHandlerMethod(async (_, parameters, rawVariables) => {
 });
 
 // PUT /v1/chat-assistant/agent/:agent_id replaces the agent's definition
-// (name, system prompt, allowed tool ids) and returns the full updated record
-// so the caller can re-sync without a follow-up GET.
+// (name, system prompt, chat layout, allowed tool ids) and returns the full
+// updated record so the caller can re-sync without a follow-up GET.
 export const agentPut = asHandlerMethod(async (_, parameters, rawVariables) => {
     const variables = rawVariables as RegistryHandlerVariables;
     const agentId = parameters.path.agent_id;

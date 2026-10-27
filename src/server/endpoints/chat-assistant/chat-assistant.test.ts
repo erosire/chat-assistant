@@ -184,6 +184,122 @@ describe('conversation service handlers', () => {
         expect(result).toEqual({ status: 200, response: { conversations: [] } });
     });
 
+    it('scopes the list to the requested ids (the browser-owned cache)', async () => {
+        const other: ConversationRecord = {
+            conversationId: 'conversation-other',
+            title: 'Someone else',
+            model: 'test-model',
+            status: 'complete',
+            messageCount: 1,
+            messages: [{ role: 'user', content: 'Someone else' }],
+            createdAt: '2026-08-07T00:00:00.000Z',
+            updatedAt: '2026-08-07T00:00:01.000Z'
+        };
+        const store = memoryStore([existingConversation, other]);
+
+        // Only the caller's own id comes back — the newer foreign record is
+        // excluded even though it would lead the unfiltered list.
+        const scoped = await conversationList(
+            context,
+            { path: {}, query: { ids: 'conversation-1' }, body: {} },
+            variables(store)
+        );
+        expect(scoped).toEqual({
+            status: 200,
+            response: {
+                conversations: [{
+                    conversationId: 'conversation-1',
+                    title: 'First question',
+                    model: 'test-model',
+                    status: 'complete',
+                    messageCount: 2,
+                    createdAt: '2026-08-06T00:00:00.000Z',
+                    updatedAt: '2026-08-06T00:00:01.000Z'
+                }]
+            }
+        });
+
+        // Multiple ids keep the activity ordering.
+        const both = await conversationList(
+            context,
+            { path: {}, query: { ids: 'conversation-1, conversation-other' }, body: {} },
+            variables(store)
+        );
+        expect((both as any).response.conversations.map((entry: { conversationId: string }) => entry.conversationId))
+            .toEqual(['conversation-other', 'conversation-1']);
+
+        // An EMPTY filter is valid and matches nothing (a browser that owns no
+        // ids must never receive a server-wide history).
+        const none = await conversationList(
+            context,
+            { path: {}, query: { ids: '' }, body: {} },
+            variables(store)
+        );
+        expect(none).toEqual({ status: 200, response: { conversations: [] } });
+    });
+
+    it('rejects a non-string ids filter', async () => {
+        const result = await conversationList(
+            context,
+            { path: {}, query: { ids: 42 }, body: {} },
+            variables(memoryStore())
+        );
+
+        expect(result).toEqual({
+            status: 400,
+            response: { error: 'ids must be a comma-separated list of conversation ids' }
+        });
+    });
+
+    it('creates a PENDING conversation when the caller declares an in-flight turn', async () => {
+        vi.setSystemTime(new Date('2026-08-06T00:00:00.000Z'));
+        const store = memoryStore();
+
+        const result = await conversationCreate(
+            context,
+            { path: {}, query: {}, body: { model: 'test-model', status: 'pending' } },
+            variables(store, () => 'conversation-pending')
+        );
+
+        expect(result).toEqual({ status: 201, response: { conversationId: 'conversation-pending' } });
+        // The record exists (and is pollable) for the whole generation window.
+        expect(store.get('conversation-pending')?.status).toBe('pending');
+        expect(store.get('conversation-pending')?.messages).toEqual([]);
+    });
+
+    it('settles a pending conversation on append and rejects an unsupported status', async () => {
+        const store = memoryStore([{ ...existingConversation, status: 'pending' }]);
+
+        const appended = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: {
+                    messages: [
+                        { role: 'user', content: 'Follow up' },
+                        { role: 'assistant', content: 'Follow up answer' }
+                    ]
+                }
+            },
+            variables(store)
+        );
+        expect((appended as any).response.conversation.status).toBe('complete');
+
+        const rejected = await conversationPost(
+            context,
+            {
+                path: { conversation_id: 'conversation-1' },
+                query: {},
+                body: { message: 'Hello', status: 'error' }
+            },
+            variables(store)
+        );
+        expect(rejected).toEqual({
+            status: 400,
+            response: { error: 'status must be either "pending" or "complete"' }
+        });
+    });
     it('gets an identified conversation from the path parameter', async () => {
         const result = await conversationGet(
             context,

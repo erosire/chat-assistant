@@ -10,10 +10,25 @@
             /* Paint the application surface before React mounts to avoid a white first frame. */
             html, body, #root { height: 100%; margin: 0; }
             html { font-size: 16px; }
+            /* Native UI the browser paints for us — scrollbars, native form
+               controls, and the <option> popups of the model/agent/settings
+               dropdowns — is drawn per the document's color scheme. Without
+               this dark hint it defaults to the LIGHT scheme, so the model
+               list opened as a white popup with black rows against the dark
+               dashboard (the "not in sync with the theme" report). */
+            :root { color-scheme: dark; }
             body {
                 background: #10131a;
                 color: #e8ecf2;
                 font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            }
+            /* Chromium draws the popup per the select's color scheme, but
+               Firefox and embedded webviews style it from the <option>
+               elements themselves — without this rule those popups render
+               white with grey text. Colors mirror COLORS.panelStrong/text. */
+            select option {
+                background-color: #1d2430;
+                color: #e8ecf2;
             }
             * { box-sizing: border-box; }
             *::-webkit-scrollbar { width: 10px; height: 10px; }

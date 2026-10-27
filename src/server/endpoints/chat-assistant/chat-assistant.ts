@@ -27,6 +27,36 @@ type ChatHandlerVariables = {
 const isChatRole = (value: unknown): value is ChatMessage['role'] =>
     value === 'system' || value === 'user' || value === 'assistant';
 
+// Statuses a client may explicitly request. 'pending' marks a conversation whose
+// turn is still in flight (the owning browser has created the record but not yet
+// posted the completed pair), which is the ONLY state the browser polls for;
+// 'complete' is the settled default every write falls back to. 'error' is
+// produced by the storage layer, never requested by a client.
+const isRequestedStatus = (value: unknown): value is ConversationRecord['status'] =>
+    value === 'pending' || value === 'complete';
+
+// Read the optional status override shared by creation, append, and replacement.
+// Returns undefined when absent (callers default to 'complete'), null when the
+// value is present but unsupported (a 400 at the handler).
+const parseRequestedStatus = (value: unknown): ConversationRecord['status'] | null | undefined => {
+    if (value === undefined) return undefined;
+    return isRequestedStatus(value) ? value : null;
+};
+
+// Read the optional `ids` collection filter: a comma-separated list of
+// conversation ids the CALLER owns (the browser's tracked-id cache). Present
+// means "answer with exactly these conversations and nothing else", so a
+// browser never has to download a server-wide history it does not own. An empty
+// list is a valid filter that matches nothing; an unsupported value is a 400.
+const parseIdFilter = (value: unknown): string[] | null | undefined => {
+    if (value === undefined) return undefined;
+    if (!isString(value)) return null;
+    return value
+        .split(',')
+        .map((candidate) => candidate.trim())
+        .filter((candidate) => candidate.length > 0);
+};
+
 // Explicit histories are validated before persistence so malformed turns cannot
 // create a conversation that later requests cannot safely send upstream. Each
 // message may also carry the model that produced it (assistant turns): the UI
@@ -137,6 +167,9 @@ const validateOptions = (body: ConversationPostRequest): string | undefined => {
     if (parseUsage(body.usage) === null) {
         return 'usage must contain only numeric token counters';
     }
+    if (parseRequestedStatus(body.status) === null) {
+        return 'status must be either "pending" or "complete"';
+    }
     return undefined;
 };
 
@@ -144,10 +177,20 @@ const validateOptions = (body: ConversationPostRequest): string | undefined => {
 // compact summary ordered by most recent activity (updatedAt descending). Message
 // bodies stay behind the identified GET so the history list never ships full chat
 // transcripts; ISO-8601 timestamps sort correctly as plain strings.
-export const conversationList = asHandlerMethod(async (_, _parameters, rawVariables) => {
+// The optional `ids` query parameter scopes the answer to the caller's OWN
+// tracked ids: a browser caches the ids it created and asks only for those, so
+// the response stays proportional to what that browser owns instead of the
+// server-wide history. Absent `ids` keeps the unfiltered list for tooling.
+export const conversationList = asHandlerMethod(async (_, parameters, rawVariables) => {
     const variables = rawVariables as ChatHandlerVariables;
+    const idFilter = parseIdFilter(parameters.query?.ids);
+    if (idFilter === null) {
+        return { status: 400, response: { error: 'ids must be a comma-separated list of conversation ids' } };
+    }
+    const wanted = idFilter === undefined ? null : new Set(idFilter);
     const conversations: ConversationSummary[] = resolveStore(variables)
         .list()
+        .filter((record) => wanted === null || wanted.has(record.conversationId))
         .map(({ conversationId, title, model, status, messageCount, createdAt, updatedAt }) => ({
             conversationId,
             title,
@@ -195,7 +238,10 @@ export const conversationCreate = asHandlerMethod(async (_, parameters, rawVaria
         conversationId,
         title: titleFromMessages(messages),
         model: body.model?.trim() || DEFAULT_CHAT_MODEL,
-        status: 'complete',
+        // A creation is 'pending' only when the caller declares an in-flight turn
+        // (the owning browser then polls the id until the completed pair is
+        // appended); every other creation is already settled.
+        status: parseRequestedStatus(body.status) ?? 'complete',
         messageCount: messages.length,
         messages,
         createdAt: now,
@@ -269,7 +315,9 @@ export const conversationPost = asHandlerMethod(async (_, parameters, rawVariabl
             ? existing.title
             : titleFromMessages(messageResult.messages),
         model,
-        status: 'complete',
+        // The append settles the conversation unless the caller explicitly keeps
+        // it in flight (a user turn posted before its reply exists).
+        status: parseRequestedStatus(body.status) ?? 'complete',
         messages,
         messageCount: messages.length,
         updatedAt: new Date().toISOString(),
@@ -315,6 +363,9 @@ export const conversationPut = asHandlerMethod(async (_, parameters, rawVariable
     if (parseUsage(body.usage) === null) {
         return { status: 400, response: { error: 'usage must contain only numeric token counters' } };
     }
+    if (parseRequestedStatus(body.status) === null) {
+        return { status: 400, response: { error: 'status must be either "pending" or "complete"' } };
+    }
     // `messages` is mandatory here: a replacement without a list is never
     // meaningful (use DELETE to remove a conversation entirely). Empty arrays
     // remain valid so a conversation can be wiped without deleting it.
@@ -333,7 +384,10 @@ export const conversationPut = asHandlerMethod(async (_, parameters, rawVariable
         title: body.title?.trim() ||
             (messages.some((message) => message.role === 'user') ? titleFromMessages(messages) : existing.title),
         model: body.model?.trim() || existing.model,
-        status: 'complete',
+        // A history rewrite normally settles the conversation; an explicit
+        // 'pending' keeps it in flight (the browser is still waiting on the
+        // reply that will be appended next).
+        status: parseRequestedStatus(body.status) ?? 'complete',
         messages,
         messageCount: messages.length,
         updatedAt: new Date().toISOString(),

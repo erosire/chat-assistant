@@ -23,6 +23,10 @@ const agent: AgentRecord = {
     agentId: 'agent-1',
     name: 'Researcher',
     systemPrompt: 'You are a careful researcher.',
+    messages: [
+        { role: 'user', content: 'Find facts.' },
+        { role: 'assistant', content: 'Here is what I found.' }
+    ],
     tools: ['web-search'],
     createdAt: '2026-08-06T00:00:00.000Z',
     updatedAt: '2026-08-06T00:00:01.000Z'

@@ -62,6 +62,10 @@ const existingAgent: AgentRecord = {
     agentId: 'agent-1',
     name: 'Researcher',
     systemPrompt: 'You are a careful researcher.',
+    messages: [
+        { role: 'user', content: 'Find facts.' },
+        { role: 'assistant', content: 'Here is what I found.' }
+    ],
     tools: ['web-search'],
     createdAt: '2026-08-06T00:00:00.000Z',
     updatedAt: '2026-08-06T00:00:01.000Z'
@@ -99,6 +103,7 @@ describe('registry service handlers', () => {
             agentId: 'agent-created',
             name: 'New agent',
             systemPrompt: '',
+            messages: [],
             tools: [],
             createdAt: '2026-08-06T00:00:00.000Z',
             updatedAt: '2026-08-06T00:00:00.000Z'
@@ -111,7 +116,19 @@ describe('registry service handlers', () => {
 
         const result = await agentCreate(
             context,
-            { path: {}, query: {}, body: { name: 'Coder', systemPrompt: 'Write code.', tools: ['web-search', 'code-interpreter'] } },
+            {
+                path: {},
+                query: {},
+                body: {
+                    name: 'Coder',
+                    systemPrompt: 'Write code.',
+                    messages: [
+                        { role: 'user', content: 'Write a function.' },
+                        { role: 'assistant', content: 'Here it is.' }
+                    ],
+                    tools: ['web-search', 'code-interpreter']
+                }
+            },
             variables(store, undefined, { agentId: () => 'agent-2' })
         );
         expect(result).toEqual({ status: 201, response: { agentId: 'agent-2' } });
@@ -124,7 +141,19 @@ describe('registry service handlers', () => {
             response: {
                 agents: [
                     existingAgent,
-                    { ...existingAgent, agentId: 'agent-2', name: 'Coder', systemPrompt: 'Write code.', tools: ['web-search', 'code-interpreter'], createdAt: '2026-08-06T00:00:00.000Z', updatedAt: '2026-08-06T00:00:00.000Z' }
+                    {
+                        ...existingAgent,
+                        agentId: 'agent-2',
+                        name: 'Coder',
+                        systemPrompt: 'Write code.',
+                        messages: [
+                            { role: 'user', content: 'Write a function.' },
+                            { role: 'assistant', content: 'Here it is.' }
+                        ],
+                        tools: ['web-search', 'code-interpreter'],
+                        createdAt: '2026-08-06T00:00:00.000Z',
+                        updatedAt: '2026-08-06T00:00:00.000Z'
+                    }
                 ]
             }
         });
@@ -138,6 +167,17 @@ describe('registry service handlers', () => {
         expect(badTools).toEqual({ status: 400, response: { error: 'tools must be an array of tool ids' } });
         const badBody = await agentCreate(context, { path: {}, query: {}, body: 'nope' }, variables(store));
         expect(badBody).toEqual({ status: 400, response: { error: 'body must be a JSON object' } });
+        // The chat layout accepts only conversational turns: an agent's system
+        // prompt is its own field, so a layout cannot introduce a second one.
+        const systemTurn = await agentCreate(
+            context,
+            { path: {}, query: {}, body: { name: 'A', messages: [{ role: 'system', content: 'x' }] } },
+            variables(store)
+        );
+        expect(systemTurn).toEqual({
+            status: 400,
+            response: { error: 'messages must contain only "user" and "assistant" turns' }
+        });
         expect(store.list()).toEqual([]);
     });
 
@@ -164,12 +204,31 @@ describe('registry service handlers', () => {
                     name: 'Historian',
                     // systemPrompt was omitted: the previous value is retained.
                     systemPrompt: 'You are a careful researcher.',
+                    // messages was omitted too: the chat layout is retained.
+                    messages: [
+                        { role: 'user', content: 'Find facts.' },
+                        { role: 'assistant', content: 'Here is what I found.' }
+                    ],
                     tools: [],
                     createdAt: '2026-08-06T00:00:00.000Z',
                     updatedAt: '2026-08-06T00:00:02.000Z'
                 }
             }
         });
+
+        // A supplied chat layout REPLACES the stored one verbatim.
+        const layoutPut = await agentPut(
+            context,
+            {
+                path: { agent_id: 'agent-1' },
+                query: {},
+                body: { messages: [{ role: 'assistant', content: 'Rewritten.' }] }
+            },
+            variables(store)
+        );
+        expect(layoutPut.status).toBe(200);
+        expect((layoutPut.response as { agent: AgentRecord }).agent.messages)
+            .toEqual([{ role: 'assistant', content: 'Rewritten.' }]);
 
         const remove = await agentDelete(context, { path: { agent_id: 'agent-1' }, query: {} }, variables(store));
         expect(remove).toEqual({ status: 200, response: { agentId: 'agent-1' } });

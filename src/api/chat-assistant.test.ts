@@ -5,8 +5,13 @@ import {
     createConversation,
     deleteConversation,
     fetchConversation,
+    isConversationPending,
     listConversations,
+    readTrackedConversationIds,
     replaceConversationMessages,
+    trackConversationId,
+    TRACKED_CONVERSATIONS_KEY,
+    untrackConversationId,
     type ConversationSummary
 } from './chat-assistant';
 
@@ -205,5 +210,90 @@ describe('conversation API client', () => {
 
         await expect(fetchConversation('/v1/chat-assistant/conversation', 'missing'))
             .rejects.toThrow("Conversation 'missing' not found");
+    });
+});
+
+describe('tracked conversation ids (the browser-owned cache)', () => {
+    // The cache is the online sidebar's authority: only ids this browser created
+    // are ever listed, so a server-wide history never leaks into it.
+    beforeEach(() => {
+        window.localStorage.clear();
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        window.localStorage.clear();
+        vi.unstubAllGlobals();
+    });
+
+    it('starts empty and round-trips tracked ids through localStorage', () => {
+        expect(readTrackedConversationIds()).toEqual([]);
+
+        expect(trackConversationId('conversation-1')).toEqual(['conversation-1']);
+        expect(trackConversationId('conversation-2')).toEqual(['conversation-1', 'conversation-2']);
+        // Re-tracking an existing id never duplicates it (a restored chat that
+        // receives another turn stays one entry).
+        expect(trackConversationId('conversation-1')).toEqual(['conversation-1', 'conversation-2']);
+        expect(readTrackedConversationIds()).toEqual(['conversation-1', 'conversation-2']);
+
+        expect(untrackConversationId('conversation-1')).toEqual(['conversation-2']);
+        expect(readTrackedConversationIds()).toEqual(['conversation-2']);
+    });
+
+    it('degrades corrupt or foreign cache contents to a clean id list', () => {
+        window.localStorage.setItem(TRACKED_CONVERSATIONS_KEY, 'not json');
+        expect(readTrackedConversationIds()).toEqual([]);
+
+        window.localStorage.setItem(TRACKED_CONVERSATIONS_KEY, JSON.stringify(['a', '', 3, null, 'a', 'b']));
+        expect(readTrackedConversationIds()).toEqual(['a', 'b']);
+    });
+
+    it('asks the server for exactly the tracked ids', async () => {
+        const summary: ConversationSummary = {
+            conversationId: 'conversation-1',
+            title: 'Hello assistant',
+            model: 'test-model',
+            status: 'complete',
+            messageCount: 2,
+            createdAt: '2026-08-06T00:00:00.000Z',
+            updatedAt: '2026-08-06T00:00:01.000Z'
+        };
+        (fetch as any).mockResolvedValueOnce(response(200, { conversations: [summary] }));
+
+        const result = await listConversations('http://test.local/v1/chat-assistant/conversation', ['conversation-1', 'conversation-2']);
+
+        expect(result).toEqual({ conversations: [summary] });
+        expect(fetch).toHaveBeenCalledWith(
+            'http://test.local/v1/chat-assistant/conversation?ids=conversation-1%2Cconversation-2',
+            { method: 'GET' }
+        );
+    });
+
+    it('sends an empty filter (matching nothing) when the browser owns no ids', async () => {
+        (fetch as any).mockResolvedValueOnce(response(200, { conversations: [] }));
+
+        const result = await listConversations('http://test.local/v1/chat-assistant/conversation', []);
+
+        expect(result).toEqual({ conversations: [] });
+        expect(fetch).toHaveBeenCalledWith(
+            'http://test.local/v1/chat-assistant/conversation?ids=',
+            { method: 'GET' }
+        );
+    });
+
+    it('keeps the unfiltered collection URL when no ids are supplied (tooling)', async () => {
+        (fetch as any).mockResolvedValueOnce(response(200, { conversations: [] }));
+
+        await listConversations('http://test.local/v1/chat-assistant/conversation');
+
+        expect(fetch).toHaveBeenCalledWith(
+            'http://test.local/v1/chat-assistant/conversation',
+            { method: 'GET' }
+        );
+    });
+
+    it('treats only the pending status as needing a poll', () => {
+        expect(isConversationPending('pending')).toBe(true);
+        expect(isConversationPending('complete')).toBe(false);
+        expect(isConversationPending('error')).toBe(false);
     });
 });

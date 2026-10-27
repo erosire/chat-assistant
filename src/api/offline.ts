@@ -309,7 +309,8 @@ const localConversationId = (): string => {
 
 // Option-field validation mirrored from the server's validateOptions
 // (create/append): model/systemPrompt must be non-blank strings when
-// present; usage must be numeric-only when present.
+// present; usage must be numeric-only when present; status, when present,
+// must be one of the two client-requestable values.
 const localValidateOptions = (body: ConversationPostRequest): string | undefined => {
     if (body.model !== undefined && (typeof body.model !== 'string' || body.model.trim().length === 0)) {
         return 'model must be a non-empty string';
@@ -319,6 +320,9 @@ const localValidateOptions = (body: ConversationPostRequest): string | undefined
     }
     if (localParseUsage(body.usage) === null) {
         return 'usage must contain only numeric token counters';
+    }
+    if (body.status !== undefined && body.status !== 'pending' && body.status !== 'complete') {
+        return 'status must be either "pending" or "complete"';
     }
     return undefined;
 };
@@ -384,7 +388,9 @@ export const createLocalConversation = async (request: ConversationPostRequest):
         conversationId: localConversationId(),
         title: localTitleFromMessages(messages),
         model: request.model?.trim() || LOCAL_DEFAULT_MODEL,
-        status: 'complete',
+        // Mirrors the server: a declared in-flight turn keeps the record
+        // pending, everything else is already settled.
+        status: request.status ?? 'complete',
         messageCount: messages.length,
         messages,
         createdAt: now,
@@ -451,7 +457,9 @@ export const appendToLocalConversation = async (
             ? existing.title
             : localTitleFromMessages(messageResult.messages),
         model,
-        status: 'complete',
+        // The append settles the conversation unless the caller keeps it in
+        // flight (mirrors the server handler).
+        status: request.status ?? 'complete',
         messages,
         messageCount: messages.length,
         updatedAt: new Date().toISOString(),
@@ -487,6 +495,9 @@ export const replaceLocalConversationMessages = async (
     if (localParseUsage(request.usage) === null) {
         throw new Error('usage must contain only numeric token counters');
     }
+    if (request.status !== undefined && request.status !== 'pending' && request.status !== 'complete') {
+        throw new Error('status must be either "pending" or "complete"');
+    }
     if (request.messages === undefined) {
         throw new Error('messages must be an array of valid chat messages');
     }
@@ -500,7 +511,9 @@ export const replaceLocalConversationMessages = async (
         title: request.title?.trim()
             || (messages.some((message) => message.role === 'user') ? localTitleFromMessages(messages) : existing.title),
         model: request.model?.trim() || existing.model,
-        status: 'complete',
+        // A history rewrite settles the conversation unless the caller keeps it
+        // in flight (mirrors the server handler).
+        status: request.status ?? 'complete',
         messages,
         messageCount: messages.length,
         updatedAt: new Date().toISOString(),

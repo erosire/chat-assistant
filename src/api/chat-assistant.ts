@@ -27,11 +27,16 @@ export type ChatMessage = {
 };
 
 // Complete conversation returned by GET and persisted by both POST operations.
+// `status` is 'complete' for a settled conversation, 'pending' while a turn is
+// still in flight (the browser that owns the id polls until it settles), and
+// 'error' when storage recorded a failure.
+export type ConversationStatus = 'pending' | 'complete' | 'error';
+
 export type ConversationRecord = {
     conversationId: string;
     title: string;
     model: string;
-    status: 'complete' | 'error';
+    status: ConversationStatus;
     messageCount: number;
     messages: ChatMessage[];
     createdAt: string;
@@ -47,11 +52,14 @@ export type ConversationRecord = {
 // Both POST operations accept one user message or an explicit initial/message history.
 // `usage` contains the accumulated provider token counters for the conversation;
 // each completed turn adds its reported prompt, completion, and total values.
+// `status: 'pending'` marks a conversation whose reply has not been posted yet,
+// so the owning browser knows to poll it; omitting it settles the record.
 export type ConversationPostRequest = {
     message?: string;
     messages?: ChatMessage[];
     model?: string;
     systemPrompt?: string;
+    status?: 'pending' | 'complete';
     usage?: {
         prompt_tokens?: number;
         completion_tokens?: number;
@@ -75,6 +83,9 @@ export type ConversationPutRequest = {
     messages: ChatMessage[];
     model?: string;
     title?: string;
+    // Optional status override: 'pending' keeps the conversation in flight (the
+    // owning browser keeps polling it), 'complete' settles it. Omitted settles.
+    status?: 'pending' | 'complete';
     // Optional completed-turn usage supports the send fallback that must rewrite
     // history through PUT when a first system prompt is prepended.
     usage?: {
@@ -146,8 +157,14 @@ export async function fetchConversation(
 // Read every persisted conversation as a compact summary from the collection
 // resource; the server orders the list by most recent activity (updatedAt
 // descending). The UI calls this on mount so the chat history survives a reload.
-export async function listConversations(baseUrl: string): Promise<ConversationListResponse> {
-    const response = await fetch(normalizeBaseUrl(baseUrl), { method: 'GET' });
+// `ids` scopes the request to the caller's OWN tracked conversations (the
+// browser's cached ids): only those records come back, so the list never grows
+// with a server-wide history. An empty array is a valid filter that matches
+// nothing (the server answers with an empty list), and an omitted argument
+// keeps the unfiltered list for tooling.
+export async function listConversations(baseUrl: string, ids?: string[]): Promise<ConversationListResponse> {
+    const query = ids === undefined ? '' : `?ids=${encodeURIComponent(ids.join(','))}`;
+    const response = await fetch(`${normalizeBaseUrl(baseUrl)}${query}`, { method: 'GET' });
     if (!response.ok) {
         throw new Error(await errorMessage(response, 'Failed to list conversations'));
     }
@@ -240,3 +257,73 @@ export async function deleteConversation(
 
     return (await response.json()) as ConversationDeleteResponse;
 }
+
+// ---------------------------------------------------------------------------
+// Tracked conversation ids (the browser's own online-mode cache)
+// ---------------------------------------------------------------------------
+//
+// Online mode tracks ONLY the conversations this browser created: the id
+// returned by each successful collection POST is cached here, and every list
+// read asks the server for exactly those ids (listConversations(baseUrl, ids)).
+// The cache is therefore the sidebar's authority — a conversation another
+// browser created never appears, no matter how long the server history grows.
+//
+// Ids that are no longer needed are dropped from the cache: a deleted
+// conversation, and an id the server no longer returns (removed elsewhere).
+export const TRACKED_CONVERSATIONS_KEY = 'chat-assistant:tracked-conversations';
+
+// Read the cached ids. Corrupt/absent storage degrades to an empty cache (the
+// sidebar then restores nothing) instead of throwing; non-string entries and
+// duplicates are dropped so a hand-edited cache cannot break the query.
+export const readTrackedConversationIds = (): string[] => {
+    try {
+        const raw = window.localStorage.getItem(TRACKED_CONVERSATIONS_KEY);
+        if (!raw) return [];
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        const ids: string[] = [];
+        for (const candidate of parsed) {
+            if (typeof candidate === 'string' && candidate.length > 0 && !ids.includes(candidate)) {
+                ids.push(candidate);
+            }
+        }
+        return ids;
+    } catch {
+        return [];
+    }
+};
+
+// Persist the cached ids. Best-effort like the other browser caches: a
+// locked-down storage keeps the session working, it only loses the restore.
+export const storeTrackedConversationIds = (ids: string[]): string[] => {
+    const unique: string[] = [];
+    for (const id of ids) {
+        if (typeof id === 'string' && id.length > 0 && !unique.includes(id)) unique.push(id);
+    }
+    try {
+        window.localStorage.setItem(TRACKED_CONVERSATIONS_KEY, JSON.stringify(unique));
+    } catch {
+        // Best-effort: the in-memory list still drives the current session.
+    }
+    return unique;
+};
+
+// Track ONE id (called after a successful creation/fork) and return the new
+// cache. Re-tracking an existing id is a no-op, so repeated sends on a
+// restored conversation never duplicate it.
+export const trackConversationId = (conversationId: string): string[] =>
+    storeTrackedConversationIds([...readTrackedConversationIds(), conversationId]);
+
+// Stop tracking one id (called after a successful DELETE, and for ids the
+// server no longer returns) so the cache never accumulates dead entries.
+export const untrackConversationId = (conversationId: string): string[] =>
+    storeTrackedConversationIds(readTrackedConversationIds().filter((id) => id !== conversationId));
+
+// True when a conversation still needs polling: its turn is in flight. Only
+// these ids are polled, so settled conversations cost nothing after they land.
+export const isConversationPending = (status: ConversationStatus): boolean => status === 'pending';
+
+// Polling cadence for in-flight conversations. Long enough that a slow reply
+// does not hammer the server, short enough that a reply persisted by another
+// tab (or a server-side completion) shows up promptly.
+export const CONVERSATION_POLL_INTERVAL_MS = 2000;

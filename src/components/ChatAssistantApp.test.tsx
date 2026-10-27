@@ -82,13 +82,13 @@
 // resumes once the user returns to the bottom.
 // All control icons render as stroke SVGs from src/icons — the old unicode
 // text glyphs are retired.
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // objectEach (@presource/core) iterates the twin overlay-select CSS rules
 // found in the Emotion sheet during the composer-styling assertions.
 import { objectEach } from '@presource/core';
 import { readFileSync } from 'node:fs';
-import { ASSISTANT_SETTINGS_KEY, readLocalConversations, type ChatMessage, type ConversationRecord } from '../api';
+import { ASSISTANT_SETTINGS_KEY, CONVERSATION_POLL_INTERVAL_MS, readLocalConversations, TRACKED_CONVERSATIONS_KEY, type ChatMessage, type ConversationRecord } from '../api';
 import { ChatAssistantApp, controlsShouldFloat, uniqueModelLabels } from './ChatAssistantApp';
 
 // The header's fallback product name is now the versioned title (PRODUCT_TITLE
@@ -221,7 +221,10 @@ const mockFetch = () =>
         if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
         if (url.endsWith('/chat/completions')) return Promise.resolve(sseResponse(completionFrames));
         // The collection GET check must precede the generic identified GET branch.
-        if (init?.method === 'GET' && url.endsWith('/conversation')) {
+        // ONLINE mode asks for its tracked ids (?ids=...), so the suffix check
+        // accepts the query form too; the default fixture owns no ids and thus
+        // restores an empty sidebar.
+        if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
             return Promise.resolve(response(200, { conversations: [] }));
         }
         if (init?.method === 'POST' && url.endsWith('/conversation')) {
@@ -236,7 +239,14 @@ const mockFetch = () =>
                 messages?: ChatMessage[];
                 usage?: ConversationRecord['usage'];
             };
-            if (storedMessages !== null) storedMessages = [...storedMessages, ...(body.messages ?? [])];
+            // An append batch that itself starts with a system turn establishes
+            // the conversation's leading block (the agent flow attaches the
+            // agent's system prompt + example conversation in ONE batch).
+            if (storedMessages === null && body.messages?.[0]?.role === 'system') {
+                storedMessages = [...body.messages];
+            } else if (storedMessages !== null) {
+                storedMessages = [...storedMessages, ...(body.messages ?? [])];
+            }
             if (body.usage) {
                 storedUsage = {
                     prompt_tokens: (storedUsage?.prompt_tokens ?? 0) + (body.usage.prompt_tokens ?? 0),
@@ -407,11 +417,12 @@ describe('ChatAssistantApp', () => {
         expect(field.lastElementChild).toBe(screen.getByTestId('send-chat-button'));
 
         // Mount requests are the credential-free provider model catalog followed by
-        // the collection GET that restores the persisted chat history (empty here).
+        // the collection GET scoped to this browser's tracked ids (none yet, so
+        // the query carries an empty id list and the sidebar restores nothing).
         await waitForModelSelection();
         expect((fetch as any).mock.calls).toEqual([
             [`${PROVIDER_URL}/models`, { method: 'GET' }],
-            [BASE_URL, { method: 'GET' }]
+            [`${BASE_URL}?ids=`, { method: 'GET' }]
         ]);
         // The sorted-catalog default is not a "use" and must not be remembered.
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBeNull();
@@ -440,11 +451,16 @@ describe('ChatAssistantApp', () => {
     });
 
     it('restores the persisted chat history on mount and loads messages on selection', async () => {
-        // The server holds one completed conversation from a previous session; the
-        // collection GET hands its summary to the fresh mount before any send.
+        // The server holds one completed conversation from a previous session.
+        // The browser caches the ids it created, so a reload asks the server for
+        // exactly that id and restores only that conversation.
+        window.localStorage.setItem(
+            TRACKED_CONVERSATIONS_KEY,
+            JSON.stringify([conversation.conversationId])
+        );
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, {
                     conversations: [{
                         conversationId: conversation.conversationId,
@@ -471,7 +487,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('empty-chat-state')).toBeDefined();
         expect((fetch as any).mock.calls).toEqual([
             [`${PROVIDER_URL}/models`, { method: 'GET' }],
-            [BASE_URL, { method: 'GET' }]
+            [`${BASE_URL}?ids=conversation-1`, { method: 'GET' }]
         ]);
 
         // Selecting the restored chat reads its full record through the identified GET.
@@ -489,6 +505,153 @@ describe('ChatAssistantApp', () => {
         expect((fetch as any).mock.calls[2]).toEqual([`${BASE_URL}/conversation-1`, { method: 'GET' }]);
     });
 
+    it('tracks the id of a created conversation so a reload restores only it', async () => {
+        renderApp();
+        await waitForModelSelection();
+
+        // A completed send caches the created id (the browser-owned authority).
+        await sendFirstTurn();
+        expect(window.localStorage.getItem(TRACKED_CONVERSATIONS_KEY)).toBe(JSON.stringify([conversation.conversationId]));
+
+        // Reload: the fresh mount asks the server for exactly that id and the
+        // sidebar restores it without ever requesting an unfiltered list. The
+        // mock honors the filter like the real handler (a foreign id would be
+        // filtered out server-side, so only the tracked one is returned).
+        cleanup();
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
+                const requested = url.includes('?ids=') ? decodeURIComponent(url.split('?ids=')[1]).split(',') : [];
+                return Promise.resolve(response(200, {
+                    conversations: requested.includes(conversation.conversationId) ? [{
+                        conversationId: conversation.conversationId,
+                        title: conversation.title,
+                        model: conversation.model,
+                        status: conversation.status,
+                        messageCount: conversation.messageCount,
+                        createdAt: conversation.createdAt,
+                        updatedAt: conversation.updatedAt
+                    }] : []
+                }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+        expect(await screen.findByTestId('chat-tab-conversation-1')).toBeDefined();
+        expect((fetch as any).mock.calls).toEqual([
+            [`${PROVIDER_URL}/models`, { method: 'GET' }],
+            [`${BASE_URL}?ids=conversation-1`, { method: 'GET' }]
+        ]);
+    });
+
+    it('drops a deleted conversation from the tracked cache and prunes ids the server no longer holds', async () => {
+        // Two cached ids, but the server only still holds conversation-1: the
+        // stale id is pruned on restore so later queries stay minimal.
+        window.localStorage.setItem(
+            TRACKED_CONVERSATIONS_KEY,
+            JSON.stringify([conversation.conversationId, 'conversation-gone'])
+        );
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
+                const requested = url.includes('?ids=') ? decodeURIComponent(url.split('?ids=')[1]).split(',') : [];
+                // Only the still-existing record comes back; the stale id is
+                // simply absent, exactly as the server's filter would answer.
+                return Promise.resolve(response(200, {
+                    conversations: requested.includes(conversation.conversationId) ? [{
+                        conversationId: conversation.conversationId,
+                        title: conversation.title,
+                        model: conversation.model,
+                        status: conversation.status,
+                        messageCount: conversation.messageCount,
+                        createdAt: conversation.createdAt,
+                        updatedAt: conversation.updatedAt
+                    }] : []
+                }));
+            }
+            if (init?.method === 'DELETE') {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
+        expect(JSON.parse(window.localStorage.getItem(TRACKED_CONVERSATIONS_KEY)!))
+            .toEqual([conversation.conversationId]);
+
+        // Deleting the entry untracks its id after the server confirms.
+        fireEvent.click(screen.getByTestId('delete-chat-conversation-1'));
+        await waitFor(() => expect(screen.queryByTestId('chat-tab-conversation-1')).toBeNull());
+        expect(JSON.parse(window.localStorage.getItem(TRACKED_CONVERSATIONS_KEY)!)).toEqual([]);
+    });
+
+    it('polls the pending id while a request is in flight and stops once it settles', async () => {
+        // A held provider stream keeps the turn in flight; the identified GET is
+        // the poll target and starts reporting the settled record on demand.
+        const stream = controlledStream();
+        let settled = false;
+        vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+            if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
+            if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
+                return Promise.resolve(response(200, { conversations: [] }));
+            }
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'POST') {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'GET' && url.endsWith('/conversation/conversation-1')) {
+                // While pending, the poll sees the in-flight (empty) record; once
+                // the flag flips it reports the settled pair, as a completion
+                // persisted elsewhere would.
+                return Promise.resolve(response(200, {
+                    conversationId: conversation.conversationId,
+                    conversation: settled
+                        ? { ...conversation, status: 'complete' as const }
+                        : { ...conversation, status: 'pending' as const, messages: [], messageCount: 0, title: 'New conversation' }
+                }));
+            }
+            return Promise.resolve(response(404, { error: 'unexpected request' }));
+        }));
+        renderApp();
+        await waitForModelSelection();
+
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect(screen.getByTestId('pending-user-message')).toBeDefined());
+
+        // The in-flight entry is visible immediately and marked pending.
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1').textContent)
+            .toBe('New conversation0 messages · pending'));
+
+        // One poll interval later the identified GET has run (the smart watch
+        // only exists while the request is in flight).
+        const pollCalls = () => (fetch as any).mock.calls
+            .filter((call: unknown[]) => String(call[0]).endsWith('/conversation/conversation-1') && (call[1] as RequestInit)?.method === 'GET');
+        await waitFor(() => expect(pollCalls()).toHaveLength(1), { timeout: CONVERSATION_POLL_INTERVAL_MS * 3 });
+
+        // Settle the stream: the send flow applies the canonical record and the
+        // watch is released, so no further polls occur.
+        settled = true;
+        await act(async () => {
+            stream.push(completionFrames[0]);
+            stream.push(completionFrames[1]);
+            stream.push(completionFrames[2]);
+            stream.push(completionFrames[3]);
+            stream.close();
+        });
+        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1').textContent)
+            .toBe('Hello assistant2 messages · complete'));
+        const pollsAfterSettle = pollCalls().length;
+        await new Promise((resolve) => setTimeout(resolve, CONVERSATION_POLL_INTERVAL_MS * 2));
+        expect(pollCalls()).toHaveLength(pollsAfterSettle);
+    });
+
     it('forks at an expanded user interval, copies the complete prefix, and selects the new conversation', async () => {
         const forkMessages = [conversation.messages[0]];
         const forkConversation = {
@@ -502,7 +665,7 @@ describe('ChatAssistantApp', () => {
         };
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, {
                     conversations: [{
                         conversationId: conversation.conversationId,
@@ -551,7 +714,7 @@ describe('ChatAssistantApp', () => {
         expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(ALT_MODEL);
         expect((fetch as any).mock.calls).toEqual([
             [`${PROVIDER_URL}/models`, { method: 'GET' }],
-            [BASE_URL, { method: 'GET' }],
+            [`${BASE_URL}?ids=`, { method: 'GET' }],
             [`${BASE_URL}/conversation-1`, { method: 'GET' }],
             [BASE_URL, {
                 method: 'POST',
@@ -571,7 +734,17 @@ describe('ChatAssistantApp', () => {
         // selects. With an empty registry the agent text reads the DEFAULT
         // "None" and its dropdown offers exactly that one entry.
         const picker = screen.getByTestId('model-picker');
-        expect(picker.firstElementChild).toBe(screen.getByTestId('agent-label'));
+        // Each label+select pair lives in its OWN positioning box, so the two
+        // invisible overlays never overlap: when both selects filled the whole
+        // row, the model select (rendered last) covered the agent text and
+        // swallowed every click on it — no agent could be selected.
+        const agentField = screen.getByTestId('agent-label').parentElement!;
+        expect(picker.firstElementChild).toBe(agentField);
+        expect(screen.getByTestId('agent-select').parentElement).toBe(agentField);
+        const modelField = screen.getByTestId('model-label').parentElement!;
+        expect(picker.lastElementChild).toBe(modelField);
+        expect(screen.getByTestId('model-select').parentElement).toBe(modelField);
+        expect(agentField).not.toBe(modelField);
         expect(screen.getByTestId('agent-label').textContent).toBe('None');
         expect(picker.contains(screen.getByTestId('agent-label'))).toBe(true);
         expect(picker.querySelector('[data-testid="agent-select"]')).not.toBeNull();
@@ -582,8 +755,9 @@ describe('ChatAssistantApp', () => {
         expect(agentSelect.value).toBe('');
 
         // The model selection is a plain TEXT line above the input labeled
-        // with the stripped model name; the invisible dropdown select overlays it.
-        expect(screen.getByTestId('model-label').textContent).toBe('test-model');
+        // with the stripped model name plus its provider; the invisible
+        // dropdown select overlays it.
+        expect(screen.getByTestId('model-label').textContent).toBe('test-model (zeta-org)');
         expect(picker.contains(screen.getByTestId('model-label'))).toBe(true);
         expect(picker.querySelector('[data-testid="model-select"]')).not.toBeNull();
         // The picker's position context is what both overlay selects fill.
@@ -591,15 +765,16 @@ describe('ChatAssistantApp', () => {
 
         // Options are sorted by stripped model name, NOT by organisation prefix:
         // raw catalog order is alpha-org first, yet 'test-model' sorts before 'zeta-model'.
+        // Every prefixed id carries its provider suffix so no row is unattributed.
         const select = screen.getByTestId('model-select') as HTMLSelectElement;
         expect(Array.from(select.options).map((option) => ({ value: option.value, label: option.textContent }))).toEqual([
-            { value: DEFAULT_MODEL, label: 'test-model' },
-            { value: ALT_MODEL, label: 'zeta-model' }
+            { value: DEFAULT_MODEL, label: 'test-model (zeta-org)' },
+            { value: ALT_MODEL, label: 'zeta-model (alpha-org)' }
         ]);
 
         // Changing the model through the text's dropdown updates the label.
         fireEvent.change(select, { target: { value: ALT_MODEL } });
-        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model (alpha-org)');
 
         // The send button carries no model name anymore: it is the right
         // chevron (the authored ">" identity drawn as an SVG icon).
@@ -607,13 +782,13 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('send-chat-button').textContent).toBe('');
     });
 
-    it('widens colliding stripped model names to the full provider id in the dropdown', async () => {
-        // The private registry serves ONE base model through SEVERAL providers
-        // (modal + vultr both offer "glm-5.3-flash") — the exact shape
-        // behind the reported "glm-5.3-flash ×3" duplicate dropdown. Bare label
-        // stripping collapsed the colliding entries into identical rows; the dedupe rule
-        // (uniqueModelLabels) must show "base (provider)" for each colliding
-        // option while the lone unique model keeps its short stripped label.
+    it('labels every prefixed model with its provider in the dropdown', async () => {
+        // The private registry serves base models through SEVERAL providers
+        // (modal + vultr both offer "glm-5.3-flash") AND many models through
+        // exactly one — the shape behind the reported list where most rows
+        // showed no provider at all. uniqueModelLabels must label EVERY
+        // prefixed id "base (provider)", so no row is unattributed and the
+        // colliding base names still read distinctly.
         const collidingCatalog = {
             object: 'list',
             data: [
@@ -638,21 +813,21 @@ describe('ChatAssistantApp', () => {
         // the colliding default shows "base (provider)".
         expect(screen.getByTestId('model-label').textContent).toBe('glm-5.3-flash (modal)');
 
-        // Options: every colliding id displays "base (provider)" (three
-        // DISTINCT labels instead of three identical "glm-5.3-flash" rows);
-        // the unique id keeps the short stripped label. Values stay the full
-        // ids — the provider routes by them.
+        // Options: EVERY prefixed id displays "base (provider)" — the two
+        // colliding glm-5.3-flash rows stay DISTINCT and the uniquely-named
+        // models are attributed too (previously they showed no provider).
+        // Values stay the full ids — the provider routes by them.
         const select = screen.getByTestId('model-select') as HTMLSelectElement;
         expect(Array.from(select.options).map((option) => ({ value: option.value, label: option.textContent }))).toEqual([
             { value: 'modal/glm-5.3-flash', label: 'glm-5.3-flash (modal)' },
             { value: 'vultr/glm-5.3-flash', label: 'glm-5.3-flash (vultr)' },
-            { value: 'makora/glm5-flash', label: 'glm5-flash' },
-            { value: 'lightning/gpt-5.6-luna', label: 'gpt-5.6-luna' }
+            { value: 'makora/glm5-flash', label: 'glm5-flash (makora)' },
+            { value: 'lightning/gpt-5.6-luna', label: 'gpt-5.6-luna (lightning)' }
         ]);
 
-        // Picking the unique model returns the label to the short stripped form.
+        // Picking a uniquely-named model also keeps its provider suffix.
         fireEvent.change(select, { target: { value: 'lightning/gpt-5.6-luna' } });
-        expect(screen.getByTestId('model-label').textContent).toBe('gpt-5.6-luna');
+        expect(screen.getByTestId('model-label').textContent).toBe('gpt-5.6-luna (lightning)');
         expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('lightning/gpt-5.6-luna');
     });
 
@@ -669,7 +844,7 @@ describe('ChatAssistantApp', () => {
         // mount (this test cannot reuse waitForModelSelection: it asserts the
         // DEFAULT model; the model text is always rendered, no focus needed).
         await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(ALT_MODEL));
-        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model (alpha-org)');
     });
 
     it('lists persisted agents in the composer agent picker with None as the default', async () => {
@@ -804,8 +979,10 @@ describe('ChatAssistantApp', () => {
         // the exact declaration sequence identifies that rule.
         expect(css).toMatch(/\.css-[^{]+\{color:#9ca8b8;font-size:12px;font-weight:700;cursor:pointer;\}/);
         expect(screen.getByTestId('agent-label').className).toBe(screen.getByTestId('model-label').className);
-        // ...and the invisible overlay selects fill the picker exactly. Both
-        // selects declare identical styles → ONE shared Emotion rule too.
+        // ...and the invisible overlay selects fill their OWN picker field
+        // exactly (one shared positioning box each, so the two overlays never
+        // cover each other's label). Both selects declare identical styles →
+        // ONE shared Emotion rule too.
         // (objectEach hands the callback a rich {value,...} context object —
         // the rule string arrives as `value`, not as the first positional arg.)
         const selectRules = css.match(/\.css-[^{]+\{[^}]*opacity:0;[^}]*\}/g) ?? [];
@@ -815,6 +992,35 @@ describe('ChatAssistantApp', () => {
             expect(value).toContain('inset:0');
         });
         expect(screen.getByTestId('agent-select').className).toBe(screen.getByTestId('model-select').className);
+        // The overlays' containing blocks are the per-pair PickerFields (both
+        // position:relative), NOT the shared row: an inset:0 overlay inside the
+        // row spanned BOTH labels and the model select ate the agent's clicks.
+        const agentField = screen.getByTestId('agent-label').parentElement!;
+        const modelField = screen.getByTestId('model-label').parentElement!;
+        expect(window.getComputedStyle(agentField).position).toBe('relative');
+        expect(window.getComputedStyle(modelField).position).toBe('relative');
+        expect(agentField).not.toBe(modelField);
+        expect(agentField.contains(screen.getByTestId('model-label'))).toBe(false);
+        expect(modelField.contains(screen.getByTestId('agent-label'))).toBe(false);
+    });
+
+    it('themes the native option popups from the pre-mount sheet so the dropdown follows the app palette', () => {
+        // The model list is a NATIVE <select>: the browser (not Emotion) paints
+        // its popup, so the theme must come from the document. index.html is
+        // not loaded by the jsdom tests, so its pre-mount sheet is asserted
+        // directly — it is the only place that can style the popup BEFORE
+        // React mounts, and it must carry both halves of the fix:
+        //   1. `color-scheme: dark` — Chromium draws the popup per the
+        //      document/select scheme (the inherited dark scheme on Page
+        //      covers the mounted app);
+        //   2. explicit `select option` colors — Firefox and embedded webviews
+        //      style the popup from the <option> elements themselves and would
+        //      otherwise render white rows with grey text.
+        const html = readFileSync('index.html', 'utf-8');
+        expect(html).toMatch(/:root\s*\{\s*color-scheme:\s*dark;?\s*\}/);
+        const optionRule = /select option\s*\{([^}]*)\}/.exec(html)?.[1] ?? '';
+        expect(optionRule).toContain('background-color: #1d2430');
+        expect(optionRule).toContain('color: #e8ecf2');
     });
 
     it('keeps the send arrow hidden until the composer has focus, then shows it inside the input at the right edge, vertically centered', async () => {
@@ -879,17 +1085,30 @@ describe('ChatAssistantApp', () => {
         // No "Model: ..." metadata strip exists; the producing model shows as
         // the composer text line (selected model) and on the turn's own label.
         expect(screen.queryByTestId('chat-model')).toBeNull();
-        expect(screen.getByTestId('model-label').textContent).toBe('test-model');
+        expect(screen.getByTestId('model-label').textContent).toBe('test-model (zeta-org)');
         // The response is marked with its producing model (fixture attribution,
         // stripped-label form) in the assistant turn's top-left corner.
-        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model (alpha-org)');
         // The completed send is what the browser remembers as the last used model.
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBe(DEFAULT_MODEL);
 
-        // Order matters: catalog, history list, streamed provider completion, storage create, storage append, storage GET.
+        // Order matters: catalog, tracked-id history list, storage create (the
+        // pending record — created BEFORE generation so its id exists for the
+        // whole in-flight window), the streamed provider completion, storage
+        // append (settling that same id), storage GET.
         expect((fetch as any).mock.calls).toEqual([
             [`${PROVIDER_URL}/models`, { method: 'GET' }],
-            [BASE_URL, { method: 'GET' }],
+            [`${BASE_URL}?ids=`, { method: 'GET' }],
+            [
+                BASE_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    // The record is created PENDING: its id is the one the
+                    // sidebar poller watches while the reply streams.
+                    body: JSON.stringify({ model: DEFAULT_MODEL, status: 'pending' })
+                }
+            ],
             [
                 `${PROVIDER_URL}/chat/completions`,
                 {
@@ -901,14 +1120,6 @@ describe('ChatAssistantApp', () => {
                         stream_options: { include_usage: true },
                         messages: [{ role: 'user', content: 'Hello assistant' }]
                     })
-                }
-            ],
-            [
-                BASE_URL,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ model: DEFAULT_MODEL })
                 }
             ],
             [
@@ -938,7 +1149,7 @@ describe('ChatAssistantApp', () => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
             // The mount-time collection GET restores an empty history list.
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [] }));
             }
             if (init?.method === 'POST' && url.endsWith('/conversation')) {
@@ -962,7 +1173,7 @@ describe('ChatAssistantApp', () => {
         // The in-flight response is already marked with the model producing it
         // (stripped label of the currently selected model, in the top-left row
         // above the streaming bubble so the bubble's textContent stays exact).
-        expect(screen.getByTestId('streaming-message-model').textContent).toBe('test-model');
+        expect(screen.getByTestId('streaming-message-model').textContent).toBe('test-model (zeta-org)');
         // LOADING STATE: before the first token arrives the assistant side
         // shows the three-dot typing indicator (the reported "blank box").
         // Exactly three dots render, the live text bubble is absent, and the
@@ -981,13 +1192,13 @@ describe('ChatAssistantApp', () => {
         expect(css).toContain('animation-delay:0.3s');
         expect(css).toContain('@keyframes streaming-dot-pulse');
 
-        // First token renders live; storage stays untouched mid-stream. The
-        // first token ALSO swaps the loading indicator out — the two states
-        // never render together.
+        // First token renders live; storage holds only the pending record made
+        // before generation (catalog, tracked list, create, completion), and the
+        // in-flight turn itself is not persisted yet.
         await act(async () => stream.push(completionFrames[0]));
         await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello'));
         expect(screen.queryByTestId('streaming-loading')).toBeNull();
-        expect((fetch as any).mock.calls).toHaveLength(3);
+        expect((fetch as any).mock.calls).toHaveLength(4);
 
         await act(async () => stream.push(completionFrames[1]));
         await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello from the assistant'));
@@ -1056,7 +1267,7 @@ describe('ChatAssistantApp', () => {
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [summaryOf(sender), summaryOf(other)] }));
             }
             if (init?.method === 'POST') return Promise.resolve(response(200, { conversationId: sender.conversationId }));
@@ -1078,14 +1289,14 @@ describe('ChatAssistantApp', () => {
         // The latest assistant reply (index 1) starts expanded by default; the
         // user turn (index 0) renders as its collapsed label + preview line.
         await waitFor(() => expect(screen.getByTestId('message-label-0').textContent).toBe('user'));
-        await waitFor(() => expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model'));
+        await waitFor(() => expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model (alpha-org)'));
         fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Follow up' } });
         fireEvent.click(screen.getByTestId('send-chat-button'));
         await waitFor(() => expect(screen.getByTestId('pending-user-message')).toBeDefined());
         await act(async () => stream.push(completionFrames[0]));
         await waitFor(() => expect(screen.getByTestId('streaming-message').textContent).toBe('Hello'));
         // The in-flight reply is attributed to the SENDING model.
-        expect(screen.getByTestId('streaming-message-model').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('streaming-message-model').textContent).toBe('zeta-model (alpha-org)');
 
         // MID-STREAM SWITCH: opening the other chat must NOT flood it with the
         // generating pair — its own persisted history renders alone.
@@ -1101,7 +1312,7 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(screen.getByTestId('chat-tab-conversation-1'));
         await waitFor(() => expect(screen.getByTestId('pending-user-message').textContent).toBe('Follow up'));
         expect(screen.getByTestId('streaming-message').textContent).toBe('Hello');
-        expect(screen.getByTestId('streaming-message-model').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('streaming-message-model').textContent).toBe('zeta-model (alpha-org)');
 
         // Completion: the pair persists and lands on the sender's surface
         // (still selected), the in-flight bubbles clear, and the sidebar
@@ -1118,7 +1329,7 @@ describe('ChatAssistantApp', () => {
         // The surface was NOT yanked away: the sender chat stays open with its
         // four persisted turns, the newest reply attributed to its model.
         expect(screen.getByTestId('chat-title').textContent).toBe('Hello assistant');
-        expect(screen.getByTestId('message-model-3').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-model-3').textContent).toBe('zeta-model (alpha-org)');
         expect(screen.getByTestId('message-content-3').textContent).toBe('Hello from the assistant');
         // The other chat was never touched by the generation.
         expect(screen.getByTestId('chat-tab-conversation-2').textContent).toBe('Second chat2 messages · complete');
@@ -1137,7 +1348,7 @@ describe('ChatAssistantApp', () => {
                 // open so the test can inspect controls during generation.
                 return Promise.resolve(completionCount++ === 0 ? sseResponse(completionFrames) : stream.response());
             }
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [] }));
             }
             if (init?.method === 'POST' && url.endsWith('/conversation')) {
@@ -1274,15 +1485,24 @@ describe('ChatAssistantApp', () => {
         await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(ALT_MODEL));
         // The inherited model becomes the remembered one from then on.
         expect(window.localStorage.getItem(MODEL_STORAGE_KEY)).toBe(ALT_MODEL);
-        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('model-label').textContent).toBe('zeta-model (alpha-org)');
     });
 
     it('restores the composer text and saves nothing when the provider fails before streaming', async () => {
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(response(500, { error: 'provider exploded' }));
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [] }));
+            }
+            // The up-front pending record: created before generation so its id is
+            // available for the in-flight window, then rolled back when the
+            // provider fails (no phantom conversation is left behind).
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'DELETE') {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
             }
             return Promise.resolve(response(404, { error: 'unexpected request' }));
         }));
@@ -1293,10 +1513,19 @@ describe('ChatAssistantApp', () => {
         fireEvent.click(screen.getByTestId('send-chat-button'));
 
         await waitFor(() => expect(screen.getByTestId('chat-error').textContent).toBe('provider exploded'));
-        // Nothing was persisted: only the catalog, the history list, and the failed completion ran.
+        // Nothing was persisted: the catalog, the tracked-id list, the pending
+        // create, the failed completion, and the rollback of that pending record.
         expect((fetch as any).mock.calls).toEqual([
             [`${PROVIDER_URL}/models`, { method: 'GET' }],
-            [BASE_URL, { method: 'GET' }],
+            [`${BASE_URL}?ids=`, { method: 'GET' }],
+            [
+                BASE_URL,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: DEFAULT_MODEL, status: 'pending' })
+                }
+            ],
             [
                 `${PROVIDER_URL}/chat/completions`,
                 {
@@ -1309,8 +1538,12 @@ describe('ChatAssistantApp', () => {
                         messages: [{ role: 'user', content: 'Hello assistant' }]
                     })
                 }
-            ]
+            ],
+            [`${BASE_URL}/conversation-1`, { method: 'DELETE' }]
         ]);
+        // The pending record is gone from the sidebar and the cache.
+        expect(screen.queryByTestId('chat-tab-conversation-1')).toBeNull();
+        expect(window.localStorage.getItem(TRACKED_CONVERSATIONS_KEY)).toBe('[]');
         // The pending user turn is restored in the composer for a retry.
         expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('Hello assistant');
         expect(screen.queryByTestId('pending-user-message')).toBeNull();
@@ -1321,8 +1554,14 @@ describe('ChatAssistantApp', () => {
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [] }));
+            }
+            if (init?.method === 'POST' && url.endsWith('/conversation')) {
+                return Promise.resolve(response(201, { conversationId: conversation.conversationId }));
+            }
+            if (init?.method === 'DELETE') {
+                return Promise.resolve(response(200, { conversationId: conversation.conversationId }));
             }
             return Promise.resolve(response(404, { error: 'unexpected request' }));
         }));
@@ -1340,7 +1579,9 @@ describe('ChatAssistantApp', () => {
         });
 
         await waitFor(() => expect(screen.getByTestId('chat-error').textContent).toBe('Upstream stream terminated'));
-        expect((fetch as any).mock.calls).toHaveLength(3);
+        // Catalog, tracked list, pending create, completion, rollback DELETE.
+        expect((fetch as any).mock.calls).toHaveLength(5);
+        expect(screen.queryByTestId('chat-tab-conversation-1')).toBeNull();
         expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('Hello assistant');
         expect(screen.queryByTestId('pending-user-message')).toBeNull();
         expect(screen.queryByTestId('streaming-message')).toBeNull();
@@ -1402,7 +1643,7 @@ describe('ChatAssistantApp', () => {
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(sseResponse(completionFrames));
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [] }));
             }
             if (init?.method === 'POST' && url.endsWith('/conversation')) {
@@ -1467,7 +1708,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('empty-chat-state')).toBeDefined();
         expect(screen.getByTestId('chat-title').textContent).toBe(EXPECTED_PRODUCT_TITLE);
         expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(DEFAULT_MODEL);
-        expect(screen.getByTestId('model-label').textContent).toBe('test-model');
+        expect(screen.getByTestId('model-label').textContent).toBe('test-model (zeta-org)');
     });
 
     it('renders the four sidebar tabs with Chat active by default', async () => {
@@ -1541,10 +1782,187 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('agent-tab-agent-1').textContent).toContain('1 tools');
 
         // The registry persisted under the documented key with the edited
-        // values and the toggled tool id.
+        // values and the toggled tool id (an agent with no example turns
+        // carries an empty chat layout).
         expect(JSON.parse(window.localStorage.getItem(AGENT_STORAGE_KEY)!)).toEqual([
-            { id: 'agent-1', name: 'Researcher', systemPrompt: 'You are a careful researcher.', tools: ['web-search'] }
+            { id: 'agent-1', name: 'Researcher', systemPrompt: 'You are a careful researcher.', messages: [], tools: ['web-search'] }
         ]);
+    });
+
+    it('edits an agent chat layout (system prompt + example turns) on the Agent tab', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+
+        // A new agent starts with an EMPTY layout: no example rows and a zero
+        // turn count; the note explains where the block is attached.
+        expect(screen.getByTestId('agent-layout-count').textContent).toBe('0 turns');
+        expect(screen.queryByTestId('agent-layout-list')).toBeNull();
+        expect(screen.getByTestId('agent-layout-note').textContent)
+            .toContain("replacing the chat's system prompt block");
+
+        // Adding turns alternates user → assistant, each persisted immediately
+        // with the text typed into its own field.
+        fireEvent.click(screen.getByTestId('add-agent-message'));
+        expect(screen.getByTestId('agent-message-role-0').textContent).toBe('user');
+        fireEvent.change(screen.getByTestId('agent-message-input-0'), { target: { value: 'What is 2 + 2?' } });
+        fireEvent.click(screen.getByTestId('add-agent-message'));
+        expect(screen.getByTestId('agent-message-role-1').textContent).toBe('assistant');
+        fireEvent.change(screen.getByTestId('agent-message-input-1'), { target: { value: '4.' } });
+        expect(screen.getByTestId('agent-layout-count').textContent).toBe('2 turns');
+
+        // The role chip flips one turn's speaker.
+        fireEvent.click(screen.getByTestId('agent-message-role-0'));
+        expect(screen.getByTestId('agent-message-role-0').textContent).toBe('assistant');
+        fireEvent.click(screen.getByTestId('agent-message-role-0'));
+        expect(screen.getByTestId('agent-message-role-0').textContent).toBe('user');
+
+        expect(JSON.parse(window.localStorage.getItem(AGENT_STORAGE_KEY)!)).toEqual([
+            {
+                id: 'agent-1',
+                name: 'New agent',
+                systemPrompt: '',
+                messages: [
+                    { role: 'user', content: 'What is 2 + 2?' },
+                    { role: 'assistant', content: '4.' }
+                ],
+                tools: []
+            }
+        ]);
+
+        // Removing a turn drops exactly that row and re-persists.
+        fireEvent.click(screen.getByTestId('remove-agent-message-0'));
+        expect(screen.queryByTestId('agent-message-1')).toBeNull();
+        expect(screen.getByTestId('agent-layout-count').textContent).toBe('1 turns');
+        expect(JSON.parse(window.localStorage.getItem(AGENT_STORAGE_KEY)!)).toEqual([
+            {
+                id: 'agent-1',
+                name: 'New agent',
+                systemPrompt: '',
+                messages: [{ role: 'assistant', content: '4.' }],
+                tools: []
+            }
+        ]);
+    });
+
+    it('deletes an agent from its sidebar entry and clears the selection when it was open', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
+
+        // Two agents so the delete can be proven to remove exactly one.
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+        fireEvent.change(screen.getByTestId('agent-name-input'), { target: { value: 'First' } });
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+        fireEvent.change(screen.getByTestId('agent-name-input'), { target: { value: 'Second' } });
+        expect(screen.getByTestId('agent-tab-agent-1')).toBeDefined();
+        expect(screen.getByTestId('agent-tab-agent-2')).toBeDefined();
+        // agent-2 is the open one (the last created).
+        expect(screen.getByTestId('agent-tab-agent-2').getAttribute('aria-pressed')).toBe('true');
+
+        // Deleting the OPEN agent removes only it AND clears the selection, so
+        // the content area falls back to the "No agent selected" empty state
+        // instead of rendering a definition that no longer exists.
+        fireEvent.click(screen.getByTestId('delete-agent-agent-2'));
+        expect(screen.queryByTestId('agent-tab-agent-2')).toBeNull();
+        expect(screen.queryByTestId('agent-entry-agent-2')).toBeNull();
+        expect(screen.getByTestId('agent-tab-agent-1')).toBeDefined();
+        expect(screen.queryByTestId('agent-workspace')).toBeNull();
+        expect(screen.getByTestId('empty-agent-state').textContent).toContain('No agent selected');
+        // The surviving agent is untouched.
+        expect(screen.getByTestId('agent-tab-agent-1').textContent).toContain('First');
+
+        // Deleting a NON-open agent leaves the open one selected and rendered.
+        fireEvent.click(screen.getByTestId('agent-tab-agent-1'));
+        expect(screen.getByTestId('agent-workspace')).toBeDefined();
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+        const second = screen.getByTestId('agent-tab-agent-2');
+        fireEvent.click(screen.getByTestId('agent-tab-agent-1'));
+        fireEvent.click(screen.getByTestId('delete-agent-agent-2'));
+        expect(screen.queryByTestId('agent-tab-agent-2')).toBeNull();
+        expect(second.isConnected).toBe(false);
+        expect(screen.getByTestId('agent-tab-agent-1').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('agent-workspace')).toBeDefined();
+        expect(screen.getByTestId('agent-title').textContent).toBe('First');
+
+        // Every removal re-persisted the registry: only the surviving agent
+        // remains under the documented key (with its empty chat layout).
+        expect(JSON.parse(window.localStorage.getItem(AGENT_STORAGE_KEY)!)).toEqual([
+            { id: 'agent-1', name: 'First', systemPrompt: '', messages: [], tools: [] }
+        ]);
+
+        // Deleting the LAST agent returns the list to its empty state.
+        fireEvent.click(screen.getByTestId('delete-agent-agent-1'));
+        expect(screen.getByTestId('empty-agent-list').textContent).toBe('No agents yet.');
+        expect(screen.getByTestId('empty-agent-state')).toBeDefined();
+        expect(JSON.parse(window.localStorage.getItem(AGENT_STORAGE_KEY)!)).toEqual([]);
+    });
+
+    it('renders the allowed tools as tiles in a responsive grid', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+
+        // The group is a GRID container, not a stack of rows: auto-fill +
+        // minmax keeps tiles at a comfortable minimum and reflows columns.
+        const grid = screen.getByTestId('agent-tool-grid');
+        const gridStyle = window.getComputedStyle(grid);
+        expect(gridStyle.display).toBe('grid');
+        expect(gridStyle.gridTemplateColumns).toContain('auto-fill');
+        expect(gridStyle.gridTemplateColumns).toContain('minmax(200px, 1fr)');
+
+        // Each registry tool is a TILE (a label wrapping the checkbox + name),
+        // and every tile is a direct grid child.
+        const webSearch = screen.getByTestId('agent-tool-web-search');
+        const tile = webSearch.closest('label')!;
+        expect(tile).not.toBeNull();
+        expect(tile.parentElement).toBe(grid);
+        expect(tile.textContent).toBe('Web search');
+        expect(screen.getByTestId('agent-tool-code-interpreter').closest('label')!.parentElement).toBe(grid);
+
+        // A tile carries the shared selected treatment: unchecked is the plain
+        // panel surface, checked flips to the accent border + tinted surface.
+        // The `selected` prop is DYNAMIC, so styledComponent serializes those
+        // declarations under @media (min-width: 0px) — read them from the
+        // Emotion sheet (the same technique the turn-control tests use).
+        const cssText = () => Array.from(document.querySelectorAll('style[data-emotion]'))
+            .map((tag) => tag.textContent)
+            .join('\n');
+        const mediaStyle = (element: HTMLElement, property: string): string | null =>
+            new RegExp(`@media \\(min-width: 0px\\)\\{\\.${element.className}\\{[^}]*${property}:([^;]+);[^}]*\\}\\}`).exec(cssText())?.[1] ?? null;
+        expect(mediaStyle(tile, 'background-color')).toBe('#1d2430');
+        expect(mediaStyle(tile, 'border-color')).toBe('#2d3746');
+        fireEvent.click(webSearch);
+        expect(mediaStyle(tile, 'background-color')).toBe('#273d72');
+        expect(mediaStyle(tile, 'border-color')).toBe('#5f82f0');
+        // Clicking the tile itself toggles too (the label wraps the checkbox).
+        fireEvent.click(tile);
+        expect((webSearch as HTMLInputElement).checked).toBe(false);
+    });
+
+    it('spans the agent editor across the full content column', async () => {
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
+        fireEvent.click(screen.getByTestId('new-agent-button'));
+
+        // The workspace fills the whole conversation column: no maxWidth cap
+        // (the retired 760px strip) and full width, so the name field, the
+        // prompt editor, and the tool tile grid stretch edge to edge.
+        const workspace = screen.getByTestId('agent-workspace');
+        const style = window.getComputedStyle(workspace);
+        expect(style.width).toBe('100%');
+        expect(style.maxWidth).toBe('none');
+
+        // It is a sibling of the message list inside the same content column,
+        // occupying that column's full width.
+        const column = screen.getByTestId('chat-assistant').querySelector('section')!;
+        expect(column.contains(workspace)).toBe(true);
+        // The fields still stretch to the workspace width.
+        expect(window.getComputedStyle(screen.getByTestId('agent-name-input')).width).toBe('100%');
+        expect(window.getComputedStyle(screen.getByTestId('agent-prompt-input')).width).toBe('100%');
     });
 
     it('replaces the prompt field native grip with a themed drag handle that resizes the textarea', async () => {
@@ -1616,21 +2034,145 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('agent-workspace')).toBeNull();
     });
 
-    it('seeds a new chat from the selected agent system prompt', async () => {
+    it('attaches the active agent block in place of the system prompt on a new chat', async () => {
         renderApp();
         await waitForModelSelection();
         fireEvent.click(screen.getByTestId('sidebar-tab-agent'));
         fireEvent.click(screen.getByTestId('new-agent-button'));
+        fireEvent.change(screen.getByTestId('agent-name-input'), { target: { value: 'Researcher' } });
         fireEvent.change(screen.getByTestId('agent-prompt-input'), { target: { value: 'You are a careful researcher.' } });
+        // Give the agent an example back-and-forth too: the block is the
+        // system prompt PLUS this preset conversation.
+        fireEvent.click(screen.getByTestId('add-agent-message'));
+        fireEvent.change(screen.getByTestId('agent-message-input-0'), { target: { value: 'Find facts.' } });
+        fireEvent.click(screen.getByTestId('add-agent-message'));
+        fireEvent.change(screen.getByTestId('agent-message-input-1'), { target: { value: 'Here is what I found.' } });
         // Back to the Chat tab: the header action is "New chat" again.
         fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
         expect(screen.getByTestId('new-chat-button').textContent).toBe('New chat');
 
         fireEvent.click(screen.getByTestId('new-chat-button'));
 
-        // The draft system turn is prefilled with the ACTIVE agent's prompt
-        // (still editable inline before the first send).
-        expect(screen.getByTestId('system-prompt-value').textContent).toBe('You are a careful researcher.');
+        // The composer picker is seeded with the ACTIVE agent, and the chat's
+        // opening block is the agent's: [system prompt, user, assistant].
+        expect((screen.getByTestId('agent-select') as HTMLSelectElement).value).toBe('agent-1');
+        expect(screen.getByTestId('agent-label').textContent).toBe('Researcher');
+        expect(screen.getByTestId('agent-block-label-0').textContent).toBe('system');
+        expect(screen.getByTestId('agent-block-content-0').textContent).toBe('You are a careful researcher.');
+        expect(screen.getByTestId('agent-block-label-1').textContent).toBe('user');
+        expect(screen.getByTestId('agent-block-content-1').textContent).toBe('Find facts.');
+        expect(screen.getByTestId('agent-block-label-2').textContent).toBe('assistant');
+        expect(screen.getByTestId('agent-block-content-2').textContent).toBe('Here is what I found.');
+        // The agent block REPLACES the chat's own system prompt turn: no draft
+        // prompt row is rendered at all (the prompt is not copied into it).
+        expect(screen.queryByTestId('system-prompt-turn')).toBeNull();
+    });
+
+    it('replaces the system prompt block with the agent block when an agent is picked in the composer', async () => {
+        window.localStorage.setItem(AGENT_STORAGE_KEY, JSON.stringify([
+            {
+                id: 'agent-1',
+                name: 'Researcher',
+                systemPrompt: 'Agent prompt.',
+                messages: [{ role: 'user', content: 'Agent example.' }],
+                tools: []
+            }
+        ]));
+        renderApp();
+        await waitForModelSelection();
+
+        // With no agent chosen the chat keeps its own (empty) system prompt turn.
+        expect(screen.getByTestId('system-prompt-turn')).toBeDefined();
+        expect(screen.queryByTestId('agent-block-content-0')).toBeNull();
+
+        // Picking the agent swaps the opening block: the chat's system prompt
+        // turn disappears and the agent's block takes its place.
+        fireEvent.change(screen.getByTestId('agent-select'), { target: { value: 'agent-1' } });
+        expect(screen.queryByTestId('system-prompt-turn')).toBeNull();
+        expect(screen.getByTestId('agent-block-content-0').textContent).toBe('Agent prompt.');
+        expect(screen.getByTestId('agent-block-content-1').textContent).toBe('Agent example.');
+
+        // Back to "None" restores the chat's own system prompt turn.
+        fireEvent.change(screen.getByTestId('agent-select'), { target: { value: '' } });
+        expect(screen.getByTestId('system-prompt-turn')).toBeDefined();
+        expect(screen.queryByTestId('agent-block-content-0')).toBeNull();
+    });
+
+    it('sends and persists the agent block as the start of the chat, replacing the system prompt', async () => {
+        window.localStorage.setItem(AGENT_STORAGE_KEY, JSON.stringify([
+            {
+                id: 'agent-1',
+                name: 'Researcher',
+                systemPrompt: 'Agent prompt.',
+                messages: [
+                    { role: 'user', content: 'Agent example.' },
+                    { role: 'assistant', content: 'Agent reply.' }
+                ],
+                tools: []
+            }
+        ]));
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.change(screen.getByTestId('agent-select'), { target: { value: 'agent-1' } });
+
+        await sendFirstTurn();
+
+        // The provider received the agent block FIRST, then the new user turn.
+        const completionCall = (fetch as any).mock.calls.find((call: any[]) => String(call[0]).endsWith('/chat/completions'));
+        const requestBody = JSON.parse(String(completionCall[1].body));
+        expect(requestBody.messages).toEqual([
+            { role: 'system', content: 'Agent prompt.' },
+            { role: 'user', content: 'Agent example.' },
+            { role: 'assistant', content: 'Agent reply.' },
+            { role: 'user', content: 'Hello assistant' }
+        ]);
+
+        // The persisted record starts with that same block, so the chat keeps
+        // its agent context after a reload. The block is drawn from the record
+        // (not the agent preview) now that the chat has real turns.
+        const appendCall = (fetch as any).mock.calls.find(
+            (call: any[]) => call[1]?.method === 'POST' && !String(call[0]).endsWith('/conversation')
+        );
+        const appendBody = JSON.parse(String(appendCall[1].body));
+        expect(appendBody.messages.slice(0, 3)).toEqual([
+            { role: 'system', content: 'Agent prompt.' },
+            { role: 'user', content: 'Agent example.' },
+            { role: 'assistant', content: 'Agent reply.' }
+        ]);
+        expect(appendBody.messages[3]).toEqual({ role: 'user', content: 'Hello assistant' });
+    });
+
+    it('does not duplicate the agent block on a later turn of the same chat', async () => {
+        window.localStorage.setItem(AGENT_STORAGE_KEY, JSON.stringify([
+            {
+                id: 'agent-1',
+                name: 'Researcher',
+                systemPrompt: 'Agent prompt.',
+                messages: [{ role: 'user', content: 'Agent example.' }],
+                tools: []
+            }
+        ]));
+        renderApp();
+        await waitForModelSelection();
+        fireEvent.change(screen.getByTestId('agent-select'), { target: { value: 'agent-1' } });
+        await sendFirstTurn();
+
+        const callsBefore = (fetch as any).mock.calls.length;
+        fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Second question' } });
+        fireEvent.click(screen.getByTestId('send-chat-button'));
+        await waitFor(() => expect((fetch as any).mock.calls.length).toBeGreaterThan(callsBefore));
+
+        // The second request carries the persisted history ONCE — the agent
+        // block was already attached by the first send, so it is not re-added.
+        const completionCalls = (fetch as any).mock.calls.filter((call: any[]) => String(call[0]).endsWith('/chat/completions'));
+        const secondBody = JSON.parse(String(completionCalls[completionCalls.length - 1][1].body));
+        expect(secondBody.messages).toEqual([
+            { role: 'system', content: 'Agent prompt.' },
+            { role: 'user', content: 'Agent example.' },
+            { role: 'user', content: 'Hello assistant' },
+            { role: 'assistant', content: 'Hello from the assistant' },
+            { role: 'user', content: 'Second question' }
+        ]);
     });
 
     it('lists the native tool registry on the Tool tab without implementations', async () => {
@@ -1847,7 +2389,7 @@ describe('ChatAssistantApp', () => {
         await waitFor(() => expect(screen.getByTestId('message-content-1').getAttribute('contenteditable')).toBeNull());
         expect(screen.getByText('Rewritten answer')).toBeDefined();
         // The top-left model label still marks the rewritten response.
-        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model (alpha-org)');
     });
 
     it('keeps the producing-model label and every icon rendered — greyed out + disabled — while a turn is edited', async () => {
@@ -1885,7 +2427,7 @@ describe('ChatAssistantApp', () => {
 
         // THE MODEL NAME STAYS: the producing model's attribution label is
         // still rendered in the edited turn's top-left corner.
-        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model (alpha-org)');
         // The user turn's speaker label stays too.
         expect(screen.getByTestId('message-label-0').textContent).toBe('user');
 
@@ -1921,7 +2463,7 @@ describe('ChatAssistantApp', () => {
         // Escape abandons the edit: every control returns to its enabled,
         // full-opacity, pointer state and the label/toggles stay in place.
         fireEvent.keyDown(screen.getByTestId('message-content-1'), { key: 'Escape' });
-        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model (alpha-org)');
         ['collapse-message-0', 'collapse-message-1', ...editedControls, ...otherControls].forEach((testid) => {
             expect((screen.getByTestId(testid) as HTMLButtonElement).disabled).toBe(false);
             expect(mediaStyle(testid, 'opacity')).toBe('1');
@@ -2216,7 +2758,7 @@ describe('ChatAssistantApp', () => {
         // One turn remains; indices shift so the former second turn is gone.
         await waitFor(() => expect(screen.queryByTestId('message-turn-1')).toBeNull());
         expect(screen.getByText('Hello from the assistant')).toBeDefined();
-        expect(screen.getByTestId('message-model-0').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-model-0').textContent).toBe('zeta-model (alpha-org)');
     });
 
     it('deletes an individual assistant message together with its model label', async () => {
@@ -2353,14 +2895,15 @@ describe('ChatAssistantApp', () => {
         expect(controlsShouldFloat(400.5, 50, 400, 30)).toBe(false);
     });
 
-    it('uniqueModelLabels: keeps unique stripped names short and suffixes collisions with the provider', () => {
-        // Fixture mirrors the REAL private registry shape: one base model
-        // served by several providers collides after stripping, unique models
-        // do not. Registry order (@agentic/provider registry.ts) is preserved
-        // so the map keys follow the dropdown's option order.
-        // Colliding ids display "base (provider)" — the stripped model name
-        // plus the provider prefix in parentheses — so every option reads
-        // distinctly while still leading with the model name.
+    it('uniqueModelLabels: labels every prefixed id with its provider', () => {
+        // Fixture mirrors the REAL private registry shape: base models served
+        // by several providers (colliding after stripping) alongside models
+        // served by exactly one. Registry order (@agentic/provider
+        // registry.ts) is preserved so the map keys follow the dropdown's
+        // option order. EVERY prefixed id displays "base (provider)" — the
+        // stripped model name plus the provider prefix in parentheses — so no
+        // row is left unattributed and colliding base names still read
+        // distinctly.
         const ids = [
             'makora/glm-5.3',            // ┌ four-way stripped collision
             'makora/ds4-flash',          // │ unique stripped (post-rename id)
@@ -2381,27 +2924,27 @@ describe('ChatAssistantApp', () => {
         ];
         expect(uniqueModelLabels(ids)).toEqual(new Map([
             ['makora/glm-5.3', 'glm-5.3 (makora)'],
-            ['makora/ds4-flash', 'ds4-flash'],
+            ['makora/ds4-flash', 'ds4-flash (makora)'],
             ['modal/glm-5.3-flash', 'glm-5.3-flash (modal)'],
             ['vultr/glm-5.3-flash', 'glm-5.3-flash (vultr)'],
-            ['makora/glm5-flash', 'glm5-flash'],
+            ['makora/glm5-flash', 'glm5-flash (makora)'],
             ['modal/kimi-k3', 'kimi-k3 (modal)'],
-            ['local/qwen3.8', 'qwen3.8'],
-            ['lightning/gpt-5.6-luna', 'gpt-5.6-luna'],
-            ['lightning/gpt-5.6-sol', 'gpt-5.6-sol'],
+            ['local/qwen3.8', 'qwen3.8 (local)'],
+            ['lightning/gpt-5.6-luna', 'gpt-5.6-luna (lightning)'],
+            ['lightning/gpt-5.6-sol', 'gpt-5.6-sol (lightning)'],
             ['nvidia/glm-5.3', 'glm-5.3 (nvidia)'],
             ['merge/glm-5.3', 'glm-5.3 (merge)'],
             ['token-router/glm-5.3', 'glm-5.3 (token-router)'],
-            ['nvidia/deepseek-v4-flash', 'deepseek-v4-flash'],
+            ['nvidia/deepseek-v4-flash', 'deepseek-v4-flash (nvidia)'],
             ['nvidia/kimi-k3', 'kimi-k3 (nvidia)'],
-            ['daytona/qwen3.8-27b', 'qwen3.8-27b'],
-            ['merge/kimi-k2-6', 'kimi-k2-6']
+            ['daytona/qwen3.8-27b', 'qwen3.8-27b (daytona)'],
+            ['merge/kimi-k2-6', 'kimi-k2-6 (merge)']
         ]));
 
         // Prefixless ids (no "/" at all) pass through unchanged (there is no
-        // provider to disambiguate with), and a lone id is always its own
-        // stripped label.
+        // provider to attribute), and a lone id still carries its provider.
         expect(uniqueModelLabels(['bare-model'])).toEqual(new Map([['bare-model', 'bare-model']]));
+        expect(uniqueModelLabels(['vultr/glm-5.3-flash'])).toEqual(new Map([['vultr/glm-5.3-flash', 'glm-5.3-flash (vultr)']]));
         expect(uniqueModelLabels([])).toEqual(new Map());
     });
 
@@ -2498,10 +3041,12 @@ describe('ChatAssistantApp', () => {
 
         // Send a turn WITHOUT a prompt: neither payload nor storage gain
         // a system message, and the leading turn still shows the placeholder.
+        // The request order is catalog, tracked list, pending create, provider
+        // completion, append — so the completion is call 3 and the append 4.
         fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello assistant' } });
         fireEvent.click(screen.getByTestId('send-chat-button'));
         await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
-        expect((fetch as any).mock.calls[2][1].body).toBe(JSON.stringify({
+        expect((fetch as any).mock.calls[3][1].body).toBe(JSON.stringify({
             model: DEFAULT_MODEL,
             stream: true,
             stream_options: { include_usage: true },
@@ -2632,7 +3177,7 @@ describe('ChatAssistantApp', () => {
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(sseResponse(completionFrames));
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [] }));
             }
             if (init?.method === 'POST' && url.endsWith('/conversation')) {
@@ -2893,7 +3438,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.getByTestId('collapse-message-0').getAttribute('aria-expanded')).toBe('false');
         expect(screen.getByTestId('message-preview-0').textContent).toBe('You are terse.');
         // ...while the trailing assistant turn (index 4) renders expanded.
-        expect(screen.getByTestId('message-model-4').textContent).toBe('test-model');
+        expect(screen.getByTestId('message-model-4').textContent).toBe('test-model (zeta-org)');
     });
 
     it('collapses any turn to a one-line preview and expands it back', async () => {
@@ -2997,7 +3542,7 @@ describe('ChatAssistantApp', () => {
         // The ASSISTANT turn's top-left label is its producing model's
         // stripped name, again inside the toggle button.
         const assistantToggle = screen.getByTestId('collapse-message-1');
-        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-model-1').textContent).toBe('zeta-model (alpha-org)');
         expect(assistantToggle.contains(screen.getByTestId('message-model-1'))).toBe(true);
 
         // No chevron glyph renders on either toggle, in EITHER state.
@@ -3037,7 +3582,7 @@ describe('ChatAssistantApp', () => {
                 })
             }
         ]);
-        expect(screen.getByTestId('message-model-0').textContent).toBe('test-model');
+        expect(screen.getByTestId('message-model-0').textContent).toBe('test-model (zeta-org)');
         expect(screen.queryByTestId('message-label-0')).toBeNull();
 
         // Assistant → user removes assistant-only model attribution and returns
@@ -3189,11 +3734,12 @@ describe('ChatAssistantApp', () => {
         fireEvent.change(input, { target: { value: 'Hello assistant' } });
         // Enter on desktop submits exactly like the send button: the default
         // newline is prevented (fireEvent returns false only when the event
-        // was defaultPrevented) and the full six-call send flow runs.
+        // was defaultPrevented) and the full send flow runs (catalog, tracked
+        // list, pending create, completion, append, GET).
         expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false);
         await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
         expect((fetch as any).mock.calls).toHaveLength(6);
-        expect(JSON.parse((fetch as any).mock.calls[2][1].body as string)).toEqual({
+        expect(JSON.parse((fetch as any).mock.calls[3][1].body as string)).toEqual({
             model: DEFAULT_MODEL,
             stream: true,
             stream_options: { include_usage: true },
@@ -3244,7 +3790,7 @@ describe('ChatAssistantApp', () => {
         };
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, {
                     conversations: [{
                         conversationId: restored.conversationId,
@@ -3284,7 +3830,7 @@ describe('ChatAssistantApp', () => {
         expect(screen.queryByTestId('message-preview-3')).toBeNull();
         expect(screen.getByTestId('message-turn-3').querySelector('article')?.textContent).toBe('Second answer');
         expect(screen.getByTestId('copy-message-3')).toBeDefined();
-        expect(screen.getByTestId('message-model-3').textContent).toBe('zeta-model');
+        expect(screen.getByTestId('message-model-3').textContent).toBe('zeta-model (alpha-org)');
     });
 
     it('auto-scrolls the message list to the bottom on typing, on send, and while the reply streams', async () => {
@@ -3294,7 +3840,7 @@ describe('ChatAssistantApp', () => {
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [] }));
             }
             if (init?.method === 'POST' && url.endsWith('/conversation')) {
@@ -3501,7 +4047,7 @@ describe('ChatAssistantApp', () => {
         vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
             if (url.endsWith('/models')) return Promise.resolve(response(200, catalog));
             if (url.endsWith('/chat/completions')) return Promise.resolve(stream.response());
-            if (init?.method === 'GET' && url.endsWith('/conversation')) {
+            if (init?.method === 'GET' && url.includes('/conversation') && !url.includes('/conversation/')) {
                 return Promise.resolve(response(200, { conversations: [] }));
             }
             if (init?.method === 'POST' && url.endsWith('/conversation')) {
@@ -3600,6 +4146,11 @@ describe('ChatAssistantApp', () => {
         expect(pageStyle.display).toBe('flex');
         expect(pageStyle.flexDirection).toBe('column');
         expect(pageStyle.overflow).toBe('hidden');
+        // The frame declares the DARK color scheme so the browser-painted
+        // native surfaces (the model/agent/settings <select> option popups and
+        // their scrollbars) follow the app palette instead of falling back to
+        // the OS light scheme (the white model list against this dark surface).
+        expect(pageStyle.colorScheme).toBe('dark');
 
         // The header is pinned to the frame's top edge: it cannot shrink away
         // (and the page itself never scrolls, so it stays stuck on top).
@@ -3814,13 +4365,14 @@ describe('ChatAssistantApp', () => {
             expect(mic.getAttribute('aria-label')).toBe('Start voice input');
             expect(mic.querySelector('svg[data-icon="mic"]')).not.toBeNull();
             expect(screen.getByTestId('pending-user-message').textContent).toBe('Hello world');
-            // ...and the provider completion leaves immediately with the full
-            // spoken text as the ONLY user content (new chat: no system
-            // prefix), pinned to the catalog default model.
-            const completions = (fetch as any).mock.calls.filter((call: unknown[]) => String(call[0]).endsWith('/chat/completions'));
-            expect(completions).toHaveLength(1);
-            expect(completions[0][0]).toBe(`${PROVIDER_URL}/chat/completions`);
-            expect(JSON.parse(String(completions[0][1].body))).toEqual({
+            // ...and the provider completion leaves with the full spoken text as
+            // the ONLY user content (new chat: no system prefix), pinned to the
+            // catalog default model. The up-front pending create is awaited
+            // first, so the completion is one microtask later.
+            const completions = () => (fetch as any).mock.calls.filter((call: unknown[]) => String(call[0]).endsWith('/chat/completions'));
+            await waitFor(() => expect(completions()).toHaveLength(1));
+            expect(completions()[0][0]).toBe(`${PROVIDER_URL}/chat/completions`);
+            expect(JSON.parse(String(completions()[0][1].body))).toEqual({
                 model: DEFAULT_MODEL,
                 stream: true,
                 stream_options: { include_usage: true },
@@ -3855,9 +4407,9 @@ describe('ChatAssistantApp', () => {
             });
             expect(input.value).toBe('');
             expect(screen.getByTestId('voice-input-button').getAttribute('aria-pressed')).toBe('false');
-            const completions = (fetch as any).mock.calls.filter((call: unknown[]) => String(call[0]).endsWith('/chat/completions'));
-            expect(completions).toHaveLength(1);
-            expect(JSON.parse(String(completions[0][1].body)).messages).toEqual([
+            const completions = () => (fetch as any).mock.calls.filter((call: unknown[]) => String(call[0]).endsWith('/chat/completions'));
+            await waitFor(() => expect(completions()).toHaveLength(1));
+            expect(JSON.parse(String(completions()[0][1].body)).messages).toEqual([
                 { role: 'user', content: 'Draft text Hello world' }
             ]);
             await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
@@ -4263,6 +4815,26 @@ describe('offline (no-application-server) mode', () => {
                     }]
                 }));
             }
+            // ONLINE list reads are scoped to the browser's tracked ids, so the
+            // query form is what the sidebar actually requests. The mock honors
+            // the filter like the real handler: conversation-1 comes back only
+            // when the request actually asks for it, which is what keeps it out
+            // of a browser that never created it.
+            if (url.startsWith(BASE_URL) && init?.method === 'GET') {
+                const requested = url.includes('?ids=') ? decodeURIComponent(url.split('?ids=')[1]).split(',') : null;
+                const owned = requested === null || requested.includes(conversation.conversationId);
+                return Promise.resolve(response(200, {
+                    conversations: owned ? [{
+                        conversationId: conversation.conversationId,
+                        title: conversation.title,
+                        model: conversation.model,
+                        status: 'complete',
+                        messageCount: conversation.messageCount,
+                        createdAt: conversation.createdAt,
+                        updatedAt: conversation.updatedAt
+                    }] : []
+                }));
+            }
             return Promise.resolve(response(404, { error: `unexpected request: ${String(url)} ${init?.method ?? ''}` }));
         });
         vi.stubGlobal('fetch', fetchMock);
@@ -4274,22 +4846,26 @@ describe('offline (no-application-server) mode', () => {
         await waitFor(() => expect(Object.keys(readLocalConversations())).toHaveLength(1));
         const [offlineId] = Object.keys(readLocalConversations());
 
-        // Switch to online: the server-side list owns the sidebar — the
-        // ONLINE conversation-1 entry appears, the offline id must NOT, and
-        // the local data stays intact. The registry list only renders under
-        // the Chat tab, so return to it after the mode switch.
+        // Switch to online: the sidebar is scoped to the ids THIS browser
+        // created in online mode — none yet, so the online namespace starts
+        // empty even though the server holds conversation-1. The offline id
+        // must not appear either, and the local data stays intact. The registry
+        // list only renders under the Chat tab, so return to it after the switch.
         fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
         fireEvent.change(screen.getByTestId('mode-select'), { target: { value: 'online' } });
         fireEvent.click(screen.getByTestId('sidebar-tab-chat'));
-        await waitFor(() => expect(screen.getByTestId('chat-tab-conversation-1')).toBeDefined());
+        await waitFor(() => expect(screen.getByTestId('empty-chat-list')).toBeDefined());
+        expect(screen.queryByTestId('chat-tab-conversation-1')).toBeNull();
         expect(screen.queryByTestId(`chat-tab-${offlineId}`)).toBeNull();
         expect(Object.keys(readLocalConversations())).toEqual([offlineId]);
+        // The online list request carried the (empty) tracked-id filter.
+        expect((fetch as any).mock.calls.some((call: unknown[]) => call[0] === `${BASE_URL}?ids=`)).toBe(true);
 
         // Back to offline: the local list effect restores the offline entry;
-        // the online conversation must not leak into the offline sidebar (the
-        // local store gained no server record). The mode selector lives in the
-        // settings surface, so re-open it after the tab switch above, then
-        // return to the Chat tab where the registry list renders.
+        // nothing server-side leaks into the offline sidebar (the local store
+        // gained no server record). The mode selector lives in the settings
+        // surface, so re-open it after the tab switch above, then return to the
+        // Chat tab where the registry list renders.
         fireEvent.click(screen.getByTestId('sidebar-tab-settings'));
         fireEvent.change(screen.getByTestId('mode-select'), { target: { value: 'offline' } });
         fireEvent.click(screen.getByTestId('sidebar-tab-chat'));

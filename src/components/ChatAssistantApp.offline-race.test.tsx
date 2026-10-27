@@ -145,7 +145,7 @@ describe('offline mode: in-flight stream vs. mode switch (namespace isolation)',
             if (url === `${PROVIDER_URL}/models` && init?.method === 'GET') {
                 return Promise.resolve(response(200, catalog));
             }
-            if (url === BASE_URL && init?.method === 'GET') {
+            if (url.startsWith(BASE_URL) && !url.includes('/conversation/') && init?.method === 'GET') {
                 return Promise.resolve(response(200, {
                     conversations: [{
                         conversationId: 'conversation-1',
@@ -416,7 +416,7 @@ describe('offline mode: mid-stream switch race (detached stream, immediate new-m
             if (url === `${PROVIDER_URL}/chat/completions` && init?.method === 'POST') {
                 return Promise.resolve(onlineStream.response());
             }
-            if (url === BASE_URL && init?.method === 'GET') {
+            if (url.startsWith(BASE_URL) && !url.includes('/conversation/') && init?.method === 'GET') {
                 return Promise.resolve(response(200, { conversations: [] }));
             }
             // Online-mode storage for the new send (create + append + GET).
@@ -585,7 +585,7 @@ describe('short-lived storage flows vs mode switch (delayed remote ops, ungated 
             if (url === `${PROVIDER_URL}/models` && init?.method === 'GET') {
                 return Promise.resolve(response(200, catalog));
             }
-            if (url === BASE_URL && init?.method === 'GET') {
+            if (url.startsWith(BASE_URL) && !url.includes('/conversation/') && init?.method === 'GET') {
                 return Promise.resolve(response(200, {
                     conversations: [{
                         conversationId: ONLINE_CONVERSATION.conversationId,
@@ -661,7 +661,7 @@ describe('short-lived storage flows vs mode switch (delayed remote ops, ungated 
             if (url === `${PROVIDER_URL}/models` && init?.method === 'GET') {
                 return Promise.resolve(response(200, catalog));
             }
-            if (url === BASE_URL && init?.method === 'GET') {
+            if (url.startsWith(BASE_URL) && !url.includes('/conversation/') && init?.method === 'GET') {
                 return Promise.resolve(response(200, {
                     conversations: [{
                         conversationId: ONLINE_CONVERSATION.conversationId,
@@ -721,7 +721,7 @@ describe('short-lived storage flows vs mode switch (delayed remote ops, ungated 
             if (url === `${PROVIDER_URL}/models` && init?.method === 'GET') {
                 return Promise.resolve(response(200, catalog));
             }
-            if (url === BASE_URL && init?.method === 'GET') {
+            if (url.startsWith(BASE_URL) && !url.includes('/conversation/') && init?.method === 'GET') {
                 return Promise.resolve(response(200, {
                     conversations: [{
                         conversationId: ONLINE_CONVERSATION.conversationId,
@@ -863,7 +863,7 @@ describe('short-lived storage flows vs mode switch (remaining gated handlers: sa
             if (url === `${PROVIDER_URL}/models` && init?.method === 'GET') {
                 return Promise.resolve(response(200, catalog));
             }
-            if (url === BASE_URL && init?.method === 'GET') {
+            if (url.startsWith(BASE_URL) && !url.includes('/conversation/') && init?.method === 'GET') {
                 return Promise.resolve(response(200, {
                     conversations: [{
                         conversationId: ONLINE_CONVERSATION.conversationId,

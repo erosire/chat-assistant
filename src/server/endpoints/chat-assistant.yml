@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Chat Assistant API
-  description: AI chat assistant storage API. Conversations persist completed turns; the agent and tool registries persist agent definitions (name, system prompt, allowed tool ids) and tool definitions (name plus optional JavaScript/TypeScript source — native runtime tools carry no implementation). Model calls are performed by clients against the runtime provider endpoints.
+  description: AI chat assistant storage API. Conversations persist completed turns; the agent and tool registries persist agent definitions (name, system prompt, chat layout, allowed tool ids) and tool definitions (name plus optional JavaScript/TypeScript source — native runtime tools carry no implementation). An agent's chat layout is attached to the start of every chat that uses it, replacing the chat's own system prompt block. Model calls are performed by clients against the runtime provider endpoints.
   version: 1.0.0
 servers:
   - url: http://127.0.0.1:5000
@@ -11,7 +11,14 @@ paths:
     get:
       operationId: listConversations
       summary: List conversations
-      description: Returns every persisted conversation as a compact summary ordered by most recent activity so a reloaded client can restore its chat history; message bodies stay behind the identified resource GET.
+      description: Returns persisted conversations as compact summaries ordered by most recent activity so a reloaded client can restore its chat history; message bodies stay behind the identified resource GET. The optional `ids` query parameter scopes the answer to the caller's OWN tracked conversations (a comma-separated list of ids the client created and cached): only those records are returned, so a client never downloads a server-wide history. An empty `ids` value is a valid filter that matches nothing; omitting the parameter keeps the unfiltered list for tooling.
+      parameters:
+        - name: ids
+          in: query
+          required: false
+          description: Comma-separated conversation ids to return. Only these conversations are listed; an empty value returns none.
+          schema:
+            type: string
       responses:
         '200':
           description: Conversation summaries.
@@ -19,10 +26,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConversationListResponse'
+        '400':
+          description: The ids parameter was not a string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createConversation
       summary: Create a conversation
-      description: Creates an empty conversation and returns its identifier for the identified conversation resource.
+      description: Creates an empty conversation and returns its identifier for the identified conversation resource. Supply `status: pending` when a turn is already in flight so the owning client can poll the record until it settles; omitted status settles the record immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationPostRequest'
       responses:
         '201':
           description: Conversation identifier.
@@ -349,9 +368,13 @@ components:
           type: string
         systemPrompt:
           type: string
+        status:
+          type: string
+          enum: [pending, complete]
+          description: 'pending marks a conversation whose turn is still in flight (the owning client polls it until it settles); complete (or omitted) settles the record.'
         usage:
           $ref: '#/components/schemas/TokenUsage'
-      description: Supply message for a normal turn or messages for an explicit history. model records which provider model produced the appended turns; usage carries its token counters.
+      description: Supply message for a normal turn or messages for an explicit history. model records which provider model produced the appended turns; usage carries its token counters; status keeps the record pending while its reply is still being generated.
     ConversationPutRequest:
       type: object
       required: [messages]
@@ -365,6 +388,10 @@ components:
         title:
           type: string
           description: Explicit conversation label; wins over the derived first-line title (header rename flow).
+        status:
+          type: string
+          enum: [pending, complete]
+          description: 'pending keeps the conversation in flight for the owning client''s poll; complete (or omitted) settles it.'
       description: Full replacement history for the edit-history flow; an empty array wipes the conversation without deleting it.
     TokenUsage:
       type: object
@@ -391,7 +418,10 @@ components:
         conversationId: { type: string }
         title: { type: string }
         model: { type: string }
-        status: { type: string, enum: [complete, error] }
+        status:
+          type: string
+          enum: [pending, complete, error]
+          description: 'pending = a turn is still in flight (poll it); complete = settled; error = storage recorded a failure.'
         messageCount: { type: integer }
         createdAt: { type: string }
         updatedAt: { type: string }
@@ -414,7 +444,10 @@ components:
         conversationId: { type: string }
         title: { type: string }
         model: { type: string }
-        status: { type: string, enum: [complete, error] }
+        status:
+          type: string
+          enum: [pending, complete, error]
+          description: 'pending = a turn is still in flight (poll it); complete = settled; error = storage recorded a failure.'
         messageCount: { type: integer }
         createdAt: { type: string }
         updatedAt: { type: string }
@@ -441,18 +474,39 @@ components:
           type: string
           description: Agent label; collection POST defaults to "New agent" when omitted.
         systemPrompt: { type: string }
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentMessage'
+          description: The agent's chat layout — example turns attached after its system prompt at the start of every chat that uses the agent.
         tools:
           type: array
           items: { type: string }
           description: Allowed tool ids (references into the tool registry, not foreign keys).
       description: Agent definition fields shared by creation and replacement; replacement retains omitted fields.
+    AgentMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+          description: Only conversational turns belong in the chat layout; the agent's system prompt is its own field.
+        content:
+          type: string
+          description: Turn text; may be empty while the editor is still filling it in.
+      description: One example turn of an agent's chat layout.
     AgentRecord:
       type: object
-      required: [agentId, name, systemPrompt, tools, createdAt, updatedAt]
+      required: [agentId, name, systemPrompt, messages, tools, createdAt, updatedAt]
       properties:
         agentId: { type: string }
         name: { type: string }
         systemPrompt: { type: string }
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentMessage'
         tools:
           type: array
           items: { type: string }

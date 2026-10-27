@@ -202,6 +202,22 @@ describe('local conversation store (api/offline)', () => {
         expect((await getLocalConversation(created.conversationId)).conversation.model).toBe('openai/gpt-4o-mini');
     });
 
+    it('mirrors the pending status and settles it on append (server parity)', async () => {
+        const created = await createLocalConversation({ model: 'test-model', status: 'pending' });
+        expect((await getLocalConversation(created.conversationId)).conversation.status).toBe('pending');
+
+        await appendToLocalConversation(created.conversationId, {
+            messages: [
+                { role: 'user', content: 'Question' },
+                { role: 'assistant', content: 'Answer' }
+            ]
+        });
+        expect((await getLocalConversation(created.conversationId)).conversation.status).toBe('complete');
+
+        await expect(createLocalConversation({ status: 'error' as any }))
+            .rejects.toThrow('status must be either "pending" or "complete"');
+    });
+
     it('rejects a blank model with the server validation message', async () => {
         await expect(createLocalConversation({ model: '   ' })).rejects.toThrow('model must be a non-empty string');
         // Nothing was persisted by the rejected create.
