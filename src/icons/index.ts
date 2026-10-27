@@ -10,13 +10,14 @@
 // before, and the names below are the same components with the same
 // geometry — pinned by icons.test.tsx.
 //
-// Only the ten glyphs this package actually uses are re-exported; the
+// Only the eleven glyphs this package actually uses are re-exported; the
 // remaining built-ins of @rightless/icons stay out of this package's API.
 export { IconBase } from '@rightless/icons';
 export type { IconBaseProps, IconProps } from '@rightless/icons';
 export { MenuIcon } from '@rightless/icons';
 export { MicIcon } from '@rightless/icons';
 export { CloseIcon } from '@rightless/icons';
+export { PlusIcon } from '@rightless/icons';
 export { EditIcon } from '@rightless/icons';
 export { CopyIcon } from '@rightless/icons';
 export { ChevronRightIcon } from '@rightless/icons';

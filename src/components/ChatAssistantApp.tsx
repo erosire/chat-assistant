@@ -242,6 +242,7 @@ import {
     ForkIcon,
     MenuIcon,
     MicIcon,
+    PlusIcon,
     SwitchIcon
 } from '../icons';
 // Client-side agent + tool registry (src/agents): agents are named chat
@@ -855,9 +856,16 @@ const AgentLayoutRow = styledComponent('div', {
 
 // The role chip: a small uppercase label identifying the turn's speaker and
 // doubling as its role-switch control.
+// The chip carries one SHARED width floor (box-sizing:border-box, so the
+// padding lives inside it) with enough headroom for the longest label,
+// "ASSISTANT": the previous 78px min-width was narrower than that label, so
+// assistant chips grew past it and shoved every assistant row's text field
+// slightly to the right of the user rows. At 110px both role labels fit, so
+// every row's text field starts on the same left edge regardless of role.
 const AgentLayoutRole = styledComponent('button', {
     flexShrink: 0,
-    minWidth: 78,
+    minWidth: 110,
+    boxSizing: 'border-box',
     padding: '8px 10px',
     border: `1px solid ${COLORS.border}`,
     borderRadius: 8,
@@ -903,6 +911,32 @@ const AgentLayoutAction = styledComponent('button', {
     cursor: 'pointer',
     font: 'inherit',
     fontSize: 12
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+
+// The per-turn remove control: an "x" glyph in the same bordered chip as the
+// other layout actions (the shared CloseIcon, like every other delete control
+// in the app — unicode glyphs render differently per system font). Centered so
+// the glyph sits square in the chip, and shrunk to icon scale so the control
+// stays a compact trailing affordance instead of a word-wide button.
+const AgentLayoutRemove = styledComponent(AgentLayoutAction, {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '6px 8px',
+    lineHeight: 1
+}) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
+
+// The "add turn" control: the same chip, pushed to the RIGHT edge of the
+// layout column (the workspace is a flex column, so alignSelf does it) and
+// reduced to a lone "+" glyph — a compact affordance that reads as "append a
+// row" without occupying a full line of the editor.
+const AgentLayoutAdd = styledComponent(AgentLayoutAction, {
+    alignSelf: 'flex-end',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '6px 8px',
+    lineHeight: 1
 }) as unknown as React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 
 // Each sidebar conversation ENTRY is a positioning context: the select button
@@ -4686,26 +4720,28 @@ export const ChatAssistantApp: React.FC<ChatAssistantAppProps> = React.memo(({
                                                 rows={2}
                                                 data-testid={`agent-message-input-${index}`}
                                             />
-                                            <AgentLayoutAction
+                                            <AgentLayoutRemove
                                                 type="button"
                                                 onClick={() => updateAgent(selectedAgent.id, removeAgentMessage(selectedAgent, index))}
                                                 aria-label={`Remove ${message.role} turn`}
                                                 title={`Remove ${message.role} turn`}
                                                 data-testid={`remove-agent-message-${index}`}
                                             >
-                                                Remove
-                                            </AgentLayoutAction>
+                                                <CloseIcon size={14} />
+                                            </AgentLayoutRemove>
                                         </AgentLayoutRow>
                                     ))}
                                 </AgentLayoutList>
                             )}
-                            <AgentLayoutAction
+                            <AgentLayoutAdd
                                 type="button"
                                 onClick={() => updateAgent(selectedAgent.id, appendAgentMessage(selectedAgent))}
+                                aria-label="Add turn"
+                                title="Add turn"
                                 data-testid="add-agent-message"
                             >
-                                Add turn
-                            </AgentLayoutAction>
+                                <PlusIcon size={14} />
+                            </AgentLayoutAdd>
                             {/* Allowed tools: one TILE per registry entry
                                 (toggleAgentTool flips the id in the agent's
                                 allowed set; the tile shows the checked state);
