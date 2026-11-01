@@ -2911,7 +2911,7 @@ describe('ChatAssistantApp', () => {
             'vultr/glm-5.3-flash',       // │ ┘ two-way stripped collision
             'makora/glm5-flash',      // │ unique stripped (post-rename id)
             'modal/kimi-k3',             // │ collides with nvidia below
-            'local/qwen3.8',              // │ unique stripped (post-rename id)
+            'local/strata',              // │ unique stripped (post-rename id)
             'lightning/gpt-5.6-luna',    // │ unique stripped
             'lightning/gpt-5.6-sol',     // │ unique stripped
             'nvidia/glm-5.3',            // │ four-way stripped collision
@@ -2929,7 +2929,7 @@ describe('ChatAssistantApp', () => {
             ['vultr/glm-5.3-flash', 'glm-5.3-flash (vultr)'],
             ['makora/glm5-flash', 'glm5-flash (makora)'],
             ['modal/kimi-k3', 'kimi-k3 (modal)'],
-            ['local/qwen3.8', 'qwen3.8 (local)'],
+            ['local/strata', 'strata (local)'],
             ['lightning/gpt-5.6-luna', 'gpt-5.6-luna (lightning)'],
             ['lightning/gpt-5.6-sol', 'gpt-5.6-sol (lightning)'],
             ['nvidia/glm-5.3', 'glm-5.3 (nvidia)'],
