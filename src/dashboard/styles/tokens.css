@@ -1,0 +1,99 @@
+/*
+ * Design tokens for the vendored workstation skin.
+ *
+ * Every colour and metric the shell and the feature components use lives here, as
+ * custom properties on `.station` — deliberately NOT on `:root`, so this skin can
+ * be mounted inside another page (Storybook canvas, an embed host) without
+ * repainting it. Theme switching is three attributes the shell projects from the
+ * `ui.theme` / `ui.density` / `ui.motion` state cells (see
+ * src/dashboard/WorkstationShell.tsx); no JS writes a colour.
+ *
+ * Token names are shared with packages/underload/dashboard/example/src/styles/
+ * workstation.css so the skin can be re-synced by eye. The chat-specific tokens
+ * (--user --assistant --system --danger --accent-soft) are additions this
+ * distribution owns.
+ */
+
+.station {
+    /* Ink: the default dark workstation skin — deep teal-black surfaces, teal
+       accent, amber for warnings. */
+    --surface: #0b1418;
+    --raised: #12212a;
+    --line: #1e3440;
+    --text: #dcebee;
+    --muted: #7fa0aa;
+    --accent: #2dd4bf;
+    --warn: #f59e0b;
+
+    /* Chat role rails: the turn border/label colour per message role, so a
+       transcript never invents its own palette. */
+    --user: #2dd4bf;
+    --assistant: #a3b8c2;
+    --system: #7fa0aa;
+    --danger: #f87171;
+    /* Tinted accent fill for active rows, soft badges and the streaming rail. */
+    --accent-soft: color-mix(in srgb, var(--accent) 16%, var(--surface));
+
+    /* Metrics. Density flips these two pairs and nothing else, so a compact
+       layout is a token change rather than a second stylesheet. */
+    --gap: 14px;
+    --pad: 16px;
+    --radius: 10px;
+    --radius-sm: 6px;
+
+    /* Skin-local primitives the example hardcodes in element rules. */
+    --font: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --rail: 3px;
+    --row-height: 34px;
+
+    /* Native UI the browser paints (form controls, <option> popups, scrollbars)
+       follows this, so a dark skin never opens a white dropdown. */
+    color-scheme: dark;
+}
+
+/* Slate: the light variant. Only colours change — every rule reads the tokens. */
+.station[data-theme='slate'] {
+    --surface: #f2f6f7;
+    --raised: #ffffff;
+    --line: #d3e0e3;
+    --text: #12262c;
+    --muted: #5b7680;
+    --accent: #0f766e;
+    --warn: #b45309;
+
+    --user: #0f766e;
+    --assistant: #64748b;
+    --system: #5b7680;
+    --danger: #b91c1c;
+    --accent-soft: color-mix(in srgb, var(--accent) 10%, var(--surface));
+
+    color-scheme: light;
+}
+
+/* Compact density: tighter rails and padding; font size is unchanged on purpose
+   so a compact station stays readable rather than merely small. */
+.station[data-density='compact'] {
+    --gap: 8px;
+    --pad: 9px;
+    --row-height: 28px;
+}
+
+/* Motion is opt-out in two ways: the operator toggle below, and the OS-level
+   preference, which stays honoured even when the cell says 'full'. */
+.station[data-motion='reduced'] *,
+.station[data-motion='reduced'] *::before,
+.station[data-motion='reduced'] *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+    scroll-behavior: auto !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .station *,
+    .station *::before,
+    .station *::after {
+        transition-duration: 0ms !important;
+        animation-duration: 0ms !important;
+        scroll-behavior: auto !important;
+    }
+}

@@ -1,0 +1,415 @@
+/*
+ * Station shell structure and shared primitives — vendored and adapted from
+ * packages/underload/dashboard/example/src/styles/workstation.css.
+ *
+ * What changed and why (do not re-copy the example's region hack):
+ *   The example page scrolls the whole document and caps each region with
+ *   `max-height: calc(100vh - 190px)`, a magic number that only matches its own
+ *   bar + footer. This skin is VIEWPORT-LOCKED: `.station` is exactly 100vh and
+ *   `overflow: hidden`, the bar is an intrinsic row, and the three regions are the
+ *   only scroll containers (`min-height: 0` + `overflow-y: auto`). The window
+ *   never scrolls, which is what a chat transcript with a pinned composer needs.
+ *
+ * Scope discipline: every rule below is shell chrome or a shared primitive, and
+ * every one of them is .station-scoped (the primitives - .btn, .field, .chip,
+ * .panel and the two region owners below - carry the .station prefix too, so
+ * mounting this skin inside a host page restyles nothing outside the station).
+ * Feature rules (sessions, transcript, composer, agents, tools, settings,
+ * notices) belong in their own file in this folder.
+ */
+
+/* ——— Station frame ——————————————————————————————————————————————————————— */
+
+.station {
+    display: grid;
+    /* Row 1 is the bar (intrinsic), row 2 is the grid and takes the rest. */
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: var(--gap);
+    height: 100vh;
+    /* dvh keeps a mobile station inside the visual viewport once the browser
+       chrome shrinks it; the vh line above is the fallback. */
+    height: 100dvh;
+    /* The window never scrolls: only .station__region does. */
+    overflow: hidden;
+    padding: var(--gap);
+    border-radius: 0;
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+/* ——— Station bar ————————————————————————————————————————————————————————— */
+
+.station__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 18px;
+    padding: var(--pad);
+    border: 1px solid var(--line);
+    border-left: var(--rail) solid var(--accent);
+    border-radius: var(--radius);
+    background: var(--raised);
+}
+
+.station__brand {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.station__tagline {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.station__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.station__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.station__note {
+    /* The footer note of the example becomes bar text here: a footer row would
+       steal height from the regions in a locked viewport. */
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+}
+
+/* ——— Chips ——————————————————————————————————————————————————————————————— */
+
+.station .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface) 65%, transparent);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+}
+
+.station .chip__key {
+    color: var(--muted);
+    text-transform: uppercase;
+}
+
+.station .chip__value {
+    font-weight: 700;
+}
+
+.station .chip__ref {
+    color: var(--muted);
+}
+
+.station .chip--brand {
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 700;
+}
+
+/* ——— Region grid ————————————————————————————————————————————————————————— */
+
+.station__grid {
+    display: grid;
+    /* Rail, stage, inspector. minmax(0, 1fr) is what lets the stage shrink
+       instead of being pushed wider by a long transcript line. */
+    grid-template-columns: 250px minmax(0, 1fr) 300px;
+    gap: var(--gap);
+    align-items: stretch;
+    min-height: 0;
+}
+
+.station__region {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    min-width: 0;
+    /* min-height: 0 + overflow is the viewport-locked contract: this is one of
+       the only three scroll containers in the application. */
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* A region has exactly one owner (see pickRegionOwner in WorkstationShell.tsx),
+   so its child always fills the column and manages its own inner scrolling. */
+.station__region > * {
+    flex: 1 1 auto;
+}
+
+/* --- Region owners (the two composed columns) -------------------------------- */
+
+/* The stage column carries TWO surfaces: the transient notice strip stacked above
+   the log (components/ChatStageSlot.tsx). One contribution per region means the
+   region's single child is that wrapper, so the wrapper - not the region - is what
+   stacks them. `.stage` keeps its own scroll contract (transcript.css:40-46) and
+   the strip is intrinsic-height AND removable (NoticeStrip returns null on an
+   empty feed), so min-height:0 here is what lets the log shrink to the remaining
+   height instead of overflowing the viewport-locked region. */
+.station .stage-slot {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    min-height: 0;
+}
+
+/* `flex: 1 1 auto` from `.station__region > *` lands on the WRAPPER now, so the
+   log inside it has to be told to take whatever the strip leaves. Without this the
+   stage column sizes to its content and the composer drifts below the fold. */
+.station .stage-slot > .stage {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* The inspector column is the same shape: a wrapper whose one child is whichever
+   feature surface `chat.sidebarTab` selects (components/ChatInspector.tsx). The
+   feature keeps its own root (.agents / .tools / .settings / .panel) and this only
+   sizes the column, so a long registry scrolls inside the region instead of
+   pushing the composer off-screen. */
+.station .inspector {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    min-width: 0;
+    min-height: 0;
+}
+
+.station .inspector > * {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* ——— Panels (chrome for descriptor contributions) ——————————————————————— */
+
+.station .panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--raised);
+}
+
+.station .panel__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px var(--pad);
+    border-bottom: 1px solid var(--line);
+}
+
+.station .panel__title {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.station .panel__hint {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.station .panel__body {
+    padding: var(--pad);
+    min-height: 0;
+}
+
+.station .panel__empty {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+/* ——— Buttons ————————————————————————————————————————————————————————————— */
+
+.station .btn {
+    padding: 6px 12px;
+    min-height: var(--row-height);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.station .btn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.station .btn:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.station .btn:disabled {
+    color: var(--muted);
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.station .btn--accent {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.station .btn--warn {
+    border-color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 14%, var(--surface));
+    color: var(--warn);
+}
+
+.station .btn--danger {
+    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+    color: var(--danger);
+}
+
+.station .btn--ghost {
+    background: transparent;
+}
+
+.station .btn--icon {
+    min-width: var(--row-height);
+    padding: 6px;
+}
+
+.station .btn.is-active {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 24%, var(--surface));
+    color: var(--accent);
+}
+
+/* ——— Fields (shared input/select/textarea surface) ————————————————————— */
+
+.station .field {
+    width: 100%;
+    min-height: var(--row-height);
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+}
+
+.station .field::placeholder {
+    color: var(--muted);
+}
+
+.station .field:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.station textarea.field {
+    resize: vertical;
+}
+
+/* ——— Focus ——————————————————————————————————————————————————————————————— */
+
+/* Keyboard focus stays visible in both themes; :focus-visible avoids a ring on
+   pointer clicks. */
+.station .btn:focus-visible,
+.station .field:focus-visible,
+.station__region:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* ——— Scrollbars ——————————————————————————————————————————————————————————— */
+
+/* Scoped to the skin (not `*`), so embedding it leaves the host page alone. */
+.station__region {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+}
+
+.station__region::-webkit-scrollbar,
+.station .panel__body::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+.station__region::-webkit-scrollbar-track,
+.station .panel__body::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.station__region::-webkit-scrollbar-thumb,
+.station .panel__body::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--muted) 45%, transparent);
+    border: 2px solid transparent;
+    border-radius: 8px;
+    background-clip: padding-box;
+}
+
+/* ——— Responsive ————————————————————————————————————————————————————————— */
+
+/* Inspector drops under the stage rather than squeezing the transcript. The grid
+   keeps two rows so every region still scrolls inside the locked viewport. */
+@media (max-width: 1120px) {
+    .station__grid {
+        grid-template-columns: 210px minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) minmax(0, 200px);
+    }
+
+    .station__region--aside {
+        /* Auto-placement follows DOM order, so the aside lands on row 2. */
+        grid-column: 1 / -1;
+    }
+}
+
+/* Phone width: one column, transcript first (reading the log is the point of a
+   mobile station). THE THRESHOLD IS 900px, on purpose and in exactly one place:
+   the viewport seam reports 'mobile' below `(min-width: 900px)`
+   (src/dashboard/viewport.ts:29) and sessions.css:336 turns the rail into an
+   overlay drawer at `max-width: 899px`. At the previous 820px the rail was an
+   OVERLAY between 821 and 899 while this grid still reserved its 250px column, so
+   the station paid for a column it was not showing. 899px is the same integer
+   partner sessions.css uses: it collapses exactly when the drawer opens and never
+   while `(min-width: 900px)` matches. */
+@media (max-width: 899px) {
+    .station__grid {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .station__region--stage {
+        order: -1;
+    }
+
+    .station__bar {
+        align-items: flex-start;
+    }
+
+    .station__chips {
+        margin-left: 0;
+        order: 3;
+    }
+}

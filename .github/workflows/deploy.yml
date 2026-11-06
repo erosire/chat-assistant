@@ -20,12 +20,16 @@
 # The old gh-pages branch becomes unused once this workflow is in place
 # (it no longer receives updates from this workflow).
 #
-# Dependency notes (unchanged from the previous workflow):
+# Dependency notes (unchanged from the previous workflow, plus one addition):
 # - Environment constants (host + ports) live in the local src/config.ts —
 #   the monorepo's @config/environment package cannot be published to npm.
 # - @underload/service is unpublished and only used by server/test code —
 #   never by the static Pages build — so it is stripped from package.json
 #   below to keep `npm install` free of registry 404s.
+# - @underload/dashboard is ALSO unpublished (registry 404), but unlike
+#   @underload/service the browser build imports it, so it cannot be stripped.
+#   It is vendored as a committed tarball and pointed at with a `file:`
+#   specifier at CI time only — see the "Vendored workspace package" step.
 
 name: Deploy to GitHub Pages
 
@@ -64,6 +68,48 @@ jobs:
           const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           delete manifest.dependencies['@underload/service'];
           fs.writeFileSync('package.json', JSON.stringify(manifest, null, 4) + '\n');
+          EOF
+
+      # Vendored workspace package (the reason this step exists at all):
+      # @underload/dashboard is a monorepo WORKSPACE package that has never been
+      # published to npm (registry answers 404), so `npm install` in this
+      # standalone Pages repo cannot resolve the "*" specifier its package.json
+      # carries. That specifier must stay "*" for the monorepo — a `file:`
+      # dependency would break workspace resolution to the package SOURCE, which
+      # is how dev/test/typecheck see it — so the swap happens HERE, at CI time,
+      # and nothing is published:
+      #   vendor/underload-dashboard-<version>.tgz is a COMMITTED artifact built
+      #   from packages/underload/dashboard with `npm pack` after its normal
+      #   `npm run build` (the package's "files" field ships dist + src, so dist
+      #   has to exist before packing). Regenerate it whenever the dashboard
+      #   changes:
+      #     cd packages/underload/dashboard && npm run build && npm pack \
+      #       --pack-destination ../../distribution/chat-assistant/vendor
+      # Reversible by construction: delete this step and the manifest is again
+      # byte-identical to the workspace copy. The tarball name is READ from the
+      # vendor directory (not hardcoded) so a version bump in the dashboard
+      # package.json needs no workflow edit; a missing or duplicated artifact
+      # fails the build loudly instead of falling back to a registry lookup.
+      - name: Point the unpublished workspace package at the vendored tarball
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+          const VENDORED = 'vendor';
+          const PACK_PREFIX = 'underload-dashboard-';
+          const tarballs = fs.readdirSync(VENDORED).filter(
+              (name) => name.startsWith(PACK_PREFIX) && name.endsWith('.tgz')
+          );
+          if (tarballs.length !== 1) {
+              throw new Error(
+                  `Expected exactly one ${PACK_PREFIX}<version>.tgz in ${VENDORED}/, found ` +
+                  `${tarballs.length} [${tarballs.join(', ')}]. Regenerate it with \`npm pack\` ` +
+                  `in packages/underload/dashboard.`
+              );
+          }
+          const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          manifest.dependencies['@underload/dashboard'] = `file:${VENDORED}/${tarballs[0]}`;
+          fs.writeFileSync('package.json', JSON.stringify(manifest, null, 4) + '\n');
+          console.log(`@underload/dashboard -> ${manifest.dependencies['@underload/dashboard']}`);
           EOF
 
       # --legacy-peer-deps: npm's strict peer resolver crashes with

@@ -1,35 +1,40 @@
-// Storybook stories for the public application shell (src/App.tsx).
+// Storybook story for the public application shell (src/App.tsx) — T6 rewrite.
 //
-// No mocks, no fixtures: App renders exactly as deployed and talks to the
-// REAL backends through the defaults in src/api (DEFAULT_CHAT_ASSISTANT_URL →
-// DATABASE_API_HOST:DATABASE_API_PORT and DEFAULT_PROVIDER_URL →
-// INFERENCE_PROVIDER_HOST:INFERENCE_PROVIDER_PORT in src/api/config.ts), so
-// the canvas exercises the actual storage service and model provider. Nothing
-// network-dependent is asserted — the plays only
-// verify the shell LOADS: the root surface, fallback header title, and
-// composer all render synchronously, before the mount effects' catalog GET
-// (fetchProviderModels) and history GET (listConversations) settle. An
-// unreachable backend is also a valid rendered state — both mount effects
-// catch failures into the non-modal ErrorBanner
-// (components/ChatAssistantApp.tsx:2383-2385 and 2404-2406), never into an
-// unhandled rejection or a blank page.
+// WHY THE STORY NO LONGER RENDERS `<App />` BLIND: App is
+// `<ChatAssistantApp />` at the DEPLOYMENT defaults, i.e. the LAN storage origin
+// (http://192.168.50.109:5000) and the LAN provider origin (:5500) from
+// src/api/config.ts. A story has to render anywhere — CI, an off-network laptop, a
+// sandboxed iframe — so the canvas drives the SAME shell with the origins the
+// component and plugin tests use (plugins/harness.ts:33-35): hosts that never
+// resolve. Both mount reads (the tracked-conversation list in
+// plugins/sessions.ts:354 and the model catalog in plugins/source.ts:838) then fail
+// into the stage's non-modal error strip, which is a valid rendered state — nothing
+// network-dependent is asserted. The station itself is composed locally, is
+// viewport-locked, and renders synchronously: no request has to answer for the rail,
+// the log, the composer or the inspector to appear.
+//
 // Wrapping follows the repo's dashboard-story idiom
-// (WebstormDashboard.stories.tsx): Meta from @storybook/react with the
-// component memo-wrapped for a viewport-sized surface, stories via
-// @library/test's asTestStory, canvas-scoped queries through $screen.
+// (WebstormDashboard.stories.tsx): Meta from @storybook/react with the component
+// memo-wrapped for a viewport-sized surface, the single story via @library/test's
+// asTestStory, and canvas-scoped queries through $screen.
 import React from 'react';
 import { Meta } from '@storybook/react';
 import { $expect, $screen, asTestStory } from '@library/test';
 import { styledComponent } from '@presource/react';
-import { App } from './App';
+import { ChatAssistantApp } from './dashboard/ChatAssistantApp';
 
-// Viewport-sized positioning context for the app shell. The shell's Page
-// (components/ChatAssistantApp.tsx:262) locks itself to height:100% of its
-// parent; in a regular document that parent is #root (index.html pins
-// html/body/#root to height:100%), but the Storybook canvas has no such
-// rule — this surface fills the canvas iframe instead (same CSS as the
-// FullScreen helper other dashboard stories import from @reloaded/headless,
-// defined locally so this distribution keeps its dependency surface).
+// The two non-resolving endpoints, spelled out rather than imported from
+// plugins/harness.ts: that module pulls `vi` from vitest, and a story bundle has no
+// business carrying the test runner.
+const STORY_BASE_URL = 'http://storage.test/v1/chat-assistant/conversation';
+const STORY_PROVIDER_URL = 'http://provider.test/providers/private/v1';
+
+// Viewport-sized positioning context for the station. `.station` is 100dvh and
+// overflow:hidden (styles/base.css:20-38) and index.html pins html/body/#root to
+// height:100%, which the Storybook canvas does not — this surface fills the iframe
+// edge to edge instead (same CSS as the FullScreen helper other dashboard stories
+// import from @reloaded/headless, defined locally so this distribution keeps its
+// dependency surface).
 const StorySurface = styledComponent('div', {
     position: 'absolute',
     top: 0,
@@ -39,17 +44,15 @@ const StorySurface = styledComponent('div', {
 });
 
 // Meta configuration — title mirrors the distribution/agent story hierarchy.
-// layout:'fullscreen' removes the canvas padding so the viewport-locked shell
-// fills the iframe edge to edge (same parameter the dashboard stories' surface
-// decorators achieve).
+// layout:'fullscreen' removes the canvas padding so the viewport-locked station
+// fills the iframe (the same parameter the other dashboard stories' decorators set).
 const meta: Meta = {
     title: 'Distribution/Chat Assistant/App',
-    // App takes no props: it always connects to the actual services via the
-    // src/api deployment defaults. The memo wrapper only supplies the
-    // viewport-sized surface the locked Page requires (see StorySurface).
+    // One story, one component: the shell. The only props are the two endpoints
+    // above, which is what keeps the canvas off the real services.
     component: React.memo(() => (
         <StorySurface>
-            <App />
+            <ChatAssistantApp baseUrl={STORY_BASE_URL} providerUrl={STORY_PROVIDER_URL} />
         </StorySurface>
     )),
     parameters: {
@@ -59,19 +62,17 @@ const meta: Meta = {
 
 export default meta;
 
-// Default story: the live dashboard. Sidebar history, the model catalog, and
-// chat streaming all round-trip to the real services; with nothing selected
-// the empty state and composer show. The play asserts only the synchronous
-// shell — network outcomes (catalog entries, restored chats, error banner)
-// belong to the deployment, not to this story. Every query/assertion is
-// awaited: findByTestId polls until the element mounts, and $expect.text
-// validates visibility through the shared kit ($dom.text().isValid()).
+// Default story: the workstation. The play asserts only what is synchronous — the
+// station frame, its three regions' owners and the brand line — before the mount
+// reads settle. Outcomes that need a backend (catalog entries, restored chats, the
+// failure banner) belong to the deployment, and are pinned against a doubled wire by
+// src/dashboard/integration.test.tsx instead.
 export const Default = asTestStory(async () => {
-    // Root surface mounts.
-    await $screen.findByTestId('chat-assistant');
-    // The composer renders regardless of the catalog request's state.
-    await $screen.findByTestId('chat-input');
-    await $screen.findByTestId('model-select');
-    // With no chat selected the header keeps the product-name fallback.
+    // The shell mounts, and each region renders its real owner.
+    await $screen.findByTestId('station-root');
+    await $screen.findByTestId('sidebar');
+    await $screen.findByTestId('transcript');
+    await $screen.findByTestId('composer-input');
+    // The bar's brand line is the station's own heading.
     await $expect.text('Chat Assistant');
 });

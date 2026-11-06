@@ -1,0 +1,379 @@
+/*
+ * Session rail — sidebar tabs, conversation rows, mobile drawer.
+ * OWNER: the sessions/sidebar surface (src/dashboard/components/ChatSidebar.tsx
+ * + SessionsBoard.tsx). Every rule is scoped under `.station` and reads
+ * tokens.css; nothing here hardcodes a colour or a metric.
+ *
+ * Vocabulary (stub list first, extensions after):
+ *   .rail                    the column itself, data-testid="sidebar"
+ *   .rail__tabs              the registry tab strip (children are .rail__tab)
+ *   .rail__item              a row's select control (fills .rail__entry)
+ *   .rail__title             row title line
+ *   .rail__meta              row secondary line
+ *   .rail__footer            the action row pinned under the list ("New chat")
+ *   --- extensions (all emitted by the two components above) ---
+ *   .rail__bar .rail__label  the rail head + its uppercase caption
+ *   .rail__menu              the mobile-only drawer toggle (hidden on desktop)
+ *   .rail__tab.is-active     the selected registry tab
+ *   .rail__body              the tab panel, the rail's own scroll area
+ *   .rail__heading .rail__heading-text .rail__count  list heading + count chip
+ *   .rail__list .rail__entry the row list + one positioned row (session-entry-*)
+ *   .rail__item--static      read-only row (the Tool tab has no select command id)
+ *   .rail__actions .rail__ghost .rail__ghost--danger  the OVERLAID controls
+ *   .rail__edit              the row's inline rename editor
+ *   .rail__empty             empty-registry copy
+ *   .rail__scrim             mobile drawer dismiss target (a <button>)
+ *   .rail__settings .rail__row .rail__hint  the Settings tab's readouts
+ *
+ * THE ROW CONTRACT (behavior oracle ChatAssistantApp.tsx:4282-4317): the delete
+ * control is a SIBLING of the select control, absolutely pinned to the row's
+ * top-right corner, never nested inside it — nested interactive elements are
+ * invalid HTML, and a delete click would bubble into a chat selection. The row's
+ * right padding is therefore widened to the control strip's width so the overlaid
+ * controls never cover the title they sit on.
+ *
+ * THE DRAWER (oracle 395-437): below the md gate the rail is a fixed off-canvas
+ * panel over a scrim; at/above it the rail is a static column and `data-open` is
+ * simply ignored. The gate is 899px because that is exactly what the chat core's
+ * viewport seam reports as 'mobile' (src/dashboard/viewport.ts, DESKTOP_QUERY =
+ * `(min-width: 900px)` = the oracle's md threshold at ChatAssistantApp.tsx:2404-2410
+ * and at 395-427 where its drawer toggled below md). CSS and JS MUST agree here: a
+ * scrim the layout never drew would still swallow every tap under it.
+ * NOTE for the shell owner: styles/base.css switches the station grid to one
+ * column at 820px, so between 821 and 899 the rail is an overlay while the grid
+ * still reserves its 210px rail column — one media query in base.css would align
+ * the two (this file may not edit base.css).
+ * The z-index pair stays scrim 10 / rail 20: the oracle documents that the drawer
+ * painted UNDER its own scrim once, because a function/breakpoint z-index value
+ * gets rem-converted to an invalid `z-index: 10rem`. Here the numbers are literal.
+ */
+
+/* ——— Column frame ———————————————————————————————————————————————————————— */
+
+.station .rail {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    /* SKIN-LOCAL TOKEN (declared here because it is used nowhere else): the drawer
+       scrim wash. tokens.css has no overlay entry, and the acceptance rule for this
+       file is "tokens only, plus skin-local vars declared in this file". */
+    --rail-scrim: rgba(4, 12, 15, 0.55);
+}
+
+.station .rail__bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.station .rail__label {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+/* The drawer toggle is a mobile affordance: a static column needs no gate. */
+.station .rail__menu {
+    display: none;
+    padding: 4px;
+}
+
+/* ——— Registry tabs ——————————————————————————————————————————————————————— */
+
+.station .rail__tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--line);
+}
+
+.station .rail__tab {
+    flex: 1 1 auto;
+    padding: 6px 4px;
+    border: 0;
+    border-bottom: var(--rail) solid transparent;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+
+.station .rail__tab:hover {
+    color: var(--text);
+}
+
+.station .rail__tab.is-active {
+    border-bottom-color: var(--accent);
+    color: var(--accent);
+}
+
+/* The tab panel is the rail's scroll area, so a long registry never pushes the
+   footer out of the viewport-locked column. */
+.station .rail__body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* ——— Heading + empty state ————————————————————————————————————————————— */
+
+.station .rail__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.station .rail__heading-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.station .rail__count {
+    padding: 1px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+}
+
+.station .rail__empty {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+/* ——— Rows ————————————————————————————————————————————————————————————— */
+
+.station .rail__list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* Positioning context for the overlaid controls: they are SIBLINGS of the select
+   control, never children of it. */
+.station .rail__entry {
+    position: relative;
+    list-style: none;
+}
+
+.station .rail__item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    min-height: var(--row-height);
+    /* 56px of right padding is exactly the overlaid control strip's width, so the
+       title never sits under the rename/delete glyphs. */
+    padding: 7px 56px 7px 10px;
+    border: 1px solid var(--line);
+    border-left: var(--rail) solid transparent;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.station .rail__item:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+/* The selected row reads by rail AND by tint, so the state survives a colour-blind
+   or greyscale display (the token pair is --accent + --accent-soft). */
+.station .rail__item[data-selected='true'] {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.station .rail__item:disabled {
+    color: var(--muted);
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+/* A read-only registry row carries no button, so it must not look clickable. */
+.station .rail__item--static {
+    cursor: default;
+}
+
+.station .rail__title {
+    overflow-wrap: anywhere;
+    font-weight: 600;
+}
+
+.station .rail__meta {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+/* ——— Overlaid row controls (siblings of the select control) ————————————— */
+
+.station .rail__actions {
+    position: absolute;
+    top: 5px;
+    right: 8px;
+    display: flex;
+    gap: 2px;
+}
+
+.station .rail__ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+
+.station .rail__ghost:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.station .rail__ghost--danger:hover:not(:disabled) {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.station .rail__ghost:disabled {
+    color: var(--muted);
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Inline rename keeps the row's own height and stays a single line (Enter commits,
+   Escape reverts) — the editor must not change the row's geometry mid-edit. */
+.station .rail__edit {
+    min-height: var(--row-height);
+    padding: 7px 10px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    white-space: pre;
+    overflow: hidden;
+}
+
+/* ——— Footer + Settings tab ————————————————————————————————————————————— */
+
+.station .rail__footer {
+    display: flex;
+    gap: 6px;
+    margin-top: auto;
+    padding-top: 4px;
+}
+
+.station .rail__settings {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+}
+
+.station .rail__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.station .rail__row dt {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.station .rail__row dd {
+    margin: 0;
+    font-size: 12px;
+}
+
+.station .rail__hint {
+    width: 100%;
+    color: var(--muted);
+    font-size: 10px;
+}
+
+/* --- Mobile drawer (below the 900px md gate the viewport seam reports) --- */
+
+@media (max-width: 899px) {
+    .station .rail__menu {
+        display: inline-flex;
+    }
+
+    .station .rail {
+        position: fixed;
+        inset-block: 0;
+        left: 0;
+        /* Literal numbers, never a token-derived rem value: the drawer must stack
+           above its scrim (see the header note on the oracle's z-index trap). */
+        z-index: 20;
+        width: min(280px, 85vw);
+        padding: var(--pad);
+        border-right: 1px solid var(--line);
+        background: var(--raised);
+        transform: translateX(-105%);
+        transition: transform 160ms ease;
+    }
+
+    .station .rail[data-open='true'] {
+        transform: translateX(0);
+    }
+
+    /* Rendered only while the drawer is open, so it can never swallow a desktop
+       click. It is a <button> (keyboard-dismissible), hence the reset. */
+    .station .rail__scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: var(--rail-scrim);
+        cursor: pointer;
+    }
+}
+
+/* The scrim wash is declared per theme as a skin-local var (see the `.rail`
+   block): a scrim that only dims the dark surface reads as solid black over the
+   light one, so the two themes need two washes. */
+.station[data-theme='slate'] .rail {
+    --rail-scrim: rgba(18, 38, 44, 0.35);
+}

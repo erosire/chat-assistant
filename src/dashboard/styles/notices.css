@@ -1,0 +1,139 @@
+/*
+ * Notices — the transient, non-error feedback strip.
+ * OWNER: src/dashboard/components/NoticeStrip.tsx, fed by plugins/notices.ts.
+ *
+ * Vocabulary (the stub list first, then the extensions):
+ *   .notice                    the strip, data-testid="notice-strip"
+ *   .notice__row               one notice, [data-tone] drives its colour
+ *   .notice__text              the message line
+ *   .notice__dismiss           the per-row dismiss control (a sibling of the text)
+ *   .notice__clear             "Dismiss all" (shares the .btn--ghost primitive)
+ *
+ * WHAT THIS FILE DOES NOT STYLE (deliberate, so no rule fights another owner):
+ *   - `.banner` / `error-banner`: the stage already owns it as `.stage__error`
+ *     (transcript.css:54-64, rendered by ChatStage.tsx:320-324). The strip and the
+ *     banner are separate surfaces — one carries failures, this one carries
+ *     consequences — and the testids are split the same way.
+ *   - `.loading`: the in-flight affordance belongs to the transcript and composer
+ *     files (`streaming-loading` / `.composer__*`).
+ *
+ * COLOUR RULE (tokens.css): `info` reads neutral (line + text), `success` reads
+ * accent, `warn` reads amber. The message text is always the signal's carrier too,
+ * so the tone never depends on colour alone.
+ *
+ * THE STRIP IS OPTIONAL LAYOUT: NoticeStrip returns null on an empty feed, so no
+ * rule here may assume a reserved height — `.station` is viewport-locked
+ * (base.css:20-38) and the transcript owns the remaining height.
+ */
+
+.station .notice {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px var(--pad);
+    border: 1px solid var(--line);
+    border-left: var(--rail) solid var(--muted);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface) 70%, transparent);
+    font-size: 12px;
+}
+
+.station .notice__row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.station .notice__text {
+    /* The message wins the line: a long fork notice wraps instead of pushing the
+       dismiss control out of the rail. */
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+/* Tone is an attribute, not a class: the row's markup stays identical across tones
+   and the state is readable in the DOM for tests and for the theme switch. */
+.station .notice__row[data-tone='info'] .notice__text {
+    color: var(--text);
+}
+
+.station .notice__row[data-tone='success'] .notice__text {
+    color: var(--accent);
+}
+
+.station .notice__row[data-tone='warn'] .notice__text {
+    color: var(--warn);
+}
+
+/* The strip's own rail follows the newest row's tone, so the surface reads as one
+   message state rather than a stack of unrelated colours. `:has()` degrades to the
+   neutral rail on an engine without it, which is the safe reading (the text colour
+   still carries the tone). */
+.station .notice:has(.notice__row[data-tone='warn']) {
+    border-left-color: var(--warn);
+}
+
+.station .notice:has(.notice__row[data-tone='success']):not(:has(.notice__row[data-tone='warn'])) {
+    border-left-color: var(--accent);
+}
+
+/* The dismiss control is a SIBLING of the text, never nested inside it (the same
+   row contract the session rail uses, sessions.css:174-179): a nested interactive
+   element would make the message unreadable to a screen reader that lands on the
+   button. */
+.station .notice__dismiss {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+
+.station .notice__dismiss:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.station .notice__dismiss:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.station .notice__clear {
+    /* Right-aligned: the batch gesture reads as the strip's footer action, and it is
+       a smaller target than the per-row x on purpose. */
+    align-self: flex-end;
+    min-height: 24px;
+    padding: 2px 8px;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+}
+
+/* Compact density keeps the strip to one visual line per notice: the row gap and the
+   strip's own padding are what shrink, never the 22px tap target. */
+.station[data-density='compact'] .notice {
+    gap: 2px;
+    padding: 4px var(--pad);
+}
+
+/* 899px = the region breakpoint the shell itself uses (base.css:397 flips the
+   station grid to one column there), so the strip's batch control reflows at the
+   exact moment the rail becomes a drawer — never a band earlier. */
+@media (max-width: 899px) {
+    /* A phone rail is narrow enough that the batch control needs its own line to
+       stay a reliable tap target next to a wrapped message. */
+    .station .notice__clear {
+        align-self: stretch;
+        min-height: var(--row-height);
+    }
+}

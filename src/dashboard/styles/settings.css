@@ -1,0 +1,231 @@
+/*
+ * Settings — mode switch (online/offline), provider base, skin switches, palette.
+ * OWNER: src/dashboard/components/StationSettings.tsx + SettingsPanel.tsx. Every
+ * rule is scoped under `.station` and reads tokens.css; nothing here hardcodes a
+ * colour or a metric, so `.station[data-theme|data-density]` repaints this panel
+ * with no rule change (tokens.css:54-79).
+ *
+ * Vocabulary (the stub list first, then the extensions this surface emits):
+ *   .settings                    the column, data-testid="settings-workspace"
+ *   .settings__group             a labelled button set (role="group")
+ *   .settings__row               a key/value readout row (label + control side by side)
+ *   .swatches                    the live palette list, data-testid="settings-palette"
+ *   --- extensions (emitted by SettingsPanel.tsx / StationSettings.tsx) ---
+ *   .settings__title             the panel heading (only when the host has no chrome)
+ *   .settings__field             the <label> wrapper: caption above control
+ *   .settings__label             the caption line inside the field
+ *   .settings__control           the native <select>/<input> (shares the .field primitive)
+ *   .settings__note              muted guidance copy (mode-note, offline-endpoint-hint)
+ *   .settings__group-label       the group caption above its buttons
+ *   .settings__options           the button row inside a group
+ *   .swatches__row               one token row (chip + name + reference)
+ *   .swatches__chip              the swatch, tinted by [data-token]
+ *   .swatches__name              the token name, uppercased
+ *   .swatches__value             the `var(--token)` reference it resolves
+ *
+ * WHY THE FIELD STACKS VERTICALLY (behavior oracle ChatAssistantApp.tsx:758-800):
+ * `SettingsField` is a real <label> around its control, so the caption is part of the
+ * control's accessible name and clicking it focuses the field. The oracle keeps the
+ * caption on its own line at every width — a base URL is long enough that a side
+ * label would push the value off the visible field on a phone.
+ *
+ * WHY THE SWATCH IS CSS-TINTED, not inline-styled: the example (workstation.css:646)
+ * reads its palette from a `theme.palettes` service and paints the chip inline. This
+ * skin has no such service — the palette IS tokens.css — so `[data-token]` selects
+ * `background: var(--token)` and the chip can never disagree with the theme on screen.
+ */
+
+/* ——— Column —————————————————————————————————————————————————──────────────── */
+
+.station .settings {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    /* The settings surface can be dropped into any region; it never grows past a
+       readable measure, so a wide aside shows a compact panel rather than one input
+       stretched 900px wide. */
+    max-width: 520px;
+    /* SKIN-LOCAL TOKEN (used nowhere else): the swatch box size. tokens.css has no
+       swatch entry, and the row grid needs the same number twice. */
+    --swatch-size: 14px;
+}
+
+.station .settings__title {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+/* ——— Fields (caption + native control) ——————————————————————————————————— */
+
+.station .settings__field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.station .settings__label {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    /* The label wraps a long URL caption onto two lines without a horizontal
+       scrollbar inside the rail. */
+    overflow-wrap: anywhere;
+}
+
+/* `.field` (base.css:264-287) owns the surface, padding and focus ring; this rule
+   only stops a long base URL from stretching the column. */
+.station .settings__control {
+    width: 100%;
+    min-width: 0;
+}
+
+/* The select is the one control that should read as a chooser rather than a text
+   box: same frame as `.field`, plus the disclosure colour on the value line. */
+.station select.settings__control {
+    color-scheme: inherit;
+    cursor: pointer;
+}
+
+.station .settings__note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+/* ——— Segmented groups (theme / spacing / motion) ——————————————————————— */
+
+.station .settings__group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.station .settings__group-label {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.station .settings__options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* A readout row (the stub vocabulary): caption on the left, live value on the right. */
+.station .settings__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+}
+
+/* ——— Palette swatches ——————————————————————————————————————————————————— */
+
+.station .swatches {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.station .swatches__row {
+    display: grid;
+    grid-template-columns: var(--swatch-size) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    font-size: 11px;
+}
+
+.station .swatches__chip {
+    width: var(--swatch-size);
+    height: var(--swatch-size);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+}
+
+.station .swatches__name {
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.station .swatches__value {
+    color: var(--text);
+    /* The reference is code-shaped text, so it must not be re-flowed mid-token. */
+    white-space: nowrap;
+    overflow-wrap: anywhere;
+}
+
+/* The token each swatch demonstrates, resolved from the ACTIVE theme's custom
+   properties — the list is identical in both themes, the colours are not. */
+.station .swatches__chip[data-token='surface'] {
+    background: var(--surface);
+}
+
+.station .swatches__chip[data-token='raised'] {
+    background: var(--raised);
+}
+
+.station .swatches__chip[data-token='line'] {
+    background: var(--line);
+}
+
+.station .swatches__chip[data-token='text'] {
+    background: var(--text);
+}
+
+.station .swatches__chip[data-token='muted'] {
+    background: var(--muted);
+}
+
+.station .swatches__chip[data-token='accent'] {
+    background: var(--accent);
+}
+
+.station .swatches__chip[data-token='warn'] {
+    background: var(--warn);
+}
+
+/* ——— Responsive ——————————————————————————————————————————————————————— */
+
+/* Compact density closes the vertical gaps only: the panel's readability comes from
+   the caption/control separation, which the density switch must not flatten away. */
+.station[data-density='compact'] .settings {
+    gap: 6px;
+}
+
+.station[data-density='compact'] .settings__group {
+    gap: 4px;
+}
+
+/* Phone width: the settings column is one of three stacked rows, so the measure cap
+   goes away and the field takes the full width it is given. 899px matches the
+   station grid's own flip (base.css:397), so the stacking and the cap removal are
+   one and the same crossing. */
+@media (max-width: 899px) {
+    .station .settings {
+        max-width: none;
+    }
+
+    .station .settings__options .btn {
+        flex: 1 1 auto;
+    }
+}

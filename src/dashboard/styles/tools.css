@@ -1,0 +1,291 @@
+/*
+ * Tool registry — the tool surface (styles/components/ToolInspector.tsx): the
+ * registry rows, the native vs coded panel, and the source editor.
+ *
+ * Vocab (stub list first, then the extensions this file actually emits):
+ *   .tools                     the surface root, fills the region it is mounted in
+ *   .tools__grid               the registry rows (one .tool row per entry)
+ *   .tool                      one registry row (positioning context for its "x")
+ *   .tool__name                row title line
+ *   .tool__state               row kind line ("Native — no implementation shown" /
+ *                              "JavaScript" / "TypeScript")
+ *   .tool__source              the coded tool's source editor (the oracle's <pre>)
+ *   --- extensions ---
+ *   .tools__head .tools__heading .tools__count .tools__new
+ *                              the strip head: caption, live count, "New tool"
+ *   .tools__empty .tools__none the empty registry and the "No tool selected" state
+ *   .tool__pick .tool__remove  a row's select control and its "x" (a sibling)
+ *   .tools__panel .tools__title .tools__kind .tools__note
+ *                              the selected tool's panel, its title, kind line and
+ *                              the "provided by the runtime" note
+ *   .tools__field .tools__row .tools__label .tools__select
+ *                              a coded tool's name field, meta row and language picker
+ *
+ * NATIVE VS CODED COLOUR (the stub's `--warn` rule, and the oracle's own split at
+ * ChatAssistantApp.tsx:4788-4794): a native entry is runtime-provided, so its row
+ * carries the warning rail and its note text is warning-tinted — the eye reads
+ * "you cannot edit this" before it reads the sentence. A coded entry keeps the plain
+ * rail and gets an editable source panel. The rail keys off `data-native` on the row
+ * (ToolInspector emits it), so the styling is a data attribute rather than a class
+ * chosen by a string match against the label copy.
+ *
+ * The tile grid reuses the oracle's `repeat(auto-fill, minmax(200px, 1fr))` rule
+ * (:800-810) so the registry reads as a set of choices that reflows on a wide stage.
+ *
+ * COLOUR/METRIC DISCIPLINE: tokens.css only; the two skin-local vars below are
+ * declared in this file.
+ */
+
+/* ——— Surface frame ————————————————————————————————————————————————————— */
+
+.station .tools {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    min-width: 0;
+    /* Skin-local: the source editor's floor, so an empty custom tool still presents
+       a panel worth typing into. The editor itself grows by dragging (base.css gives
+       every `textarea.field` `resize: vertical`). */
+    --tools-source-min: 160px;
+    /* Skin-local: the mono stack, matching the token font family's first faces so a
+       source block lines up with the rest of the station's monospace chrome. */
+    --tools-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, var(--font);
+}
+
+.station .tools__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.station .tools__heading {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.station .tools__count {
+    padding: 1px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+}
+
+.station .tools__new {
+    margin-left: auto;
+}
+
+.station .tools__empty {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+/* ——— Registry rows ————————————————————————————————————————————————————— */
+
+.station .tools__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.station .tool {
+    position: relative;
+    list-style: none;
+    border: 1px solid var(--line);
+    border-left: var(--rail) solid transparent;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+/* The runtime-provided badge the stub asks for: a warning rail plus warning-tinted
+   kind text (see the header note). */
+.station .tool[data-native='true'] {
+    border-left-color: var(--warn);
+}
+
+.station .tool[data-native='true'] .tool__state {
+    color: var(--warn);
+}
+
+.station .tool[data-selected='true'] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.station .tool__pick {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    min-height: var(--row-height);
+    /* Right padding is the overlaid "x" strip, so the title never sits under it. */
+    padding: 7px 34px 7px 10px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.station .tool__pick:hover {
+    color: var(--accent);
+}
+
+.station .tool__pick:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.station .tool__name {
+    overflow-wrap: anywhere;
+    font-weight: 600;
+}
+
+.station .tool__state {
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* Sibling of the select control, pinned to the row's top-right corner — the same
+   overlained-delete contract the rail rows follow (ChatSidebar/SessionsBoard). */
+.station .tool__remove {
+    position: absolute;
+    top: 6px;
+    right: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+
+.station .tool__remove:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+/* ——— Empty state + panel ————————————————————————————————————————————— */
+
+.station .tools__none {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--pad);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.station .tools__none strong {
+    color: var(--text);
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.station .tools__panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    padding: var(--pad);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--raised);
+}
+
+.station .tools__title {
+    font-size: 16px;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
+.station .tools__kind {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* The native explanation (oracle :4789-4791): warning-tinted to match the row rail,
+   because it is the sentence that says why there is no source below it. */
+.station .tools__note {
+    margin: 0;
+    color: var(--warn);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* ——— Coded tool editing ————————————————————————————————————————————— */
+
+.station .tools__field {
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.station .tools__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.station .tools__label {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.station .tools__select {
+    width: auto;
+    min-width: 140px;
+    font-size: 12px;
+}
+
+/* The coded tool's implementation panel — the oracle's `ToolCodeBlock` (:531-549)
+   rendered as the editor that writes it: mono on the recessed surface, wrapped so a
+   long line never forces a horizontal scroll inside the region's own scroller. */
+.station .tools__source {
+    width: 100%;
+    min-height: var(--tools-source-min);
+    box-sizing: border-box;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--tools-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    resize: vertical;
+}
+
+.station .tools__source:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}

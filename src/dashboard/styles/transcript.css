@@ -1,0 +1,393 @@
+/*
+ * Transcript — turn list, role rails, collapse/expand, streaming caret.
+ * OWNER: the transcript surface (src/dashboard/components/ChatStage.tsx,
+ * TranscriptStream.tsx, MessageTurn.tsx). Every rule is scoped under `.station`
+ * and reads tokens.css.
+ *
+ * Vocabulary (stub list first, extensions after):
+ *   .stream__list            the ONE scroll container, data-testid="transcript"
+ *   .msg                     one turn wrapper (message-turn-*), .msg--role rails
+ *   .msg__role               the uppercase attribution text inside .msg__label
+ *   .msg__text               the bubble body: plain text, pre-wrap, anywhere-break
+ *   .msg__controls           the trailing strip under a bubble (turn-controls-*)
+ *   --- extensions (all emitted by the three components above) ---
+ *   .stage .stage__error     the stage column wrapper + its non-modal error strip
+ *   .msg__head .msg__lead    the header row (always the turn's FIRST child, which
+ *                            the sticky gate measures) and its label-side group
+ *   .msg__label              the attribution line, which IS the collapse toggle
+ *   .msg__preview            the collapsed one-line preview (stacked, never inline)
+ *   .msg__text--edit         the same bubble while it is the contentEditable editor
+ *   .msg__jump .msg__actions .msg__ghost   the strip's icon-button groups
+ *   .msg__loading .msg__dot  the three-dot "no token yet" affordance
+ *   .stream__empty           the empty-conversation card
+ *   .is-floating             the measured sticky mode of .msg__controls
+ *
+ * NOT IMPLEMENTED FROM THE STUB LIST: `.stream` (ChatStage's `.stage` is the
+ * column wrapper, so a second wrapper would add a box with no owner) and
+ * `.msg__stamp` (the wire type ChatMessage carries no timestamp — api/
+ * chat-assistant.ts:34-38 — so there is nothing to stamp).
+ *
+ * ROLE RAILS: every role colour comes from tokens.css (--user / --assistant /
+ * --system), so a theme or density switch repaints the log with no rule change.
+ *
+ * THE FLOATING STRIP (behavior oracle ChatAssistantApp.tsx:81-91, 2384-2402,
+ * 1237-1247): while a turn's end is off-screen its controls strip rides the
+ * list's visible bottom edge. It MUST stay transparent — an opaque surface
+ * painted a dark line across the bubble, which is the bug the rule exists to
+ * prevent — and it is gated by JS (`controlsShouldFloat` in MessageTurn.tsx), so
+ * `position: sticky` is only ever applied when the pinned position cannot cover
+ * the turn's own header row and its delete "x".
+ */
+
+/* ——— Stage column ——————————————————————————————————————————————————————— */
+
+/* One flex column filling the station region: the log takes the remaining height
+   and scrolls, the error strip and composer stay put. min-height:0 is what lets
+   the log shrink instead of being pushed taller by a long reply. */
+.station .stage {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    min-height: 0;
+}
+
+.station .stage__error {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--danger);
+    border-left: var(--rail) solid var(--danger);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+    color: var(--danger);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+/* ——— The scroll container ————————————————————————————————————————————— */
+
+.station .stream__list {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    /* Bottom padding is the jump target line (ChatStage.jumpTurnEdge docks a
+       section's edge on the list's PADDING line) and keeps the last reply clear of
+       the composer; right padding is the scrollbar gutter. */
+    padding: 2px 10px 12px 2px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    list-style: none;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent;
+}
+
+.station .stream__list::-webkit-scrollbar {
+    width: 10px;
+}
+
+.station .stream__list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.station .stream__list::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--muted) 45%, transparent);
+    background-clip: padding-box;
+}
+
+.station .stream__empty {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 4px;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+    margin: 0;
+    padding: var(--pad);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    color: var(--muted);
+    font-size: 12px;
+    list-style: none;
+    text-align: center;
+}
+
+.station .stream__empty strong {
+    color: var(--text);
+    font-size: 14px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* ——— Turn wrapper ————————————————————————————————————————————————————— */
+
+.station .msg {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+/* Assistant and system replies span the column; user turns stay right-aligned
+   under a narrower cap (oracle 104-108). */
+.station .msg--user {
+    align-self: flex-end;
+    width: min(760px, 86%);
+    border-left: var(--rail) solid var(--user);
+}
+
+.station .msg--assistant {
+    align-self: stretch;
+    width: 100%;
+    border-left: var(--rail) solid var(--assistant);
+}
+
+.station .msg--system {
+    align-self: stretch;
+    width: 100%;
+    border-left: var(--rail) solid var(--system);
+    background: color-mix(in srgb, var(--system) 6%, transparent);
+}
+
+/* Expanded turns floor at half the content width so a short bubble still reads
+   as a turn; a COLLAPSED turn keeps no floor and stays compact (oracle 106-108). */
+.station .msg[data-collapsed='false'] {
+    min-width: min(320px, 50%);
+}
+
+/* ——— Header row (label = collapse toggle) ————————————————————————————— */
+
+.station .msg__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.station .msg__lead {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* User stacks stay RIGHT-aligned: label and preview hug the right edge, and the
+   row order flips so the role switch still sits on the label's LEFT. */
+.station .msg__lead[data-align='right'] {
+    justify-content: flex-end;
+    flex-direction: row-reverse;
+    text-align: right;
+}
+
+.station .msg__label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}
+
+.station .msg__label:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.station .msg__role {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    overflow-wrap: anywhere;
+    text-align: left;
+}
+
+.station .msg--user .msg__role {
+    color: var(--user);
+}
+
+.station .msg--assistant .msg__role {
+    color: var(--assistant);
+}
+
+.station .msg__preview {
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    /* One line only, and never mid-word: a collapsed preview is a label, not a
+       truncated paragraph. */
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+.station .msg__preview[data-align='right'] {
+    text-align: right;
+}
+
+/* ——— Bubble body ————————————————————————————————————————————————————— */
+
+.station .msg__text {
+    margin: 0;
+    /* PLAIN TEXT, verbatim from the wire: no markdown pipeline exists in this
+       distribution, so newlines and unbreakable runs are honoured as-is. */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+}
+
+/* Only an EXPANDED, idle turn is a click target, so the I-beam appears exactly
+   when the click would open the editor (oracle 2087-2102). */
+.station .msg__text[data-editable='true'] {
+    cursor: text;
+}
+
+/* The bubble IS the editor while its turn is edited. The outline replaces the
+   bubble rail so the live editor is unmistakable. */
+.station .msg__text--edit {
+    cursor: text;
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* ——— Trailing controls ————————————————————————————————————————————— */
+
+.station .msg__controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    /* ANCHORED by default. The JS gate adds `.is-floating` only when the pinned
+       position provably clears the turn's own header row. */
+    position: static;
+    /* Transparent always: an opaque strip paints a dark line across the bubble. */
+    background: transparent;
+}
+
+.station .msg__controls.is-floating {
+    position: sticky;
+    bottom: 0;
+    /* Above the bubble text while it rides the scrollport edge, below nothing:
+       the strip is never allowed to cover the turn's own delete affordance, which
+       is enforced by the gate, not by stacking. */
+    z-index: 2;
+}
+
+.station .msg__jump,
+.station .msg__actions {
+    display: flex;
+    gap: 2px;
+}
+
+.station .msg__ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+
+.station .msg__ghost:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.station .msg__ghost--danger:hover:not(:disabled) {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+/* Greyed-but-rendered is a deliberate state: while an inline edit runs, the
+   chrome stays put and is merely inert (oracle 68-77). */
+.station .msg__ghost:disabled,
+.station .msg__ghost[disabled] {
+    color: var(--muted);
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+/* ——— Streaming affordances ————————————————————————————————————————— */
+
+/* A dashed rail marks the live reply; the caret after its last token shows that
+   text is still arriving (example skin workstation.css:462-472). */
+.station .msg[data-phase='streaming'],
+.station .msg[data-phase='pending'] {
+    border-left-style: dashed;
+}
+
+.station .msg[data-phase='streaming'] .msg__text::after {
+    content: '▌';
+    color: var(--accent);
+}
+
+/* The three-dot "reply in flight, no token yet" state: the bubble would
+   otherwise render as a featureless blank box (oracle 2552-2561). */
+.station .msg__loading {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 22px;
+}
+
+.station .msg__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--accent);
+    animation: station-pulse 1.2s ease-in-out infinite;
+}
+
+.station .msg__dot:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.station .msg__dot:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+@keyframes station-pulse {
+    0%,
+    80%,
+    100% {
+        opacity: 0.25;
+        transform: translateY(0);
+    }
+    40% {
+        opacity: 1;
+        transform: translateY(-2px);
+    }
+}
+
+/* Reduced motion is already zeroed by tokens.css's `data-motion='reduced'` and
+   the prefers-reduced-motion block, which both target `.station *` — so the dot
+   animation needs no rule of its own here. */

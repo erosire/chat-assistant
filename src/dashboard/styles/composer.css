@@ -1,0 +1,250 @@
+/*
+ * Composer — draft input, model/agent selects, send + voice controls.
+ * OWNER: the composer surface (src/dashboard/components/ComposerDeck.tsx,
+ * ModelPicker.tsx, VoiceButton.tsx). Every rule is scoped under `.station` and
+ * reads tokens.css; base.css owns the shared `.field`/`.btn` primitives and this
+ * file only adds the composer's own layout.
+ *
+ * Vocabulary (stub list first, extensions after):
+ *   .composer                the <form>, data-testid="composer"
+ *   .composer__row           the picker line ABOVE the input (.composer__pick per
+ *                            picker: [Agents] left of [Model])
+ *   .composer__input         the auto-growing textarea (data-testid="composer-input")
+ *   .composer__help          the one-line keyboard hint under the field
+ *   --- extensions (all emitted by the three components above) ---
+ *   .composer__pick          one picker's positioning context (text + overlay)
+ *   .composer__pick-text     the readable label line the operator clicks
+ *   .composer__pick-select   the REAL native select, invisible, overlaid on top
+ *   .composer__usage         the "Total tokens: N" line
+ *   .composer__field         the input box the mic and the arrow dock INSIDE
+ *   .composer__voice         the mic, docked at the field's left edge
+ *   .composer__send          the submit arrow, docked at the field's right edge
+ *   .composer__send--stop    the same dock while a reply is generating
+ *   NOT USED FROM THE STUB LIST: `.composer__actions` — the oracle docks the mic and
+ *   the arrow INSIDE the input box (absolutely positioned), so there is no trailing
+ *   action group to lay out.
+ *
+ * THE HEIGHT CONTRACT (behavior oracle ChatAssistantApp.tsx:141-146, 2421-2439):
+ * the field starts EXACTLY one text row tall and grows to eight. `box-sizing:
+ * border-box` + the 1px frame is what `resizeComposerField` compensates for, so
+ * this file must keep the border at 1px and must not add a min-height larger than
+ * one row — either change would desynchronise the JS measurement (the pre-fix bug:
+ * an empty composer locked at the browser's two-row textarea default).
+ *
+ * THE PICKER PATTERN (oracle 5093-5167): each picker is quiet TEXT with the native
+ * <select> overlaid invisibly ON TOP of its own label only. A shared row-wide
+ * overlay let the model select cover the agent text and eat every click, which is
+ * why `.composer__pick` — not `.composer__row` — is the positioning context.
+ */
+
+/* ——— Column ——————————————————————————————————————————————————————————— */
+
+.station .composer {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--raised);
+}
+
+/* ——— Picker line ————————————————————————————————————————————————————— */
+
+.station .composer__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 14px;
+}
+
+/* One positioning context per picker: the invisible select covers ONLY its own
+   text line. */
+.station .composer__pick {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.station .composer__pick-text {
+    max-width: 26ch;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.station .composer__pick:hover .composer__pick-text {
+    color: var(--accent);
+}
+
+/* The real control: invisible, on top, and therefore what the browser opens and
+   what a keyboard/`change` event drives. `opacity: 0` (not `display: none`) keeps
+   it focusable and keeps the native dropdown behaviour. */
+.station .composer__pick-select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: transparent;
+    opacity: 0;
+    cursor: inherit;
+    appearance: none;
+}
+
+.station .composer__pick-select:focus-visible {
+    /* The text line is the visible half, so the ring belongs to the pair. */
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: var(--radius-sm);
+}
+
+/* ——— Token usage line ————————————————————————————————————————————————— */
+
+.station .composer__usage {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* ——— The input box (mic + arrow dock inside it) ————————————————————— */
+
+.station .composer__field {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+}
+
+.station .composer__input {
+    flex: 1 1 auto;
+    min-width: 0;
+    /* The frame MUST stay 1px top+bottom: ComposerDeck's height math adds exactly
+       that back onto `scrollHeight` (the oracle's MESSAGE_INPUT_VERTICAL_BORDER). */
+    box-sizing: border-box;
+    padding: 9px 46px 9px 42px;
+    /* Deep left/right padding is what keeps the draft clear of the docked mic and
+       the docked arrow — text never slides under either. */
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+    resize: none;
+    overflow-y: auto;
+}
+
+.station .composer__input::placeholder {
+    color: var(--muted);
+}
+
+.station .composer__input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* ——— Docked controls ————————————————————————————————————————————————— */
+
+/* Both are vertically centred in the BOX at every height (top: 50% +
+   translateY(-50%)), through the whole eight-row growth cap — the oracle's rule
+   that the arrow stays put instead of riding the first line. */
+.station .composer__voice,
+.station .composer__send {
+    position: absolute;
+    top: 50%;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface) 70%, transparent);
+    color: var(--muted);
+    cursor: pointer;
+    transform: translateY(-50%);
+    transition: color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.station .composer__voice {
+    left: 6px;
+}
+
+.station .composer__send {
+    right: 6px;
+}
+
+.station .composer__voice:hover,
+.station .composer__send:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.station .composer__send:active:not(:disabled) {
+    transform: translateY(calc(-50% + 1px));
+}
+
+.station .composer__send:disabled {
+    color: var(--muted);
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Listening reads as a live capture: amber ring, and the glyph has already been
+   swapped to the stop X by VoiceButton. */
+.station .composer__voice.is-active {
+    border-color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 16%, var(--surface));
+    color: var(--warn);
+}
+
+/* The stop state of the same dock: the arrow is a cancel control while a reply is
+   generating. */
+.station .composer__send--stop {
+    border-color: var(--warn);
+    color: var(--warn);
+}
+
+.station .composer__send--stop:hover {
+    border-color: var(--warn);
+    color: var(--warn);
+    opacity: 0.85;
+}
+
+/* ——— Help line ————————————————————————————————————————————————————— */
+
+.station .composer__help {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+/* Narrow viewports need no shrink defenses: the picker line already wraps and the
+   input stacks under it (oracle 146-147). The only phone-specific change is giving
+   the pickers a full line each so their overlaid selects stay tappable — gated at
+   899px, the same md boundary the viewport seam reports as 'mobile'. */
+@media (max-width: 899px) {
+    .station .composer__pick {
+        flex: 1 1 100%;
+    }
+
+    .station .composer__pick-text {
+        max-width: none;
+    }
+}

@@ -129,7 +129,12 @@ const streamCompletionRequest = async (
     url: string,
     model: string,
     messages: ChatMessage[],
-    onSnapshot: (content: string) => void
+    onSnapshot: (content: string) => void,
+    // Optional abort signal (dashboard service layer): handed straight to fetch
+    // so a caller can cancel an in-flight completion. When omitted the request
+    // init is byte-identical to the pre-existing payload, so online and offline
+    // behavior is unchanged for every current caller.
+    signal?: AbortSignal
 ): Promise<ProviderChatCompletion> => {
     const response = await fetch(url, {
         method: 'POST',
@@ -143,7 +148,11 @@ const streamCompletionRequest = async (
             stream: true,
             stream_options: { include_usage: true },
             messages: toProviderMessages(messages)
-        })
+        }),
+        // Only present when the caller supplied a signal: an explicit
+        // `signal: undefined` would change the request-init shape every
+        // existing test asserts on exactly.
+        ...(signal ? { signal } : {})
     });
     if (!response.ok) {
         throw new Error(await errorMessage(response, 'Provider chat completion failed'));
@@ -214,7 +223,13 @@ export function streamProviderChatCompletion(
     baseUrl: string,
     model: string,
     messages: ChatMessage[],
-    onSnapshot: (content: string) => void
+    onSnapshot: (content: string) => void,
+    // Optional 5th argument: abort support for the dashboard service facade
+    // (src/dashboard/services/provider.ts). Every existing 4-argument caller
+    // (components/ChatAssistantApp.tsx) is untouched, and an aborted request
+    // still rejects — with the platform AbortError — through the same path as
+    // every other failure; interpreting the abort is the caller's job.
+    signal?: AbortSignal
 ): Promise<ProviderChatCompletion> {
-    return streamCompletionRequest(`${normalizeBaseUrl(baseUrl)}/chat/completions`, model, messages, onSnapshot);
+    return streamCompletionRequest(`${normalizeBaseUrl(baseUrl)}/chat/completions`, model, messages, onSnapshot, signal);
 }

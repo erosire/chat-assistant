@@ -1,6 +1,19 @@
 // Public barrel for the distribution package.
+//
+// SURFACE NOTE (T6): the rebuild replaced the 5,000-line single component with the
+// plugin-composed workstation, and this barrel is the only place the switch is
+// visible to an embedder. `App` and `ChatAssistantApp` keep their pre-rebuild names
+// and `ChatAssistantApp` keeps its pre-rebuild props ({ baseUrl?, providerUrl? },
+// both FULL endpoints — see the jsdoc in src/dashboard/ChatAssistantApp.tsx), so
+// every import site survives unchanged. The pre-rebuild component itself
+// (src/components/) is retired; its behavior now lives in src/dashboard/plugins.
 export { App } from './App';
-export { ChatAssistantApp } from './components';
+export { ChatAssistantApp } from './dashboard/ChatAssistantApp';
+export type { ChatAssistantAppProps } from './dashboard/ChatAssistantApp';
+// Version + branded title (package.json `version`, injected as __APP_VERSION__ by
+// vite.config.ts / vitest.config.ts) so a host page can label the build without
+// parsing the bundle.
+export { APP_VERSION, PRODUCT_TITLE } from './version';
 // Shared stroke-based SVG icon family, exported for reuse by embedders.
 export * from './icons';
 export {

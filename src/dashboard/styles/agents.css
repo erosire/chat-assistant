@@ -1,0 +1,426 @@
+/*
+ * Agent registry — the agent editing surface (styles/components/AgentWorkspace.tsx,
+ * AgentPromptEditor.tsx and AgentToolGrid.tsx).
+ *
+ * Vocab (stub list first, then the extensions this file actually emits):
+ *   .agents                    the surface root, fills the region it is mounted in
+ *   .agents__list              the registry strip (one .agent row per definition)
+ *   .agent                     one registry row (positioning context for its "x")
+ *   .agent__field              the agent name input (a .field from base.css)
+ *   .agent__prompt             the prompt field's positioning wrapper (JS owns its height)
+ *   .agent__tools              the "Allowed tools" group (heading + tile grid)
+ *   --- extensions ---
+ *   .agents__head .agents__heading .agents__count .agents__new
+ *                              the strip head: caption, live count, "New agent"
+ *   .agents__empty .agents__none .agents__editor .agents__note
+ *                              empty registry, "No agent selected", the editor column
+ *   .agent__pick .agent__name .agent__meta .agent__remove
+ *                              a row: select control, its two text lines, the "x"
+ *   .agent__prompt-input .agent__grip
+ *                              the textarea and its themed resize pill
+ *   .agent__group-head .agent__group-title .agent__group-count
+ *                              the "Chat layout" / "Allowed tools" section heads
+ *   .agent__layout .agent__row .agent__role .agent__layout-input
+ *   .agent__remove-row .agent__add
+ *                              the example back-and-forth: list, row, role chip,
+ *                              text field, per-row "x", and the "append a turn" chip
+ *   .agent__tool-grid .agent__tool .agent__tool-name .agent__tools-empty
+ *                              the allowed-tools tiles and the empty-registry note
+ *
+ * BEHAVIOR ORACLE for the metrics (src/components/ChatAssistantApp.tsx): the tile
+ * grid is `repeat(auto-fill, minmax(200px, 1fr))` (:800-810) so the choices reflow
+ * into more columns on a wide stage instead of stretching; a checked tile takes the
+ * accent frame + tint (:817-834), the same accent pair the rail rows use; the role
+ * chip carries one SHARED width floor with headroom for the longest label
+ * ("ASSISTANT", 110px) so every row's text field starts on the same left edge
+ * regardless of role (:857-880); the grip is a 40x4 pill centred on the field's
+ * bottom edge (:613-632).
+ *
+ * SIZING CONTRACT: the surface spans whatever region it is mounted in, so it sets no
+ * height of its own (base.css `.station__region > *` gives it the column and the
+ * column is the scroll container). The one exception is the prompt field's height,
+ * which is written as an inline pixel value by AgentPromptEditor — CSS supplies only
+ * its floor, through `--agent-prompt-min` below.
+ *
+ * COLOUR/METRIC DISCIPLINE: every value is a token from tokens.css, or one of the
+ * skin-local vars declared in THIS file (--agent-prompt-min, --agent-grip-*).
+ */
+
+/* ——— Surface frame ————————————————————————————————————————————————————— */
+
+.station .agents {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    min-width: 0;
+    /* Skin-local: the floor of the prompt field's drag height. It MUST stay equal to
+       AGENT_PROMPT_MIN_HEIGHT in components/AgentPromptEditor.tsx (mirroring the
+       oracle's 96px clamp at ChatAssistantApp.tsx:602) — the JS clamps what it
+       measures, and this is the height the field has before the first interaction. */
+    --agent-prompt-min: 96px;
+}
+
+.station .agents__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.station .agents__heading,
+.station .agent__group-title {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.station .agents__count,
+.station .agent__group-count {
+    padding: 1px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+}
+
+.station .agents__new {
+    margin-left: auto;
+}
+
+/* ——— Registry strip ———————————————————————————————————————————————————— */
+
+.station .agents__list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* Positioning context for the "x": like the rail's rows, the delete control is a
+   SIBLING of the select control (never nested inside it), absolutely pinned to the
+   row's right edge (oracle :4589-4613). */
+.station .agent {
+    position: relative;
+    list-style: none;
+}
+
+.station .agent__pick {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    min-height: var(--row-height);
+    /* 40px of right padding is the width of the overlaid control strip, so a long
+       name never sits under the glyph it is next to. */
+    padding: 7px 40px 7px 10px;
+    border: 1px solid var(--line);
+    border-left: var(--rail) solid transparent;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.station .agent__pick:hover {
+    border-color: var(--accent);
+}
+
+.station .agent__pick:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* The open definition reads by rail AND by tint, so the state survives a greyscale
+   display (the same --accent + --accent-soft pair the rail rows use). */
+.station .agent__pick[data-selected='true'] {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.station .agent__name {
+    overflow-wrap: anywhere;
+    font-weight: 600;
+}
+
+.station .agent__meta {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.station .agent__remove {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+
+.station .agent__remove:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.station .agents__empty,
+.station .agent__tools-empty,
+.station .agents__note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+/* ——— Empty state + editor column ————————————————————————————————————— */
+
+.station .agents__none {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--pad);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.station .agents__none strong {
+    color: var(--text);
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* The editor is a column of full-width fields (oracle :494-509: the panel spans the
+   whole content column, edge to edge, with no maxWidth cap). */
+.station .agents__editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    padding: var(--pad);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--raised);
+}
+
+.station .agent__group-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 4px;
+    border-top: 1px solid var(--line);
+}
+
+/* ——— Name + system prompt ————————————————————————————————————————————— */
+
+.station .agent__field {
+    font-size: 15px;
+    font-weight: 700;
+}
+
+/* Positioning context for the grip pill. No height here: AgentPromptEditor writes an
+   inline pixel height the moment the operator drags or presses an arrow, and an
+   authored height would fight it. */
+.station .agent__prompt {
+    position: relative;
+    width: 100%;
+}
+
+.station .agent__prompt-input {
+    width: 100%;
+    min-height: var(--agent-prompt-min);
+    /* Deepened bottom padding so typed text never slides under the grip pill that is
+       docked on the field's lower edge (oracle :580-581). */
+    padding: 9px 11px 18px;
+    resize: none;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+/* The themed replacement for the native textarea corner grip (:613-632): a quiet
+   pill centred on the field's bottom edge. Only opacity moves — the pill is 4px
+   tall, so a scale/colour change would read as flicker mid-drag. `touch-action:
+   none` hands the gesture to the pointer handler on touch screens instead of
+   scrolling the column. */
+.station .agent__grip {
+    position: absolute;
+    left: 50%;
+    bottom: 5px;
+    transform: translateX(-50%);
+    width: 40px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--muted);
+    opacity: 0.45;
+    cursor: row-resize;
+    touch-action: none;
+}
+
+.station .agent__grip[data-resizing='true'] {
+    opacity: 0.9;
+}
+
+.station .agent__grip:hover {
+    opacity: 0.75;
+}
+
+.station .agent__grip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* ——— Chat layout rows ————————————————————————————————————————————————— */
+
+.station .agent__layout {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.station .agent__row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* The role chip doubles as the user/assistant switch. One shared width floor with
+   headroom for "ASSISTANT" (110px, box-sizing: border-box) is what keeps every row's
+   text field on the same left edge regardless of role (oracle :857-865). */
+.station .agent__role {
+    flex-shrink: 0;
+    min-width: 110px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+
+.station .agent__role:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.station .agent__layout-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+}
+
+.station .agent__remove-row,
+.station .agent__add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    min-height: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+    transition: border-color 120ms ease, color 120ms ease;
+}
+
+.station .agent__remove-row:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.station .agent__add {
+    /* The workspace is a flex column, so a lone "+" docks at the right edge of the
+       layout column (oracle :929-940). */
+    align-self: flex-end;
+}
+
+.station .agent__add:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* ——— Allowed tools tiles ————————————————————————————————————————————— */
+
+.station .agent__tools {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+/* auto-fill + minmax keeps every tile at a comfortable minimum and lets the set
+   reflow into more columns as the stage widens (oracle :800-810). */
+.station .agent__tool-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+    width: 100%;
+}
+
+/* A whole tile is the click target because the control is a real checkbox inside a
+   <label> — no JS, no aria duplication, and the checked state stays announced. */
+.station .agent__tool {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-sizing: border-box;
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.station .agent__tool:hover {
+    border-color: var(--accent);
+}
+
+.station .agent__tool[data-selected='true'] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.station .agent__tool input[type='checkbox'] {
+    flex-shrink: 0;
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+.station .agent__tool-name {
+    overflow-wrap: anywhere;
+}

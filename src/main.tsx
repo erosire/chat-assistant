@@ -1,6 +1,12 @@
 // React entry point for the Chat Assistant distribution.
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+// The vendored workstation skin: one stylesheet entry (styles/index.css) that
+// pulls in the token layer, the shell structure and the per-area files. Kept
+// explicit for the standalone app bundle; ChatAssistantApp imports the SAME
+// module (dashboard/ChatAssistantApp.tsx) so an embedder of the export gets the
+// skin too, and Vite resolves the duplicate into one CSS asset.
+import './dashboard/styles/index.css';
 import { App } from './App';
 import { PRODUCT_TITLE } from './version';
 

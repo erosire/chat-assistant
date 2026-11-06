@@ -1,0 +1,26 @@
+/*
+ * Stylesheet entry point for the vendored workstation skin.
+ *
+ * Import order is load-bearing: tokens before base (base consumes the custom
+ * properties), and the per-area files last so a feature stylesheet can override a
+ * primitive without an extra selector. Everything is scoped to `.station`, never
+ * to `:root`, so the skin can be embedded in a host page (Storybook, an iframe, a
+ * dashboard widget) without restyling it.
+ *
+ * Imported from src/dashboard/ChatAssistantApp.tsx (so every consumer of the
+ * public export gets the skin) and from src/main.tsx (the standalone app entry);
+ * Vite dedupes the two into one CSS asset. The
+ * `/// <reference types="vite/client" />` in src/vite-env.d.ts is what lets tsc
+ * accept those imports.
+ */
+@import './tokens.css';
+@import './base.css';
+
+/* Area files: owned by the follow-up tasks, currently comment-only stubs. */
+@import './sessions.css';
+@import './transcript.css';
+@import './composer.css';
+@import './agents.css';
+@import './tools.css';
+@import './settings.css';
+@import './notices.css';
